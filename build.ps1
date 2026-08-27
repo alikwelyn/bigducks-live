@@ -21,6 +21,17 @@ if ($LASTEXITCODE -ne 0) {
     throw "Go tests failed"
 }
 
+Push-Location (Join-Path $PSScriptRoot "third_party\systray")
+try {
+    go test ./...
+    if ($LASTEXITCODE -ne 0) {
+        throw "Tray integration tests failed"
+    }
+}
+finally {
+    Pop-Location
+}
+
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 
 try {

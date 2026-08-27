@@ -149,22 +149,49 @@ ui.log.addEventListener("click", async () => {
   catch (error) { showToast(`Não foi possível abrir o log: ${error}`); }
 });
 
+let updatePollTimer;
+
+function renderUpdate(result) {
+  ui.version.textContent = `v${result.current}`;
+  ui.updateAction.dataset.available = result.available ? "true" : "false";
+  if (result.checking) {
+    ui.updateTitle.textContent = "Verificando nova versão…";
+    ui.updateDetail.textContent = result.message;
+    ui.updateAction.textContent = "Verificando…";
+    ui.updateAction.disabled = true;
+    return;
+  }
+  ui.updateTitle.textContent = result.error ? "Não foi possível verificar" : (result.available ? `BIG DUCKS ${result.latest} disponível` : "BIG DUCKS atualizado");
+  ui.updateDetail.textContent = result.message;
+  ui.updateAction.textContent = result.available ? "Atualizar agora" : (result.error ? "Tentar novamente" : "Verificar");
+  ui.updateAction.disabled = false;
+}
+
+function renderUpdateError(error) {
+  ui.updateTitle.textContent = "Não foi possível verificar";
+  ui.updateDetail.textContent = String(error);
+  ui.updateAction.textContent = "Tentar novamente";
+  ui.updateAction.disabled = false;
+}
+
+async function pollUpdateStatus() {
+  try {
+    const result = await window.bigDucksUpdateStatus();
+    renderUpdate(result);
+    if (result.checking) updatePollTimer = setTimeout(pollUpdateStatus, 250);
+  } catch (error) {
+    renderUpdateError(error);
+  }
+}
+
 async function checkUpdate() {
-  ui.updateAction.disabled = true;
-  ui.updateAction.textContent = "Verificando…";
+  clearTimeout(updatePollTimer);
   try {
     const result = await window.bigDucksCheckUpdate();
-    ui.version.textContent = `v${result.current}`;
-    ui.updateTitle.textContent = result.error ? "Não foi possível verificar" : (result.available ? `BIG DUCKS ${result.latest} disponível` : "BIG DUCKS atualizado");
-    ui.updateDetail.textContent = result.message;
-    ui.updateAction.textContent = result.available ? "Atualizar agora" : (result.error ? "Tentar novamente" : "Verificar");
-    ui.updateAction.dataset.available = result.available ? "true" : "false";
+    renderUpdate(result);
+    if (result.checking) updatePollTimer = setTimeout(pollUpdateStatus, 250);
   } catch (error) {
-    ui.updateTitle.textContent = "Não foi possível verificar";
-    ui.updateDetail.textContent = String(error);
-    ui.updateAction.textContent = "Tentar novamente";
-  } finally {
-    ui.updateAction.disabled = false;
+    renderUpdateError(error);
   }
 }
 

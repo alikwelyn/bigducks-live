@@ -114,31 +114,47 @@ type notifyIconData struct {
 	Tip                        [128]uint16
 	State, StateMask           uint32
 	Info                       [256]uint16
-	Timeout, Version           uint32
+	TimeoutOrVersion           uint32
 	InfoTitle                  [64]uint16
 	InfoFlags                  uint32
 	GuidItem                   windows.GUID
 	BalloonIcon                windows.Handle
 }
 
-func (nid *notifyIconData) add() error {
-	const NIM_ADD = 0x00000000
-	res, _, err := pShellNotifyIcon.Call(
-		uintptr(NIM_ADD),
-		uintptr(unsafe.Pointer(nid)),
-	)
+const (
+	nimAdd             = uintptr(0x00000000)
+	nimModify          = uintptr(0x00000001)
+	nimDelete          = uintptr(0x00000002)
+	nimSetVersion      = uintptr(0x00000004)
+	notifyIconVersion4 = uint32(4)
+)
+
+type shellNotifyFunc func(message uintptr, nid *notifyIconData) (uintptr, error)
+
+func callShellNotifyIcon(message uintptr, nid *notifyIconData) (uintptr, error) {
+	res, _, err := pShellNotifyIcon.Call(message, uintptr(unsafe.Pointer(nid)))
+	return res, err
+}
+
+func (nid *notifyIconData) addWith(call shellNotifyFunc) error {
+	res, err := call(nimAdd, nid)
+	if res == 0 {
+		return err
+	}
+	nid.TimeoutOrVersion = notifyIconVersion4
+	res, err = call(nimSetVersion, nid)
 	if res == 0 {
 		return err
 	}
 	return nil
 }
 
+func (nid *notifyIconData) add() error {
+	return nid.addWith(callShellNotifyIcon)
+}
+
 func (nid *notifyIconData) modify() error {
-	const NIM_MODIFY = 0x00000001
-	res, _, err := pShellNotifyIcon.Call(
-		uintptr(NIM_MODIFY),
-		uintptr(unsafe.Pointer(nid)),
-	)
+	res, err := callShellNotifyIcon(nimModify, nid)
 	if res == 0 {
 		return err
 	}
@@ -146,11 +162,7 @@ func (nid *notifyIconData) modify() error {
 }
 
 func (nid *notifyIconData) delete() error {
-	const NIM_DELETE = 0x00000002
-	res, _, err := pShellNotifyIcon.Call(
-		uintptr(NIM_DELETE),
-		uintptr(unsafe.Pointer(nid)),
-	)
+	res, err := callShellNotifyIcon(nimDelete, nid)
 	if res == 0 {
 		return err
 	}
@@ -654,10 +666,25 @@ func (t *winTray) hideMenuItem(menuItemId, parentId uint32) error {
 	return nil
 }
 
+type popupCall func() (uintptr, error)
+
+func runPopupSequence(track, postNull popupCall) error {
+	trackResult, trackErr := track()
+	postResult, postErr := postNull()
+	if trackResult == 0 {
+		return trackErr
+	}
+	if postResult == 0 {
+		return postErr
+	}
+	return nil
+}
+
 func (t *winTray) showMenu() error {
 	const (
 		TPM_BOTTOMALIGN = 0x0020
 		TPM_LEFTALIGN   = 0x0000
+		WM_NULL         = 0x0000
 	)
 	p := point{}
 	res, _, err := pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
@@ -666,20 +693,24 @@ func (t *winTray) showMenu() error {
 	}
 	pSetForegroundWindow.Call(uintptr(t.window))
 
-	res, _, err = pTrackPopupMenu.Call(
-		uintptr(t.menus[0]),
-		TPM_BOTTOMALIGN|TPM_LEFTALIGN,
-		uintptr(p.X),
-		uintptr(p.Y),
-		0,
-		uintptr(t.window),
-		0,
+	return runPopupSequence(
+		func() (uintptr, error) {
+			res, _, callErr := pTrackPopupMenu.Call(
+				uintptr(t.menus[0]),
+				TPM_BOTTOMALIGN|TPM_LEFTALIGN,
+				uintptr(p.X),
+				uintptr(p.Y),
+				0,
+				uintptr(t.window),
+				0,
+			)
+			return res, callErr
+		},
+		func() (uintptr, error) {
+			res, _, callErr := pPostMessage.Call(uintptr(t.window), WM_NULL, 0, 0)
+			return res, callErr
+		},
 	)
-	if res == 0 {
-		return err
-	}
-
-	return nil
 }
 
 func (t *winTray) delFromVisibleItems(parent, val uint32) {

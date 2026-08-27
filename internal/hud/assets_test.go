@@ -28,7 +28,7 @@ func TestPageUsesFixedLandscapeDashboardWithoutDocumentZoomOrScroll(t *testing.T
 	for _, required := range []string{
 		`class="dashboard"`, `class="left-column"`, `overflow: hidden`,
 		`user-scalable=no`, `event.preventDefault()`, `"wheel"`,
-		`setTimeout(checkUpdate, 1200)`, `touch-action: manipulation`,
+		`setTimeout(checkUpdate, 1200)`, `bigDucksUpdateStatus`, `touch-action: manipulation`,
 	} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("landscape HUD page does not contain %q", required)

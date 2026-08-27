@@ -38,8 +38,8 @@ No HUD:
 
 No ícone do pato ao lado do relógio:
 
-- **Abrir BIG DUCKS** abre uma janela independente;
-- **Reiniciar proteção** reinicia somente o processo do núcleo;
+- **Abrir** abre uma janela independente;
+- **Reiniciar** reinicia somente o processo do núcleo;
 - **Sair** encerra o BIG DUCKS sem fechar o Discord.
 
 ## Como funciona
