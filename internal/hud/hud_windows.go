@@ -53,7 +53,13 @@ type UpdateView struct {
 	Message   string `json:"message"`
 }
 
-func Run(dataDir string) (err error) {
+func Run(dataDir string) error {
+	return runSingleHUD(acquireHUD, ActivateExisting, func() error {
+		return runWindow(dataDir)
+	})
+}
+
+func runWindow(dataDir string) (err error) {
 	if dataDir == "" {
 		return errors.New("HUD data directory is empty")
 	}
@@ -74,7 +80,7 @@ func Run(dataDir string) (err error) {
 		DataPath:  cachePath,
 		AutoFocus: true,
 		WindowOptions: webview.WindowOptions{
-			Title: "BIG DUCKS LIVE", Width: 540, Height: 720, IconId: 1, Center: true,
+			Title: HUDWindowTitle, Width: 540, Height: 720, IconId: 1, Center: true,
 		},
 	})
 	if view == nil {
