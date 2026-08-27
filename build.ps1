@@ -1,11 +1,15 @@
 param(
-    [string]$Version = "0.1.0"
+    [string]$Version = "0.1.1",
+    [string]$OutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 $ResourcePrefix = Join-Path $PSScriptRoot "cmd\bigducks\rsrc"
 $ResourceFile = $ResourcePrefix + "_windows_amd64.syso"
-$OutputDirectory = Join-Path $PSScriptRoot "dist"
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $PSScriptRoot "dist"
+}
+$OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $OutputPath = Join-Path $OutputDirectory "BigDucks.exe"
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
