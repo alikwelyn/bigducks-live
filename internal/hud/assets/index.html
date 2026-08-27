@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BIG DUCKS LIVE</title>
+  <style>{{STYLE}}</style>
+</head>
+<body>
+  <main class="shell">
+    <header class="brandbar">
+      <img class="brandmark" src="data:image/png;base64,{{LOGO}}" alt="Pato do BIG DUCKS">
+      <div class="brandcopy">
+        <p class="eyebrow">PROTEÇÃO PARA LIVES</p>
+        <h1>BIG DUCKS</h1>
+        <p class="subtitle">Stream sem fechar o Discord.</p>
+      </div>
+      <span id="version" class="version">versão atual</span>
+    </header>
+
+    <section class="hero" aria-labelledby="protection-title">
+      <div class="statusline">
+        <span id="status-dot" class="status-dot" aria-hidden="true"></span>
+        <div>
+          <p class="label">ESTADO DA ROTA</p>
+          <h2 id="protection-title">Verificando proteção…</h2>
+        </div>
+      </div>
+      <p id="status-detail" class="status-detail">Conectando ao núcleo BIG DUCKS.</p>
+      <div class="metrics" aria-label="Métricas da proteção">
+        <div class="metric"><span>PROXIES</span><strong id="pool-size">—</strong></div>
+        <div class="metric"><span>TÚNEIS</span><strong id="tunnel-count">—</strong></div>
+		<div class="metric"><span>LATÊNCIA</span><strong id="bridge-state">—</strong></div>
+      </div>
+    </section>
+
+    <section class="actions" aria-label="Ações de recuperação">
+      <button id="reconnect" class="button primary" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
+        <span><strong>Reconectar live</strong><small>Troca a rota sem fechar o Discord</small></span>
+      </button>
+      <div class="secondary-grid">
+        <button id="test-route" class="button secondary" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span>Testar rota</span>
+        </button>
+        <button id="reload" class="button secondary" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg>
+          <span>Recarregar Discord</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="timeline" aria-labelledby="events-title">
+      <div class="section-title">
+        <div><p class="label">ATIVIDADE</p><h2 id="events-title">O que está acontecendo</h2></div>
+        <button id="open-log" class="text-button" type="button">Abrir log</button>
+      </div>
+      <ol id="events" class="events">
+        <li><span class="event-icon info"></span><div><strong>HUD iniciado</strong><p>Aguardando o estado do núcleo.</p></div><time>agora</time></li>
+      </ol>
+    </section>
+
+    <section class="update-card" aria-labelledby="update-title">
+      <div>
+        <p class="label">ATUALIZAÇÕES ASSINADAS</p>
+        <h2 id="update-title">Verificando nova versão…</h2>
+        <p id="update-detail">Consultando os Releases oficiais do BIG DUCKS.</p>
+      </div>
+      <button id="update-action" class="button update-button" type="button">Verificar</button>
+    </section>
+
+    <details class="technical">
+      <summary>Detalhes técnicos</summary>
+      <pre id="technical-output">Aguardando diagnóstico…</pre>
+    </details>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <script>{{SCRIPT}}</script>
+</body>
+</html>

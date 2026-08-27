@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate version
+        id: version
+        shell: pwsh
+        run: |
+          $Version = "${{ github.ref_name }}".TrimStart("v")
+          if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid release tag" }
+          "value=$Version" >> $env:GITHUB_OUTPUT
+      - name: Build
+        shell: pwsh
+        run: .\build.ps1 -Version "${{ steps.version.outputs.value }}"
+      - name: Name release asset
+        shell: pwsh
+        run: Copy-Item -LiteralPath dist\BigDucks.exe -Destination dist\BigDucks-windows-amd64.exe
+      - name: Sign update manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: go run ./scripts/release -version "${{ steps.version.outputs.value }}" -asset dist/BigDucks-windows-amd64.exe -output dist
+      - name: Verify signed files exist
+        shell: pwsh
+        run: |
+          Get-Item dist\BigDucks-windows-amd64.exe, dist\manifest.json, dist\manifest.sig
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            dist\BigDucks-windows-amd64.exe `
+            dist\manifest.json `
+            dist\manifest.sig `
+            --verify-tag `
+            --generate-notes `
+            --title "BIG DUCKS LIVE ${{ github.ref_name }}"

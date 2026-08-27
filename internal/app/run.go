@@ -1,0 +1,413 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/alikwelyn/bigducks-live/internal/bridge"
+	"github.com/alikwelyn/bigducks-live/internal/discord"
+	"github.com/alikwelyn/bigducks-live/internal/injection"
+	"github.com/alikwelyn/bigducks-live/internal/instance"
+	"github.com/alikwelyn/bigducks-live/internal/logging"
+	"github.com/alikwelyn/bigducks-live/internal/model"
+	"github.com/alikwelyn/bigducks-live/internal/pac"
+	"github.com/alikwelyn/bigducks-live/internal/proxy"
+	"github.com/alikwelyn/bigducks-live/internal/relay"
+)
+
+var ErrAlreadyRunning = errors.New("BIG DUCKS já está em execução")
+
+type RunOptions struct {
+	Config          Config
+	DryRun          bool
+	SkipProxyFetch  bool
+	Logger          *logging.Logger
+	MutexHeld       bool
+	Control         *RuntimeControl
+	Attach          bool
+	PreserveDiscord bool
+}
+
+func Run(ctx context.Context, options RunOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	config := options.Config.normalized()
+	if err := bridge.ProtectDataDirectory(config.DataDir); err != nil {
+		return fmt.Errorf("protect data directory: %w", err)
+	}
+	logger := options.Logger
+	if logger == nil {
+		var err error
+		logger, err = logging.New(filepath.Join(config.DataDir, LogFileName), 256*1024)
+		if err != nil {
+			return err
+		}
+	}
+
+	if !options.MutexHeld {
+		release, alreadyRunning, acquireErr := instance.Acquire()
+		if acquireErr != nil {
+			return fmt.Errorf("acquire helper mutex: %w", acquireErr)
+		}
+		defer release()
+		if alreadyRunning {
+			logger.Printf("another BIG DUCKS instance is already running")
+			return ErrAlreadyRunning
+		}
+	}
+
+	logger.Printf("starting BIG DUCKS LIVE")
+	logger.Printf("routing mode: %s", config.RoutingMode)
+	control := options.Control
+	if control == nil {
+		control = NewRuntimeControl()
+	}
+	statusStore := newRuntimeStatusStore()
+	control.SetStatus(statusStore.Snapshot())
+	tracker := relay.NewTracker()
+	defer tracker.CloseAll()
+	var stateSaveMu sync.Mutex
+
+	setupCtx, cancelSetup := context.WithTimeout(runCtx, config.StartupBudget)
+	var entries []model.VerifiedEndpoint
+	if !options.SkipProxyFetch {
+		entries = loadAndVerifyCached(setupCtx, config, logger)
+		if len(entries) == 0 {
+			entries = fetchAndVerify(setupCtx, config, logger)
+		}
+		if len(entries) > config.PoolSize {
+			entries = entries[:config.PoolSize]
+		}
+	} else {
+		logger.Printf("proxy fetch skipped; gateway will wait for a verified proxy")
+	}
+	cancelSetup()
+
+	var refresh proxy.RefreshFunc
+	if !options.SkipProxyFetch {
+		refresh = func(refreshCtx context.Context) ([]model.VerifiedEndpoint, error) {
+			refreshed := fetchAndVerify(refreshCtx, config, logger)
+			if len(refreshed) == 0 {
+				return nil, proxy.ErrNoProxy
+			}
+			return refreshed, nil
+		}
+	}
+	managed := proxy.NewManagedPool(proxy.ManagedOptions{
+		Entries:        entries,
+		AttemptTimeout: config.ProbeTimeout / 2,
+		Refresh:        refresh,
+		Probe: func(probeCtx context.Context, endpoint model.Endpoint) (model.VerifiedEndpoint, error) {
+			started := time.Now()
+			if config.RoutingMode == RoutingModeFull {
+				verified, err := proxy.ProbeFullEndpoint(probeCtx, endpoint, config.HeartbeatTimeout)
+				if err != nil {
+					return model.VerifiedEndpoint{}, err
+				}
+				verified.CheckedAt = time.Now().Unix()
+				return verified, nil
+			}
+			if err := proxy.ProbeGateway(probeCtx, endpoint, config.HeartbeatTimeout); err != nil {
+				return model.VerifiedEndpoint{}, err
+			}
+			return model.VerifiedEndpoint{Endpoint: endpoint, LatencyMS: int(time.Since(started).Milliseconds()), CheckedAt: time.Now().Unix()}, nil
+		},
+		WaitBudget:       config.RecoveryWait,
+		HeartbeatTimeout: config.HeartbeatTimeout,
+		PoolSize:         config.PoolSize,
+		MinReserves:      config.MinReserves,
+		HuntCooldown:     config.HuntCooldown,
+		InUse:            tracker.InUse,
+		OnDead: func(endpoint model.Endpoint) {
+			closed := tracker.CloseEndpoint(endpoint)
+			if closed > 0 {
+				statusStore.Update(func(status *RuntimeStatus) {
+					status.State = RecoveryReconnecting
+					status.LastError = "proxy heartbeat failed"
+				})
+			}
+			logger.Printf("proxy %s failed health check; closed %d gateway tunnel(s)", endpoint.RedactedURL(), closed)
+		},
+		OnChange: func(updated []model.VerifiedEndpoint) {
+			stateSaveMu.Lock()
+			if err := proxy.SaveState(filepath.Join(config.DataDir, StateFileName), updated, time.Now()); err != nil {
+				logger.Printf("could not save refreshed proxy state: %v", err)
+			}
+			stateSaveMu.Unlock()
+			statusStore.Update(func(status *RuntimeStatus) { status.PoolSize = len(updated) })
+			logger.Printf("verified proxy pool refreshed with %d candidate(s)", len(updated))
+		},
+	})
+	if len(entries) > 0 {
+		stateSaveMu.Lock()
+		if err := proxy.SaveState(filepath.Join(config.DataDir, StateFileName), entries, time.Now()); err != nil {
+			logger.Printf("could not save proxy state: %v", err)
+		}
+		stateSaveMu.Unlock()
+		logger.Printf("verified %d public gateway proxy candidates", len(entries))
+	} else {
+		logger.Printf("no verified public proxy available; direct gateway fallback is disabled")
+		statusStore.Update(func(status *RuntimeStatus) { status.State = RecoveryNoProxy })
+	}
+	statusStore.Update(func(status *RuntimeStatus) { status.PoolSize = len(entries) })
+	go managed.Start(runCtx, config.HeartbeatInterval)
+
+	allowlist := model.NewHostAllowlist(config.RoutedHosts)
+	allowedSuffixes := append([]string(nil), config.RoutedSuffixes...)
+	if config.RoutingMode == RoutingModeFull {
+		allowedSuffixes = []string{"discord.com", "discord.gg", "discordapp.com", "discordapp.net", "discord.media", "discordcdn.com"}
+	}
+	relayTimeout := config.ProbeTimeout * 2
+	connector := gatewayConnector{pool: managed, tracker: tracker, status: statusStore, logger: logger}
+	relayServer := &relay.Server{
+		Address:         runtimeAddress(config.RelayPort, config.DynamicRuntimePorts),
+		Allowlist:       allowlist,
+		AllowedSuffixes: allowedSuffixes,
+		AllowedPorts:    map[int]bool{443: true},
+		Timeout:         relayTimeout,
+		Dial:            connector.Dial,
+	}
+	relayAddress, closeRelay, err := relayServer.ListenAndServe(runCtx)
+	if err != nil {
+		logger.Printf("could not start local relay: %v", err)
+		return fmt.Errorf("start protected gateway relay: %w", err)
+	}
+	defer closeRelay()
+	_, relayPortText, err := net.SplitHostPort(relayAddress)
+	if err != nil {
+		return fmt.Errorf("parse protected gateway relay address: %w", err)
+	}
+	relayPort, err := strconv.Atoi(relayPortText)
+	if err != nil {
+		return fmt.Errorf("parse protected gateway relay port: %w", err)
+	}
+	pacServer := pac.NewServerAt(runtimeAddress(config.PACPort, config.DynamicRuntimePorts), config.RoutedHosts, config.RoutedSuffixes, relayPort)
+	pacURL, closePAC, err := pacServer.Start()
+	if err != nil {
+		logger.Printf("could not start local PAC: %v", err)
+		return fmt.Errorf("start protected gateway PAC: %w", err)
+	}
+	defer closePAC()
+
+	bridgeServer := bridge.NewServer(config.DataDir)
+	bridgeReady := true
+	if err := bridgeServer.Start(runCtx); err != nil {
+		bridgeReady = false
+		logger.Printf("could not start Discord reload bridge: %v", err)
+	} else {
+		defer bridgeServer.Close()
+	}
+	recovery := NewRecoveryCoordinator(RecoveryCoordinatorOptions{
+		Pool: managed, Tunnels: tracker, Bridge: bridgeServer, Status: statusStore, Logger: logger,
+	})
+	unbind := control.Bind(RuntimeBindings{
+		Reconnect: func(actionCtx context.Context) error {
+			_, err := recovery.Recover(actionCtx)
+			return err
+		},
+		Reload: func(actionCtx context.Context) error {
+			if !bridgeReady {
+				return bridge.ErrUnavailable
+			}
+			return bridgeServer.Reload(actionCtx)
+		},
+		TestRoute: func(actionCtx context.Context) error {
+			if !bridgeReady {
+				return bridge.ErrUnavailable
+			}
+			expected := "SOCKS5 " + relayAddress
+			for _, target := range []string{"https://gateway.discord.gg", "https://gateway-us-east1-b.discord.gg"} {
+				route, routeErr := bridgeServer.ResolveProxy(actionCtx, target)
+				if routeErr != nil {
+					return routeErr
+				}
+				if !strings.Contains(route, expected) {
+					return fmt.Errorf("Discord resolved %s as %q instead of %q", target, route, expected)
+				}
+			}
+			return nil
+		},
+		Status: func() RuntimeStatus {
+			status := statusStore.Snapshot()
+			entries := managed.Snapshot()
+			status.PoolSize = len(entries)
+			if len(entries) > 0 {
+				status.ActiveProxy = entries[0].Endpoint.RedactedURL()
+				status.LatencyMS = entries[0].LatencyMS
+			}
+			status.TunnelCount = tracker.Count()
+			status.BridgeConnected = bridgeReady && bridgeServer.Status().Connected
+			return status
+		},
+	})
+	defer unbind()
+
+	fullProxyURL := ""
+	if config.RoutingMode == RoutingModeFull {
+		fullProxyURL = "socks5://" + relayAddress
+		logger.Printf("full control mode uses the managed local relay; Discord media domains remain direct")
+	}
+	return launchDiscord(runCtx, config, pacURL, fullProxyURL, options.DryRun, options.Attach, options.PreserveDiscord, bridgeReady, statusStore, logger)
+}
+
+func runtimeAddress(port int, dynamic bool) string {
+	if dynamic {
+		return "127.0.0.1:0"
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+}
+
+func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL string, dryRun, attach, preserveDiscord, bridgeReady bool, statusStore *runtimeStatusStore, logger *logging.Logger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	discordPath, err := discord.FindLatest(config.DiscordRoot)
+	if err != nil {
+		return err
+	}
+	logger.Printf("selected Discord executable: %s", discordPath)
+	if dryRun {
+		logger.Printf("dry run completed without launching Discord")
+		return nil
+	}
+	running := discord.IsRunning()
+	if running && !attach {
+		logger.Printf("Discord is already running; close it completely from the tray and retry")
+		return errors.New("Discord is already running; close it from the tray and retry")
+	}
+	if bridgeReady && !running {
+		resources := filepath.Join(filepath.Dir(discordPath), "resources")
+		injectionResult, injectionErr := injection.Ensure(resources, config.DataDir, bridge.Script())
+		if injectionErr != nil {
+			logger.Printf("could not install Discord reload bridge: %v; continuing with external recovery", injectionErr)
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.InjectionState = string(injection.StateUnavailable)
+				status.RepairRequired = true
+				status.LastError = injectionErr.Error()
+			})
+		} else {
+			logger.Printf("Discord injection state: %s%s", injectionResult.State, reasonSuffix(injectionResult.Reason))
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.InjectionState = string(injectionResult.State)
+				status.RepairRequired = injectionResult.RepairRequired
+				if injectionResult.RepairRequired {
+					status.State = RecoveryRepairRequired
+				}
+			})
+		}
+	}
+	if running {
+		logger.Printf("attached protection core to the running Discord session")
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	var command *exec.Cmd
+	if config.RoutingMode == RoutingModeFull && fullProxyURL != "" {
+		command, err = discord.LaunchFull(discordPath, fullProxyURL)
+	} else if pacURL == "" {
+		return errors.New("protected gateway PAC is unavailable; refusing direct Discord launch")
+	} else {
+		command, err = discord.Launch(discordPath, pacURL)
+	}
+	if err != nil {
+		return err
+	}
+	if config.RoutingMode == RoutingModeFull && fullProxyURL != "" {
+		logger.Printf("Discord started with full control proxy; media domains bypass directly")
+	} else if pacURL != "" {
+		logger.Printf("Discord started with gateway-only PAC routing")
+	}
+	wait := discord.WaitForProcessTree
+	if preserveDiscord {
+		wait = discord.WaitForProcessTreePreserving
+	}
+	if err := wait(ctx, command); err != nil {
+		return fmt.Errorf("Discord exited with an error: %w", err)
+	}
+	logger.Printf("Discord exited")
+	return nil
+}
+
+func reasonSuffix(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return " (" + reason + ")"
+}
+
+func loadAndVerifyCached(ctx context.Context, config Config, logger *logging.Logger) []model.VerifiedEndpoint {
+	entries, err := proxy.LoadState(filepath.Join(config.DataDir, StateFileName), time.Now(), config.CacheTTL)
+	if err != nil {
+		logger.Printf("could not load proxy state: %v", err)
+		return nil
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	candidates := make([]model.Endpoint, 0, len(entries))
+	for _, entry := range entries {
+		candidates = append(candidates, entry.Endpoint)
+	}
+	probe := proxy.ProbeEndpoint
+	if config.RoutingMode == RoutingModeFull {
+		probe = proxy.ProbeFullEndpoint
+	}
+	verified := proxy.SelectVerified(ctx, candidates, config.MaxCandidates, config.ProbeWorkers, func(probeCtx context.Context, endpoint model.Endpoint) (model.VerifiedEndpoint, error) {
+		return probe(probeCtx, endpoint, config.ProbeTimeout)
+	})
+	if len(verified) == 0 {
+		logger.Printf("cached proxy pool did not pass re-probing")
+	}
+	return verified
+}
+
+func fetchAndVerify(ctx context.Context, config Config, logger *logging.Logger) []model.VerifiedEndpoint {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, config.ProxySourceURL, nil)
+	if err != nil {
+		logger.Printf("could not create proxy list request: %v", err)
+		return nil
+	}
+	client := &http.Client{Timeout: config.ProbeTimeout}
+	response, err := client.Do(request)
+	if err != nil {
+		logger.Printf("could not fetch public proxy list: %v", err)
+		return nil
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		logger.Printf("public proxy list returned HTTP %d", response.StatusCode)
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
+	if err != nil {
+		logger.Printf("could not read public proxy list: %v", err)
+		return nil
+	}
+	candidates, err := proxy.ParseProxyScrape(body, config.ExcludedCountries, config.MaxCandidates)
+	if err != nil {
+		logger.Printf("could not parse public proxy list: %v", err)
+		return nil
+	}
+	probe := proxy.ProbeEndpoint
+	if config.RoutingMode == RoutingModeFull {
+		probe = proxy.ProbeFullEndpoint
+	}
+	verified := proxy.SelectVerified(ctx, candidates, config.MaxCandidates, config.ProbeWorkers, func(probeCtx context.Context, endpoint model.Endpoint) (model.VerifiedEndpoint, error) {
+		return probe(probeCtx, endpoint, config.ProbeTimeout)
+	})
+	return verified
+}
