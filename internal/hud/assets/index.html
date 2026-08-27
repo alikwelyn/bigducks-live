@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>BIG DUCKS LIVE</title>
   <style>{{STYLE}}</style>
 </head>
@@ -18,60 +18,74 @@
       <span id="version" class="version">versão atual</span>
     </header>
 
-    <section class="hero" aria-labelledby="protection-title">
-      <div class="statusline">
-        <span id="status-dot" class="status-dot" aria-hidden="true"></span>
-        <div>
-          <p class="label">ESTADO DA ROTA</p>
-          <h2 id="protection-title">Verificando proteção…</h2>
+    <div class="dashboard">
+      <div class="left-column">
+        <section id="route-card" class="hero" aria-labelledby="protection-title">
+          <div class="route-overview">
+            <div class="shield-badge" aria-hidden="true">
+              <svg viewBox="0 0 64 64"><path d="M32 5 52 14v15c0 14-8.5 24-20 30C20.5 53 12 43 12 29V14L32 5Z"/><path class="shield-check" d="m21 31 7 7 15-16"/></svg>
+            </div>
+            <div class="route-copy">
+              <div class="statusline">
+                <span id="status-dot" class="status-dot" aria-hidden="true"></span>
+                <p class="label">ESTADO DA ROTA</p>
+              </div>
+              <h2 id="protection-title">Verificando proteção…</h2>
+              <p id="status-detail" class="status-detail">Conectando ao núcleo BIG DUCKS.</p>
+            </div>
+          </div>
+          <div class="metrics" aria-label="Métricas da proteção">
+            <div class="metric"><span>PROXIES</span><strong id="pool-size">—</strong></div>
+            <div class="metric"><span>TÚNEIS</span><strong id="tunnel-count">—</strong></div>
+            <div class="metric"><span>LATÊNCIA</span><strong id="bridge-state">—</strong></div>
+          </div>
+        </section>
+
+        <section class="actions" aria-label="Ações de recuperação">
+          <button id="reconnect" class="button primary" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
+            <span><strong>Reconectar live</strong><small>Troca a rota sem fechar o Discord</small></span>
+            <svg class="button-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+          <div class="secondary-grid">
+            <button id="test-route" class="button secondary" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+              <span>Testar rota</span>
+            </button>
+            <button id="reload" class="button secondary" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg>
+              <span>Recarregar Discord</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="update-card" aria-labelledby="update-title">
+          <svg class="update-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7.5A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 4.5"/></svg>
+          <div class="update-copy">
+            <p class="label">ATUALIZAÇÕES ASSINADAS</p>
+            <h2 id="update-title">Verificando nova versão…</h2>
+            <p id="update-detail">A verificação começa após o painel abrir.</p>
+          </div>
+          <button id="update-action" class="button update-button" type="button">Verificar</button>
+        </section>
+      </div>
+
+      <section class="timeline" aria-labelledby="events-title">
+        <div class="section-title">
+          <div><p class="label">ATIVIDADE</p><h2 id="events-title">O que está acontecendo</h2></div>
+          <button id="open-log" class="text-button" type="button">Abrir log</button>
         </div>
-      </div>
-      <p id="status-detail" class="status-detail">Conectando ao núcleo BIG DUCKS.</p>
-      <div class="metrics" aria-label="Métricas da proteção">
-        <div class="metric"><span>PROXIES</span><strong id="pool-size">—</strong></div>
-        <div class="metric"><span>TÚNEIS</span><strong id="tunnel-count">—</strong></div>
-		<div class="metric"><span>LATÊNCIA</span><strong id="bridge-state">—</strong></div>
-      </div>
-    </section>
-
-    <section class="actions" aria-label="Ações de recuperação">
-      <button id="reconnect" class="button primary" type="button">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
-        <span><strong>Reconectar live</strong><small>Troca a rota sem fechar o Discord</small></span>
-      </button>
-      <div class="secondary-grid">
-        <button id="test-route" class="button secondary" type="button">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-          <span>Testar rota</span>
-        </button>
-        <button id="reload" class="button secondary" type="button">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg>
-          <span>Recarregar Discord</span>
-        </button>
-      </div>
-    </section>
-
-    <section class="timeline" aria-labelledby="events-title">
-      <div class="section-title">
-        <div><p class="label">ATIVIDADE</p><h2 id="events-title">O que está acontecendo</h2></div>
-        <button id="open-log" class="text-button" type="button">Abrir log</button>
-      </div>
-      <ol id="events" class="events">
-        <li><span class="event-icon info"></span><div><strong>HUD iniciado</strong><p>Aguardando o estado do núcleo.</p></div><time>agora</time></li>
-      </ol>
-    </section>
-
-    <section class="update-card" aria-labelledby="update-title">
-      <div>
-        <p class="label">ATUALIZAÇÕES ASSINADAS</p>
-        <h2 id="update-title">Verificando nova versão…</h2>
-        <p id="update-detail">Consultando os Releases oficiais do BIG DUCKS.</p>
-      </div>
-      <button id="update-action" class="button update-button" type="button">Verificar</button>
-    </section>
+        <ol id="events" class="events">
+          <li><span class="event-icon info"></span><div><strong>HUD iniciado</strong><p>Aguardando o estado do núcleo.</p></div><time>agora</time></li>
+        </ol>
+      </section>
+    </div>
 
     <details class="technical">
-      <summary>Detalhes técnicos</summary>
+      <summary>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+        <span>Detalhes técnicos</span>
+      </summary>
       <pre id="technical-output">Aguardando diagnóstico…</pre>
     </details>
   </main>

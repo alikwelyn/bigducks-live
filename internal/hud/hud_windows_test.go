@@ -5,6 +5,7 @@ package hud
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +16,18 @@ func TestHUDCachePathIsIsolatedPerProcess(t *testing.T) {
 	second := hudCachePath(root, 200)
 	if first == second || filepath.Base(first) != "100" || filepath.Base(second) != "200" {
 		t.Fatalf("cache paths = %q and %q", first, second)
+	}
+}
+
+func TestHUDWindowUsesFixedLandscapeDimensions(t *testing.T) {
+	if HUDWidth != 1180 || HUDHeight != 700 {
+		t.Fatalf("HUD dimensions = %dx%d, want 1180x700", HUDWidth, HUDHeight)
+	}
+	if HUDWidth <= HUDHeight {
+		t.Fatalf("HUD must be landscape: %dx%d", HUDWidth, HUDHeight)
+	}
+	if !strings.Contains(zoomGuardScript, "preventDefault") || !strings.Contains(zoomGuardScript, "wheel") {
+		t.Fatalf("zoom guard is incomplete: %q", zoomGuardScript)
 	}
 }
 

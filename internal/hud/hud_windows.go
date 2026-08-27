@@ -53,6 +53,20 @@ type UpdateView struct {
 	Message   string `json:"message"`
 }
 
+const (
+	HUDWidth        = 1180
+	HUDHeight       = 700
+	zoomGuardScript = `(function () {
+  const keys = new Set(["+", "=", "-", "_", "0", "Add", "Subtract"]);
+  document.addEventListener("keydown", function (event) {
+    if (event.ctrlKey && keys.has(event.key)) event.preventDefault();
+  }, {capture: true});
+  document.addEventListener("wheel", function (event) {
+    if (event.ctrlKey) event.preventDefault();
+  }, {capture: true, passive: false});
+})();`
+)
+
 func Run(dataDir string) error {
 	return runSingleHUD(acquireHUD, ActivateExisting, func() error {
 		return runWindow(dataDir)
@@ -80,13 +94,15 @@ func runWindow(dataDir string) (err error) {
 		DataPath:  cachePath,
 		AutoFocus: true,
 		WindowOptions: webview.WindowOptions{
-			Title: HUDWindowTitle, Width: 540, Height: 720, IconId: 1, Center: true,
+			Title: HUDWindowTitle, Width: HUDWidth, Height: HUDHeight, IconId: 1, Center: true,
 		},
 	})
 	if view == nil {
 		return errors.New("WebView2 Runtime is unavailable")
 	}
 	defer view.Destroy()
+	view.SetSize(HUDWidth, HUDHeight, webview.HintFixed)
+	view.Init(zoomGuardScript)
 	control := &controller{dataDir: dataDir, view: view}
 	bindings := map[string]any{
 		"bigDucksStatus":        control.status,
