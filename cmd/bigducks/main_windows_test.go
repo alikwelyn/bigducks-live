@@ -15,6 +15,16 @@ import (
 	"github.com/alikwelyn/bigducks-live/internal/injection"
 )
 
+func TestTrayMenuUsesOnlyShortUserFacingLabels(t *testing.T) {
+	got := []string{trayOpenLabel, trayRestartLabel, trayQuitLabel}
+	want := []string{"Abrir", "Reiniciar", "Sair"}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("tray label %d = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
 func TestRepairInjectionMetadataIfNeededMakesUninstallRestorable(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "Discord")
 	dataDir := t.TempDir()

@@ -1,4 +1,13 @@
+const zoomKeys = new Set(["+", "=", "-", "_", "0", "Add", "Subtract"]);
+document.addEventListener("keydown", (event) => {
+  if (event.ctrlKey && zoomKeys.has(event.key)) event.preventDefault();
+}, { capture: true });
+document.addEventListener("wheel", (event) => {
+  if (event.ctrlKey) event.preventDefault();
+}, { capture: true, passive: false });
+
 const ui = {
+  hero: document.querySelector("#route-card"),
   title: document.querySelector("#protection-title"),
   detail: document.querySelector("#status-detail"),
   dot: document.querySelector("#status-dot"),
@@ -32,6 +41,18 @@ let lastState = "";
 let toastTimer;
 const backendEvents = new Set();
 
+const technicalCopy = {
+  "proxy heartbeat failed": "A rota anterior parou de responder; o BIG DUCKS está escolhendo outra.",
+  "no verified proxy available": "Nenhuma saída verificada respondeu dentro do prazo.",
+  "context deadline exceeded": "A operação demorou mais que o limite de segurança."
+};
+
+function readableDetail(detail, fallback) {
+  if (!detail) return fallback;
+  const normalized = String(detail).trim().toLowerCase();
+  return technicalCopy[normalized] || detail;
+}
+
 function showToast(message) {
   clearTimeout(toastTimer);
   ui.toast.textContent = message;
@@ -59,6 +80,7 @@ function addEvent(title, detail, kind = "info") {
 function renderStatus(status) {
   const state = status.state || "stopped";
   const copy = stateCopy[state] || stateCopy.failed;
+	ui.hero.dataset.state = state;
   ui.title.textContent = copy[0];
 	const routeSummary = status.activeProxy ? `${status.activeProxy}${status.latencyMS ? ` • ${status.latencyMS} ms` : ""}` : "";
 	ui.detail.textContent = routeSummary || status.lastMessage || status.lastError || copy[1];
@@ -81,7 +103,7 @@ function renderStatus(status) {
 		const key = `${event.at}|${event.code}|${event.message}`;
 		if (backendEvents.has(key)) continue;
 		backendEvents.add(key);
-		addEvent(event.message, event.details || "Evento registrado pelo núcleo BIG DUCKS.", event.level || "info");
+		addEvent(event.message, readableDetail(event.details, "Evento registrado pelo núcleo BIG DUCKS."), event.level || "info");
 	}
   if (state !== lastState) {
     const kind = state === "protected" ? "success" : (state === "failed" || state === "stopped" ? "error" : "info");
@@ -127,22 +149,49 @@ ui.log.addEventListener("click", async () => {
   catch (error) { showToast(`Não foi possível abrir o log: ${error}`); }
 });
 
+let updatePollTimer;
+
+function renderUpdate(result) {
+  ui.version.textContent = `v${result.current}`;
+  ui.updateAction.dataset.available = result.available ? "true" : "false";
+  if (result.checking) {
+    ui.updateTitle.textContent = "Verificando nova versão…";
+    ui.updateDetail.textContent = result.message;
+    ui.updateAction.textContent = "Verificando…";
+    ui.updateAction.disabled = true;
+    return;
+  }
+  ui.updateTitle.textContent = result.error ? "Não foi possível verificar" : (result.available ? `BIG DUCKS ${result.latest} disponível` : "BIG DUCKS atualizado");
+  ui.updateDetail.textContent = result.message;
+  ui.updateAction.textContent = result.available ? "Atualizar agora" : (result.error ? "Tentar novamente" : "Verificar");
+  ui.updateAction.disabled = false;
+}
+
+function renderUpdateError(error) {
+  ui.updateTitle.textContent = "Não foi possível verificar";
+  ui.updateDetail.textContent = String(error);
+  ui.updateAction.textContent = "Tentar novamente";
+  ui.updateAction.disabled = false;
+}
+
+async function pollUpdateStatus() {
+  try {
+    const result = await window.bigDucksUpdateStatus();
+    renderUpdate(result);
+    if (result.checking) updatePollTimer = setTimeout(pollUpdateStatus, 250);
+  } catch (error) {
+    renderUpdateError(error);
+  }
+}
+
 async function checkUpdate() {
-  ui.updateAction.disabled = true;
-  ui.updateAction.textContent = "Verificando…";
+  clearTimeout(updatePollTimer);
   try {
     const result = await window.bigDucksCheckUpdate();
-    ui.version.textContent = `v${result.current}`;
-    ui.updateTitle.textContent = result.error ? "Não foi possível verificar" : (result.available ? `BIG DUCKS ${result.latest} disponível` : "BIG DUCKS atualizado");
-    ui.updateDetail.textContent = result.message;
-    ui.updateAction.textContent = result.available ? "Atualizar agora" : (result.error ? "Tentar novamente" : "Verificar");
-    ui.updateAction.dataset.available = result.available ? "true" : "false";
+    renderUpdate(result);
+    if (result.checking) updatePollTimer = setTimeout(pollUpdateStatus, 250);
   } catch (error) {
-    ui.updateTitle.textContent = "Não foi possível verificar";
-    ui.updateDetail.textContent = String(error);
-    ui.updateAction.textContent = "Tentar novamente";
-  } finally {
-    ui.updateAction.disabled = false;
+    renderUpdateError(error);
   }
 }
 
@@ -169,5 +218,5 @@ ui.updateAction.addEventListener("click", async () => {
 });
 
 refreshStatus();
-checkUpdate();
+setTimeout(checkUpdate, 1200);
 setInterval(() => { if (!document.hidden) refreshStatus(); }, 2000);

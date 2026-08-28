@@ -39,21 +39,44 @@ type StatusView struct {
 }
 
 type controller struct {
-	dataDir string
-	view    webview.WebView
-	mu      sync.Mutex
-	result  update.Result
+	dataDir    string
+	view       webview.WebView
+	mu         sync.Mutex
+	result     update.Result
+	checking   bool
+	updateView UpdateView
 }
 
 type UpdateView struct {
 	Available bool   `json:"available"`
+	Checking  bool   `json:"checking"`
 	Error     bool   `json:"error"`
 	Current   string `json:"current"`
 	Latest    string `json:"latest"`
 	Message   string `json:"message"`
 }
 
-func Run(dataDir string) (err error) {
+const (
+	HUDWidth        = 1180
+	HUDHeight       = 700
+	zoomGuardScript = `(function () {
+  const keys = new Set(["+", "=", "-", "_", "0", "Add", "Subtract"]);
+  document.addEventListener("keydown", function (event) {
+    if (event.ctrlKey && keys.has(event.key)) event.preventDefault();
+  }, {capture: true});
+  document.addEventListener("wheel", function (event) {
+    if (event.ctrlKey) event.preventDefault();
+  }, {capture: true, passive: false});
+})();`
+)
+
+func Run(dataDir string) error {
+	return runSingleHUD(acquireHUD, ActivateExisting, func() error {
+		return runWindow(dataDir)
+	})
+}
+
+func runWindow(dataDir string) (err error) {
 	if dataDir == "" {
 		return errors.New("HUD data directory is empty")
 	}
@@ -74,14 +97,20 @@ func Run(dataDir string) (err error) {
 		DataPath:  cachePath,
 		AutoFocus: true,
 		WindowOptions: webview.WindowOptions{
-			Title: "BIG DUCKS LIVE", Width: 540, Height: 720, IconId: 1, Center: true,
+			Title: HUDWindowTitle, Width: HUDWidth, Height: HUDHeight, IconId: 1, Center: true,
 		},
 	})
 	if view == nil {
 		return errors.New("WebView2 Runtime is unavailable")
 	}
 	defer view.Destroy()
-	control := &controller{dataDir: dataDir, view: view}
+	fitAndCenterHUD(view)
+	view.Init(zoomGuardScript)
+	control := &controller{
+		dataDir:    dataDir,
+		view:       view,
+		updateView: UpdateView{Current: buildinfo.Version},
+	}
 	bindings := map[string]any{
 		"bigDucksStatus":        control.status,
 		"bigDucksReconnect":     control.reconnect,
@@ -89,6 +118,7 @@ func Run(dataDir string) (err error) {
 		"bigDucksReload":        control.reload,
 		"bigDucksOpenLog":       control.openLog,
 		"bigDucksCheckUpdate":   control.checkUpdate,
+		"bigDucksUpdateStatus":  control.updateStatus,
 		"bigDucksInstallUpdate": control.installUpdate,
 		"bigDucksClose":         control.close,
 	}
@@ -128,7 +158,32 @@ func cleanupStaleCaches(root string, currentProcessID int, maximumAge time.Durat
 	}
 }
 
+func startAsyncUpdateCheck(check func() UpdateView, deliver func(UpdateView)) {
+	go func() {
+		deliver(check())
+	}()
+}
+
 func (c *controller) checkUpdate() UpdateView {
+	c.mu.Lock()
+	if c.checking {
+		view := c.updateView
+		c.mu.Unlock()
+		return view
+	}
+	pending := UpdateView{
+		Checking: true,
+		Current:  buildinfo.Version,
+		Message:  "Consultando a versão assinada mais recente…",
+	}
+	c.checking = true
+	c.updateView = pending
+	c.mu.Unlock()
+	startAsyncUpdateCheck(c.checkUpdateNow, c.finishUpdateCheck)
+	return pending
+}
+
+func (c *controller) checkUpdateNow() UpdateView {
 	if buildinfo.UpdatePublicKey == "" {
 		return UpdateView{Error: true, Current: buildinfo.Version, Message: "Atualizações assinadas ainda não estão configuradas nesta build."}
 	}
@@ -148,18 +203,25 @@ func (c *controller) checkUpdate() UpdateView {
 	return UpdateView{Available: true, Current: buildinfo.Version, Latest: result.Manifest.Version, Message: "Uma atualização assinada está pronta."}
 }
 
+func (c *controller) finishUpdateCheck(view UpdateView) {
+	c.mu.Lock()
+	c.checking = false
+	c.updateView = view
+	c.mu.Unlock()
+}
+
+func (c *controller) updateStatus() UpdateView {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.updateView
+}
+
 func (c *controller) installUpdate() error {
 	c.mu.Lock()
 	result := c.result
 	c.mu.Unlock()
 	if !result.Available {
-		view := c.checkUpdate()
-		if !view.Available {
-			return errors.New(view.Message)
-		}
-		c.mu.Lock()
-		result = c.result
-		c.mu.Unlock()
+		return errors.New("verifique se há uma atualização disponível antes de instalar")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

@@ -16,11 +16,18 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/alikwelyn/bigducks-live/internal/app"
+	"github.com/alikwelyn/bigducks-live/internal/hud"
 	"github.com/alikwelyn/bigducks-live/internal/logging"
 	"github.com/alikwelyn/bigducks-live/internal/startup"
 	"github.com/alikwelyn/bigducks-live/internal/supervisor"
 	apptray "github.com/alikwelyn/bigducks-live/internal/tray"
 	"github.com/alikwelyn/bigducks-live/internal/update"
+)
+
+const (
+	trayOpenLabel    = "Abrir"
+	trayRestartLabel = "Reiniciar"
+	trayQuitLabel    = "Sair"
 )
 
 type trayController struct {
@@ -62,10 +69,9 @@ func runTray(config app.Config, _ *startup.Manager, helperPath string, _ bool, o
 func (c *trayController) onReady() {
 	systray.SetIcon(apptray.Icon())
 	systray.SetTooltip("BIG DUCKS LIVE — iniciando proteção")
-	c.openItem = systray.AddMenuItem("Abrir BIG DUCKS", "Abrir o painel de proteção das lives")
-	c.restartItem = systray.AddMenuItem("Reiniciar proteção", "Reiniciar somente o núcleo, mantendo o Discord aberto")
-	systray.AddSeparator()
-	c.quitItem = systray.AddMenuItem("Sair", "Encerrar o BIG DUCKS sem fechar o Discord")
+	c.openItem = systray.AddMenuItem(trayOpenLabel, "Abrir o painel de proteção das lives")
+	c.restartItem = systray.AddMenuItem(trayRestartLabel, "Reiniciar somente o núcleo, mantendo o Discord aberto")
+	c.quitItem = systray.AddMenuItem(trayQuitLabel, "Encerrar o BIG DUCKS sem fechar o Discord")
 	c.restartItem.Disable()
 	go c.menuLoop()
 	go c.startCore()
@@ -208,6 +214,9 @@ func (c *trayController) restartCore() {
 }
 
 func (c *trayController) openHUD() {
+	if hud.ActivateExisting() {
+		return
+	}
 	command := exec.Command(c.helperPath, "--hud")
 	if err := command.Start(); err != nil {
 		c.showError("Não foi possível abrir o painel", err)

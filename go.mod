@@ -2,6 +2,8 @@ module github.com/alikwelyn/bigducks-live
 
 go 1.26.5
 
+replace github.com/getlantern/systray => ./third_party/systray
+
 require (
 	github.com/getlantern/systray v1.2.2
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808

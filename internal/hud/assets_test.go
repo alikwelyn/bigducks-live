@@ -22,3 +22,16 @@ func TestPageContainsAccessibleRecoveryControls(t *testing.T) {
 		t.Fatal("HUD page contains an unresolved asset placeholder")
 	}
 }
+
+func TestPageUsesFixedLandscapeDashboardWithoutDocumentZoomOrScroll(t *testing.T) {
+	page := hud.PageHTML()
+	for _, required := range []string{
+		`class="dashboard"`, `class="left-column"`, `overflow: hidden`,
+		`user-scalable=no`, `event.preventDefault()`, `"wheel"`,
+		`setTimeout(checkUpdate, 1200)`, `bigDucksUpdateStatus`, `touch-action: manipulation`,
+	} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("landscape HUD page does not contain %q", required)
+		}
+	}
+}

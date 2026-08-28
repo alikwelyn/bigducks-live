@@ -1,11 +1,15 @@
 param(
-    [string]$Version = "0.1.0"
+    [string]$Version = "0.1.1",
+    [string]$OutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 $ResourcePrefix = Join-Path $PSScriptRoot "cmd\bigducks\rsrc"
 $ResourceFile = $ResourcePrefix + "_windows_amd64.syso"
-$OutputDirectory = Join-Path $PSScriptRoot "dist"
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $PSScriptRoot "dist"
+}
+$OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $OutputPath = Join-Path $OutputDirectory "BigDucks.exe"
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
@@ -15,6 +19,17 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 go test ./...
 if ($LASTEXITCODE -ne 0) {
     throw "Go tests failed"
+}
+
+Push-Location (Join-Path $PSScriptRoot "third_party\systray")
+try {
+    go test ./...
+    if ($LASTEXITCODE -ne 0) {
+        throw "Tray integration tests failed"
+    }
+}
+finally {
+    Pop-Location
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
