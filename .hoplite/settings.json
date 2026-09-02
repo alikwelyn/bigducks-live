@@ -4,7 +4,7 @@
   "scripts": {
     "setup": {
       "enabled": true,
-      "command": "mise install go@1.26.5 && ln -sf \"$HOME/.local/share/mise/installs/go/1.26.5/bin/go\" /usr/local/bin/go && ln -sf \"$HOME/.local/share/mise/installs/go/1.26.5/bin/gofmt\" /usr/local/bin/gofmt"
+      "command": "mise install go@1.26.5 && ln -sf \"$HOME/.local/share/mise/installs/go/1.26.5/bin/go\" /usr/local/bin/go && ln -sf \"$HOME/.local/share/mise/installs/go/1.26.5/bin/gofmt\" /usr/local/bin/gofmt && (command -v git-lfs >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git-lfs))"
     },
     "run": {"enabled": true, "command": null},
     "archive": {"enabled": true, "command": null},
