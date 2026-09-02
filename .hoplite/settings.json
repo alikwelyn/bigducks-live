@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "ports": {"preview": 3000, "additional": {}},
+  "scripts": {
+    "setup": {
+      "enabled": true,
+      "command": "if ! command -v go >/dev/null 2>&1; then case $(uname -m) in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; *) echo \"unsupported architecture: $(uname -m)\"; exit 1;; esac; curl -sSL -o /tmp/go.tgz https://go.dev/dl/go1.26.5.linux-$arch.tar.gz && tar -C /usr/local -xzf /tmp/go.tgz && ln -sf /usr/local/go/bin/go /usr/local/bin/go && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt; fi; if ! command -v git-lfs >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq git-lfs; fi; go version && git lfs version"
+    },
+    "run": {"enabled": true, "command": null},
+    "archive": {"enabled": true, "command": null},
+    "check": {"enabled": true, "command": null}
+  },
+  "mcpServers": []
+}
