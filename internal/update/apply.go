@@ -145,6 +145,12 @@ func replaceExecutable(stagedPath, targetPath string) error {
 		}
 		return fmt.Errorf("close staged executable: %w", closeSourceErr)
 	}
+	// os.CreateTemp creates the file with 0600; the installed artifact is an
+	// executable and must remain runnable on POSIX platforms.
+	if err := temporary.Chmod(0o755); err != nil {
+		cleanup()
+		return fmt.Errorf("mark replacement executable: %w", err)
+	}
 	if err := temporary.Sync(); err != nil {
 		cleanup()
 		return fmt.Errorf("flush replacement executable: %w", err)
