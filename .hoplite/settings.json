@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "ports": {"preview": 3000, "additional": {}},
+  "scripts": {
+    "setup": {
+      "enabled": true,
+      "command": "mise install go@1.26.5 && ln -sf \"$HOME/.local/share/mise/installs/go/1.26.5/bin/go\" /usr/local/bin/go && ln -sf \"$HOME/.local/share/mise/installs/go/1.26.5/bin/gofmt\" /usr/local/bin/gofmt"
+    },
+    "run": {"enabled": true, "command": null},
+    "archive": {"enabled": true, "command": null},
+    "check": {"enabled": true, "command": null}
+  },
+  "mcpServers": []
+}
