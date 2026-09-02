@@ -208,7 +208,15 @@ func serveSOCKS5(t *testing.T, handler func(net.Conn) error) (model.Endpoint, ch
 		}
 		defer conn.Close()
 		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-		handlerErr <- handler(conn)
+		result := handler(conn)
+		// Windows runners can abortively close a socket closed immediately
+		// after a write and drop the tail of the reply; half-close and drain
+		// so the final write is always delivered before the socket closes.
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+		_, _ = io.Copy(io.Discard, conn)
+		handlerErr <- result
 	}()
 	return model.Endpoint{Scheme: "socks5", Host: "127.0.0.1", Port: port}, handlerErr
 }
@@ -284,6 +292,7 @@ func TestDialViaSOCKS5AuthenticatesWithCredentials(t *testing.T) {
 		t.Fatalf("DialViaSOCKS5() error = %v", err)
 	}
 	defer conn.Close()
+	_ = conn.Close()
 	if err := <-handlerErr; err != nil {
 		t.Fatalf("fake proxy error = %v", err)
 	}
@@ -317,6 +326,7 @@ func TestDialViaSOCKS5UsesNoAuthWhenServerSelectsIt(t *testing.T) {
 		t.Fatalf("DialViaSOCKS5() error = %v", err)
 	}
 	defer conn.Close()
+	_ = conn.Close()
 	if err := <-handlerErr; err != nil {
 		t.Fatalf("fake proxy error = %v", err)
 	}
