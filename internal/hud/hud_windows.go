@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -192,7 +193,7 @@ func (c *controller) checkUpdateNow() UpdateView {
 	client := c.updateClient()
 	result, err := client.Check(ctx)
 	if err != nil {
-		return UpdateView{Error: true, Current: buildinfo.Version, Message: err.Error()}
+		return UpdateView{Error: true, Current: buildinfo.Version, Message: unwrapURLError(err).Error()}
 	}
 	c.mu.Lock()
 	c.result = result
@@ -255,11 +256,11 @@ func (c *controller) status() StatusView {
 	defer cancel()
 	client, err := c.client()
 	if err != nil {
-		return StatusView{State: string(app.RecoveryStopped), LastError: err.Error()}
+		return StatusView{State: string(app.RecoveryStopped), LastError: unwrapURLError(err).Error()}
 	}
 	status, err := client.Status(ctx)
 	if err != nil {
-		return StatusView{State: string(app.RecoveryStopped), LastError: err.Error()}
+		return StatusView{State: string(app.RecoveryStopped), LastError: unwrapURLError(err).Error()}
 	}
 	return StatusView{
 		State: string(status.State), PoolSize: status.PoolSize, TunnelCount: status.TunnelCount,
@@ -300,7 +301,19 @@ func (c *controller) action(timeout time.Duration, action func(*controlapi.Clien
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return action(client, ctx)
+	return unwrapURLError(action(client, ctx))
+}
+
+// unwrapURLError strips the http.Client address wrapper so HUD copy never shows the localhost endpoint.
+func unwrapURLError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		return urlErr.Err
+	}
+	return err
 }
 
 func (c *controller) client() (*controlapi.Client, error) {
