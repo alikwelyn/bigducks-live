@@ -35,3 +35,16 @@ func TestPageUsesFixedLandscapeDashboardWithoutDocumentZoomOrScroll(t *testing.T
 		}
 	}
 }
+
+func TestPageGuardsRecoveryActionsDuringRouteSwaps(t *testing.T) {
+	page := hud.PageHTML()
+	for _, required := range []string{
+		`state === "reconnecting"`, `pending(ui.reconnect)`, `pending(ui.reload) || !status.bridgeConnected`,
+		"Uma nova rota já está sendo preparada", "Indisponível enquanto o Discord",
+		`normalized.includes(key)`, `"connection refused"`, `"i/o timeout"`, `"EOF"`,
+	} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("HUD page does not contain %q", required)
+		}
+	}
+}

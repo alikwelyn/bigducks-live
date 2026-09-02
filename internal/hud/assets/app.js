@@ -44,13 +44,20 @@ const backendEvents = new Set();
 const technicalCopy = {
   "proxy heartbeat failed": "A rota anterior parou de responder; o BIG DUCKS está escolhendo outra.",
   "no verified proxy available": "Nenhuma saída verificada respondeu dentro do prazo.",
-  "context deadline exceeded": "A operação demorou mais que o limite de segurança."
+  "context deadline exceeded": "A operação demorou mais que o limite de segurança.",
+  "connection refused": "O núcleo do BIG DUCKS não está respondendo.",
+  "i/o timeout": "O núcleo demorou a responder; tente novamente.",
+  "EOF": "A conexão com o núcleo foi interrompida."
 };
 
 function readableDetail(detail, fallback) {
   if (!detail) return fallback;
   const normalized = String(detail).trim().toLowerCase();
-  return technicalCopy[normalized] || detail;
+  if (technicalCopy[normalized]) return technicalCopy[normalized];
+  for (const [key, friendly] of Object.entries(technicalCopy)) {
+    if (normalized.includes(key)) return friendly;
+  }
+  return detail;
 }
 
 function showToast(message) {
@@ -83,12 +90,22 @@ function renderStatus(status) {
 	ui.hero.dataset.state = state;
   ui.title.textContent = copy[0];
 	const routeSummary = status.activeProxy ? `${status.activeProxy}${status.latencyMS ? ` • ${status.latencyMS} ms` : ""}` : "";
-	ui.detail.textContent = routeSummary || status.lastMessage || status.lastError || copy[1];
+	ui.detail.textContent = routeSummary || status.lastMessage || readableDetail(status.lastError, copy[1]);
   ui.dot.className = `status-dot ${copy[2]}`;
   ui.pool.textContent = String(status.poolSize ?? 0);
   ui.tunnels.textContent = String(status.tunnelCount ?? 0);
 	ui.bridge.textContent = status.latencyMS ? `${status.latencyMS} ms` : "—";
-  ui.reload.disabled = !status.bridgeConnected;
+  const pending = (button) => button.getAttribute("aria-busy") === "true";
+  const swapping = state === "reconnecting";
+  ui.reconnect.disabled = swapping || pending(ui.reconnect);
+  ui.reconnect.title = swapping ? "Uma nova rota já está sendo preparada" : "Troca a rota sem fechar o Discord";
+  document.querySelector("#reconnect small").textContent = swapping
+    ? "Uma nova rota já está sendo preparada…"
+    : "Troca a rota sem fechar o Discord";
+  ui.reload.disabled = pending(ui.reload) || !status.bridgeConnected;
+  ui.reload.title = status.bridgeConnected
+    ? "Recarrega a janela do Discord sem trocar a rota"
+    : "Indisponível enquanto o Discord não estiver conectado ao gateway";
   ui.technical.textContent = [
     `estado: ${state}`,
     `proxies verificados: ${status.poolSize ?? 0}`,
@@ -131,8 +148,9 @@ async function perform(button, pending, action, success) {
     addEvent(success, "A ação foi concluída pelo núcleo BIG DUCKS.", "success");
     showToast(success);
   } catch (error) {
-    addEvent("Ação não concluída", String(error), "error");
-    showToast(`Não foi possível concluir: ${error}`);
+    const message = readableDetail(String(error).replace(/^Error:\s*/, ""), "Falha desconhecida");
+    addEvent("Ação não concluída", message, "error");
+    showToast(`Não foi possível concluir: ${message}`);
   } finally {
     button.innerHTML = original;
     button.disabled = false;
