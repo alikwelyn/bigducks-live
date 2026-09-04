@@ -38,22 +38,24 @@ type Status struct {
 }
 
 type MediaEvent struct {
-	Session string    `json:"session,omitempty"`
-	Kind    string    `json:"event"`
-	At      time.Time `json:"at,omitempty"`
+	Session string          `json:"session,omitempty"`
+	Kind    string          `json:"event"`
+	At      time.Time       `json:"at,omitempty"`
+	Native  *NativeSnapshot `json:"native,omitempty"`
 }
 
 type protocolMessage struct {
-	Type    string    `json:"type"`
-	Token   string    `json:"token,omitempty"`
-	ID      uint64    `json:"id,omitempty"`
-	OK      bool      `json:"ok,omitempty"`
-	Error   string    `json:"error,omitempty"`
-	URL     string    `json:"url,omitempty"`
-	Value   string    `json:"value,omitempty"`
-	Session string    `json:"session,omitempty"`
-	Event   string    `json:"event,omitempty"`
-	At      time.Time `json:"at,omitempty"`
+	Type    string         `json:"type"`
+	Token   string         `json:"token,omitempty"`
+	ID      uint64         `json:"id,omitempty"`
+	OK      bool           `json:"ok,omitempty"`
+	Error   string         `json:"error,omitempty"`
+	URL     string         `json:"url,omitempty"`
+	Value   string         `json:"value,omitempty"`
+	Session string         `json:"session,omitempty"`
+	Event   string         `json:"event,omitempty"`
+	At      time.Time      `json:"at,omitempty"`
+	Native  map[string]any `json:"native,omitempty"`
 }
 
 type commandResult struct {
@@ -319,12 +321,20 @@ func (s *Server) handleClient(conn net.Conn) {
 			return
 		}
 		if message.Type == "media_event" {
+			var native *NativeSnapshot
+			if message.Event == "native_rtc_snapshot" && message.Native != nil {
+				normalized, normalizeErr := NormalizeNativeSnapshot(message.Native)
+				if normalizeErr != nil {
+					continue
+				}
+				native = &normalized
+			}
 			s.mu.Lock()
 			handler := s.onMediaEvent
 			s.lastSeen = time.Now()
 			s.mu.Unlock()
 			if handler != nil {
-				handler(MediaEvent{Session: message.Session, Kind: message.Event, At: message.At})
+				handler(MediaEvent{Session: message.Session, Kind: message.Event, At: message.At, Native: native})
 			}
 			continue
 		}
