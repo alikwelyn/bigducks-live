@@ -76,15 +76,20 @@ func (c *sentryClient) Close() error {
 }
 
 func eventToSentry(event SafeEvent) *sentry.Event {
+	tags := map[string]string{
+		"component": event.Component,
+		"code":      event.Code,
+	}
+	if event.State != "" {
+		tags["state"] = event.State
+	}
+	if event.Mode != "" {
+		tags["mode"] = event.Mode
+	}
 	return &sentry.Event{
 		Message: "bigducks." + event.Component + "." + event.Code,
 		Level:   sentry.LevelInfo,
-		Tags: map[string]string{
-			"component": event.Component,
-			"code":      event.Code,
-			"state":     event.State,
-			"mode":      event.Mode,
-		},
+		Tags:    tags,
 		Contexts: map[string]sentry.Context{
 			"diagnostic": {
 				"test":            event.Test,

@@ -71,7 +71,8 @@ if (!global.__discordStreamBridgeLoaded) {
         scope.setContext("diagnostic", diagnostic);
         Sentry.captureMessage("bigducks.bridge." + code);
       });
-    } catch (_) {}
+      return true;
+    } catch (_) { return false; }
   }
 
   function closeAndPurgeElectronTelemetry() {
@@ -117,9 +118,9 @@ if (!global.__discordStreamBridgeLoaded) {
   async function testElectronTelemetry(id) {
     if (!telemetryEnabled || !telemetryReady) return reply(id, false, "Telemetry is disabled");
     try {
-      captureBridgeEvent("telemetry_test", { connected: true });
-      const flushed = await Sentry.flush(2000);
-      if (flushed === false) return reply(id, false, "Telemetry flush timed out");
+      const accepted = captureBridgeEvent("telemetry_test", { connected: true });
+      if (!accepted) return reply(id, false, "Telemetry event was not accepted");
+      void Promise.resolve(Sentry.flush(2000)).catch(() => {});
       reply(id, true, "");
     } catch (_) {
       reply(id, false, "Telemetry test failed");
