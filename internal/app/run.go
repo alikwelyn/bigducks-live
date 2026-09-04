@@ -27,6 +27,34 @@ import (
 
 var ErrAlreadyRunning = errors.New("BIG DUCKS já está em execução")
 
+func nativeSampleFromBridgeEvent(event bridge.MediaEvent) (NativeMediaSample, bool) {
+	if event.Kind != "native_rtc_snapshot" || event.Native == nil {
+		return NativeMediaSample{}, false
+	}
+	snapshot := event.Native
+	return NativeMediaSample{
+		Hooked:           snapshot.Hooked,
+		StreamConnection: snapshot.StreamConnection,
+		StatsAvailable:   snapshot.StatsAvailable,
+		DemandActive:     snapshot.DemandActive,
+		HasAudioSSRC:     snapshot.HasAudioSSRC,
+		HasVideoSSRC:     snapshot.HasVideoSSRC,
+		AudioPackets:     snapshot.AudioPackets,
+		VideoPackets:     snapshot.VideoPackets,
+		AudioBytes:       snapshot.AudioBytes,
+		VideoBytes:       snapshot.VideoBytes,
+		AudioFrames:      snapshot.AudioFrames,
+		VideoFrames:      snapshot.VideoFrames,
+		CaptureFrames:    snapshot.CaptureFrames,
+		EncodedFrames:    snapshot.EncodedFrames,
+		FramesDecoded:    snapshot.FramesDecoded,
+		FramesDropped:    snapshot.FramesDropped,
+		ReceiverCount:    snapshot.ReceiverCount,
+		InputFPS:         snapshot.InputFPS,
+		EncodedFPS:       snapshot.EncodedFPS,
+	}, true
+}
+
 type RunOptions struct {
 	Config          Config
 	DryRun          bool
@@ -221,6 +249,14 @@ func Run(ctx context.Context, options RunOptions) error {
 
 	bridgeServer := bridge.NewServer(config.DataDir)
 	bridgeServer.SetMediaEventHandler(func(event bridge.MediaEvent) {
+		if sample, ok := nativeSampleFromBridgeEvent(event); ok {
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.Media = ReduceNativeMedia(status.Media, sample)
+			})
+			native := statusStore.Snapshot().Media.Native
+			logger.Printf("native media diagnostic: state=%s demand=%t stats=%t audio_packets=%d video_packets=%d decoded=%d receiver_count=%d", native.State, native.DemandActive, native.StatsAvailable, native.AudioPackets, native.VideoPackets, native.FramesDecoded, native.ReceiverCount)
+			return
+		}
 		statusStore.Update(func(status *RuntimeStatus) {
 			status.Media = ReduceMedia(status.Media, MediaEvent{Session: event.Session, Kind: event.Kind, At: event.At})
 		})
