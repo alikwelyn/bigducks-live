@@ -460,14 +460,14 @@ func Run(ctx context.Context, options RunOptions) error {
 		if err := telemetryReporter.Disable(); err != nil {
 			return err
 		}
-		if err := setTelemetryPreference(false); err != nil {
-			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "save_failed"} })
-			return err
-		}
 		if bridgeReady {
 			if err := bridgeServer.DisableTelemetry(actionCtx); err != nil && !errors.Is(err, bridge.ErrUnavailable) {
 				return err
 			}
+		}
+		if err := setTelemetryPreference(false); err != nil {
+			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "save_failed"} })
+			return err
 		}
 		statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "disabled"} })
 		return nil
