@@ -13,6 +13,17 @@ import (
 	"github.com/alikwelyn/bigducks-live/internal/app"
 )
 
+func TestStatusViewCarriesTelemetryState(t *testing.T) {
+	view := StatusView{Telemetry: app.TelemetryStatus{Enabled: true, LastResult: "test_sent"}}
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"telemetry":{"enabled":true,"lastResult":"test_sent"}`) {
+		t.Fatalf("status view = %s", data)
+	}
+}
+
 func TestStatusViewIncludesNativeMediaDiagnosis(t *testing.T) {
 	view := StatusView{Media: app.MediaStatus{State: app.MediaNativeReceiverAudioOnly}}
 	data, err := json.Marshal(view)

@@ -122,10 +122,10 @@ func runWindow(dataDir string) (err error) {
 		"bigDucksCheckUpdate":      control.checkUpdate,
 		"bigDucksUpdateStatus":     control.updateStatus,
 		"bigDucksInstallUpdate":    control.installUpdate,
-		"bigDucksEnableTelemetry":  control.enableTelemetry,
-		"bigDucksDisableTelemetry": control.disableTelemetry,
-		"bigDucksTestTelemetry":    control.testTelemetry,
-		"bigDucksPurgeTelemetry":   control.purgeTelemetry,
+		"bigDucksTelemetryEnable":  control.enableTelemetry,
+		"bigDucksTelemetryDisable": control.disableTelemetry,
+		"bigDucksTelemetryTest":    control.testTelemetry,
+		"bigDucksTelemetryPurge":   control.purgeTelemetry,
 		"bigDucksClose":            control.close,
 	}
 	for name, binding := range bindings {
@@ -290,19 +290,19 @@ func (c *controller) reload() error {
 }
 
 func (c *controller) enableTelemetry() error {
-	return c.action(10*time.Second, (*controlapi.Client).EnableTelemetry)
+	return c.action(8*time.Second, (*controlapi.Client).EnableTelemetry)
 }
 
 func (c *controller) disableTelemetry() error {
-	return c.action(10*time.Second, (*controlapi.Client).DisableTelemetry)
+	return c.action(8*time.Second, (*controlapi.Client).DisableTelemetry)
 }
 
 func (c *controller) testTelemetry() error {
-	return c.action(10*time.Second, (*controlapi.Client).TestTelemetry)
+	return c.action(12*time.Second, (*controlapi.Client).TestTelemetry)
 }
 
 func (c *controller) purgeTelemetry() error {
-	return c.action(10*time.Second, (*controlapi.Client).PurgeTelemetry)
+	return c.action(8*time.Second, (*controlapi.Client).PurgeTelemetry)
 }
 
 func (c *controller) openLog() error {

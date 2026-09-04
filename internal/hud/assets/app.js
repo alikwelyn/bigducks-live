@@ -68,6 +68,7 @@ const telemetryCopy = {
   save_failed: ["Preferência não salva", "A telemetria foi interrompida, mas a configuração não foi gravada.", "ERRO"],
   test_sent: ["Telemetria ativada", "O evento de teste foi enviado e confirmado pelo transporte.", "ATIVADA"],
   purged: ["Telemetria ativada", "A fila local foi apagada; eventos já enviados não são removidos daqui.", "ATIVADA"],
+  purged_disabled: ["Telemetria desativada", "A fila local foi apagada; eventos já enviados não são removidos daqui.", "DESATIVADA"],
   core_test_failed: ["Teste não enviado", "O núcleo não confirmou o envio do evento de teste.", "ERRO"],
   bridge_test_failed: ["Bridge não confirmou", "O núcleo enviou, mas a bridge não confirmou o teste.", "ERRO"]
 };
@@ -105,7 +106,8 @@ function addEvent(title, detail, kind = "info") {
 function renderTelemetry(status) {
   const telemetry = status.telemetry || {};
   const enabled = telemetry.enabled === true;
-  const copy = telemetryCopy[telemetry.lastResult] || telemetryCopy[enabled ? "enabled" : "disabled"];
+  const resultKey = !enabled && telemetry.lastResult === "purged" ? "purged_disabled" : telemetry.lastResult;
+  const copy = telemetryCopy[resultKey] || telemetryCopy[enabled ? "enabled" : "disabled"];
   ui.telemetryTitle.textContent = copy[0];
   ui.telemetryDetail.textContent = copy[1];
   ui.telemetryEnabled.textContent = copy[2];
@@ -140,6 +142,7 @@ function renderStatus(status) {
     `diagnóstico RTC nativo: ${status.media?.native?.state || "não informado"}`,
     `frames de vídeo: ${status.media?.videoFrames ?? 0}`,
     `pacotes de áudio: ${status.media?.audioPackets ?? 0}`,
+    `telemetria: ${status.telemetry?.enabled ? "ativada" : "desativada"}`,
     `injeção: ${status.injectionState || "não informada"}`,
     status.lastError ? `último erro: ${status.lastError}` : "último erro: nenhum"
 	].join("\n");
@@ -192,12 +195,15 @@ ui.log.addEventListener("click", async () => {
   try { await window.bigDucksOpenLog(); }
   catch (error) { showToast(`Não foi possível abrir o log: ${error}`); }
 });
-ui.telemetryEnable.addEventListener("click", () => perform(ui.telemetryEnable, "Ativando…", window.bigDucksEnableTelemetry, "Telemetria ativada"));
-ui.telemetryDisable.addEventListener("click", () => perform(ui.telemetryDisable, "Desativando…", window.bigDucksDisableTelemetry, "Telemetria desativada"));
-ui.telemetryTest.addEventListener("click", () => perform(ui.telemetryTest, "Enviando…", window.bigDucksTestTelemetry, "Teste de telemetria confirmado"));
+ui.telemetryEnable.addEventListener("click", () => perform(ui.telemetryEnable, "Ativando…", window.bigDucksTelemetryEnable, "Telemetria ativada"));
+ui.telemetryDisable.addEventListener("click", () => {
+  if (!window.confirm("Desativar a telemetria e apagar somente os dados locais do BIG DUCKS?")) return;
+  perform(ui.telemetryDisable, "Desativando…", window.bigDucksTelemetryDisable, "Telemetria desativada");
+});
+ui.telemetryTest.addEventListener("click", () => perform(ui.telemetryTest, "Enviando…", window.bigDucksTelemetryTest, "Teste de telemetria confirmado"));
 ui.telemetryPurge.addEventListener("click", () => {
   if (!window.confirm("Apagar a fila local de telemetria? Eventos já enviados não podem ser removidos por aqui.")) return;
-  perform(ui.telemetryPurge, "Apagando…", window.bigDucksPurgeTelemetry, "Fila local apagada");
+  perform(ui.telemetryPurge, "Apagando…", window.bigDucksTelemetryPurge, "Fila local apagada");
 });
 
 let updatePollTimer;

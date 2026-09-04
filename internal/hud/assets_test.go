@@ -13,8 +13,8 @@ func TestPageContainsAccessibleRecoveryControls(t *testing.T) {
 		"BIG DUCKS", "Reconectar live", "Testar rota", "Recarregar Discord",
 		`aria-live="polite"`, `:focus-visible`, `prefers-reduced-motion`,
 		"data:image/png;base64,", "bigDucksStatus", "bigDucksReconnect",
-		"TELEMETRIA OPCIONAL", "bigDucksEnableTelemetry", "bigDucksDisableTelemetry",
-		"bigDucksTestTelemetry", "bigDucksPurgeTelemetry", "telemetry-enabled",
+		"TELEMETRIA OPCIONAL", "bigDucksTelemetryEnable", "bigDucksTelemetryDisable",
+		"bigDucksTelemetryTest", "bigDucksTelemetryPurge", "telemetry-enabled",
 	} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("HUD page does not contain %q", required)
