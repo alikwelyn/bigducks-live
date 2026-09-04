@@ -70,6 +70,58 @@ func TestServerAuthenticatesAndDispatchesRuntimeActions(t *testing.T) {
 	}
 }
 
+func TestTelemetryEndpointsRequireBearerTokenAndDispatch(t *testing.T) {
+	runtime := app.NewRuntimeControl()
+	calls := make(map[string]int)
+	runtime.Bind(app.RuntimeBindings{
+		EnableTelemetry:  func(context.Context) error { calls["enable"]++; return nil },
+		DisableTelemetry: func(context.Context) error { calls["disable"]++; return nil },
+		TestTelemetry:    func(context.Context) error { calls["test"]++; return nil },
+		PurgeTelemetry:   func(context.Context) error { calls["purge"]++; return nil },
+		Status: func() app.RuntimeStatus {
+			return app.RuntimeStatus{Telemetry: app.TelemetryStatus{Enabled: false}}
+		},
+	})
+	server := controlapi.NewServer(controlapi.ServerOptions{DataDir: t.TempDir(), Runtime: runtime})
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	client, err := controlapi.LoadClient(server.ControlPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := client.Status(context.Background())
+	if err != nil || status.Telemetry.Enabled {
+		t.Fatalf("status = %#v, error = %v", status, err)
+	}
+	actions := []func(context.Context) error{client.EnableTelemetry, client.DisableTelemetry, client.TestTelemetry, client.PurgeTelemetry}
+	for _, action := range actions {
+		if err := action(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"enable", "disable", "test", "purge"} {
+		if calls[name] != 1 {
+			t.Fatalf("%s calls = %d", name, calls[name])
+		}
+	}
+	for _, path := range []string{"/v1/telemetry/enable", "/v1/telemetry/disable", "/v1/telemetry/test", "/v1/telemetry/purge"} {
+		request, err := http.NewRequest(http.MethodPost, "http://"+server.Address()+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated %s = %d", path, response.StatusCode)
+		}
+	}
+}
+
 func TestServerRejectsMissingBearerToken(t *testing.T) {
 	server := controlapi.NewServer(controlapi.ServerOptions{DataDir: t.TempDir(), Runtime: app.NewRuntimeControl()})
 	if err := server.Start(context.Background()); err != nil {

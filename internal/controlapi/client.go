@@ -52,6 +52,18 @@ func (c *Client) Reload(ctx context.Context) error {
 func (c *Client) TestRoute(ctx context.Context) error {
 	return c.request(ctx, http.MethodPost, "/v1/test-route", nil)
 }
+func (c *Client) EnableTelemetry(ctx context.Context) error {
+	return c.request(ctx, http.MethodPost, "/v1/telemetry/enable", nil)
+}
+func (c *Client) DisableTelemetry(ctx context.Context) error {
+	return c.request(ctx, http.MethodPost, "/v1/telemetry/disable", nil)
+}
+func (c *Client) TestTelemetry(ctx context.Context) error {
+	return c.request(ctx, http.MethodPost, "/v1/telemetry/test", nil)
+}
+func (c *Client) PurgeTelemetry(ctx context.Context) error {
+	return c.request(ctx, http.MethodPost, "/v1/telemetry/purge", nil)
+}
 func (c *Client) Shutdown(ctx context.Context) error {
 	return c.request(ctx, http.MethodPost, "/v1/shutdown", nil)
 }

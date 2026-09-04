@@ -79,6 +79,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/repair-discord", s.auth(s.action(s.options.Runtime.RepairDiscord)))
 	mux.HandleFunc("/v1/reload", s.auth(s.action(s.options.Runtime.Reload)))
 	mux.HandleFunc("/v1/test-route", s.auth(s.action(s.options.Runtime.TestRoute)))
+	mux.HandleFunc("/v1/telemetry/enable", s.auth(s.action(s.options.Runtime.EnableTelemetry)))
+	mux.HandleFunc("/v1/telemetry/disable", s.auth(s.action(s.options.Runtime.DisableTelemetry)))
+	mux.HandleFunc("/v1/telemetry/test", s.auth(s.action(s.options.Runtime.TestTelemetry)))
+	mux.HandleFunc("/v1/telemetry/purge", s.auth(s.action(s.options.Runtime.PurgeTelemetry)))
 	mux.HandleFunc("/v1/shutdown", s.auth(s.shutdown))
 	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 3 * time.Second}
 	s.mu.Lock()
