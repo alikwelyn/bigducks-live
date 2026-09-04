@@ -89,6 +89,7 @@ func TestPageUsesFixedLandscapeDashboardWithoutDocumentZoomOrScroll(t *testing.T
 	page := hud.PageHTML()
 	for _, required := range []string{
 		`class="dashboard"`, `class="left-column"`, `overflow: hidden`,
+		`min-height: 192px`, `@media (max-height: 720px)`, `overflow-wrap: anywhere`,
 		`user-scalable=no`, `event.preventDefault()`, `"wheel"`,
 		`setTimeout(checkUpdate, 1200)`, `bigDucksUpdateStatus`, `touch-action: manipulation`,
 	} {

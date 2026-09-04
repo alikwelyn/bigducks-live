@@ -29,6 +29,7 @@ func TestBridgeSourceConfiguresOptInSentryWithoutRendererInstrumentation(t *test
 		"await telemetryConfigPromise",
 		`const accepted = captureBridgeEvent("telemetry_test", { connected: true })`,
 		`void Promise.resolve(Sentry.flush(2000)).catch(() => {})`,
+		`ipcMode: 0`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("source does not contain %q", fragment)

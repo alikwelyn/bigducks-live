@@ -45,8 +45,8 @@ func TestHUDCachePathIsIsolatedPerProcess(t *testing.T) {
 }
 
 func TestHUDWindowUsesFixedLandscapeDimensions(t *testing.T) {
-	if HUDWidth != 1180 || HUDHeight != 700 {
-		t.Fatalf("HUD dimensions = %dx%d, want 1180x700", HUDWidth, HUDHeight)
+	if HUDWidth != 1240 || HUDHeight != 760 {
+		t.Fatalf("HUD dimensions = %dx%d, want 1240x760", HUDWidth, HUDHeight)
 	}
 	if HUDWidth <= HUDHeight {
 		t.Fatalf("HUD must be landscape: %dx%d", HUDWidth, HUDHeight)
