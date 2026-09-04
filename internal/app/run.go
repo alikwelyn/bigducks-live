@@ -57,6 +57,57 @@ func nativeSampleFromBridgeEvent(event bridge.MediaEvent) (NativeMediaSample, bo
 	}, true
 }
 
+func telemetryEventForMedia(status MediaStatus, mode RoutingMode) (telemetry.Event, bool) {
+	state := status.State
+	code := telemetry.Code("")
+	switch status.Native.State {
+	case MediaNativeProbeUnavailable:
+		code = telemetry.CodeNativeProbeUnavailable
+	case MediaNativeTransmitterStalled:
+		code = telemetry.CodeNativeTransmitterStalled
+	case MediaNativeReceiverAudioOnly:
+		code = telemetry.CodeNativeReceiverAudioOnly
+	case MediaNativeReceiverNoPackets:
+		code = telemetry.CodeNativeReceiverNoPackets
+	case MediaNativeDecoderStalled:
+		code = telemetry.CodeNativeDecoderStalled
+	case MediaNativeRenderUnknown:
+		code = telemetry.CodeNativeRenderUnknown
+	case MediaNativeRTCDisconnected:
+		code = telemetry.CodeRTCDisconnected
+	}
+	if code == "" {
+		switch status.State {
+		case MediaAudioOnly:
+			code = telemetry.CodeAudioOnly
+		case MediaVideoStalled:
+			code = telemetry.CodeVideoStalled
+		case MediaReceiverTimeout:
+			code = telemetry.CodeReceiverTimeout
+		case MediaRTCDisconnected:
+			code = telemetry.CodeRTCDisconnected
+		}
+	}
+	if code == "" {
+		return telemetry.Event{}, false
+	}
+	return telemetry.Event{
+		Component:      telemetry.ComponentMedia,
+		Code:           code,
+		State:          string(state),
+		Mode:           string(mode),
+		StatsAvailable: status.Native.StatsAvailable,
+		HasAudioSSRC:   status.Native.HasAudioSSRC,
+		HasVideoSSRC:   status.Native.HasVideoSSRC,
+		AudioPackets:   status.Native.AudioPackets,
+		VideoPackets:   status.Native.VideoPackets,
+		AudioBytes:     status.Native.AudioBytes,
+		VideoBytes:     status.Native.VideoBytes,
+		FramesDecoded:  status.Native.FramesDecoded,
+		ReceiverCount:  status.Native.ReceiverCount,
+	}, true
+}
+
 type RunOptions struct {
 	Config          Config
 	DryRun          bool
@@ -150,6 +201,9 @@ func Run(ctx context.Context, options RunOptions) error {
 		config.TelemetryEnabled = enabled
 		return nil
 	}
+	captureCoreFailure := func(code telemetry.Code) {
+		telemetryReporter.Capture(telemetry.Event{Component: telemetry.ComponentCore, Code: code, Mode: string(config.RoutingMode)})
+	}
 
 	setupCtx, cancelSetup := context.WithTimeout(runCtx, config.StartupBudget)
 	var entries []model.VerifiedEndpoint
@@ -204,6 +258,7 @@ func Run(ctx context.Context, options RunOptions) error {
 		HuntCooldown:     config.HuntCooldown,
 		InUse:            tracker.InUse,
 		OnDead: func(endpoint model.Endpoint) {
+			captureCoreFailure(telemetry.CodeRecoveryFailure)
 			closed := tracker.CloseEndpoint(endpoint)
 			if closed > 0 {
 				statusStore.Update(func(status *RuntimeStatus) {
@@ -260,6 +315,7 @@ func Run(ctx context.Context, options RunOptions) error {
 	}
 	relayAddress, closeRelay, err := relayServer.ListenAndServe(runCtx)
 	if err != nil {
+		captureCoreFailure(telemetry.CodeStartupFailure)
 		logger.Printf("could not start local relay: %v", err)
 		return fmt.Errorf("start protected gateway relay: %w", err)
 	}
@@ -275,6 +331,7 @@ func Run(ctx context.Context, options RunOptions) error {
 	pacServer := pac.NewServerAt(runtimeAddress(config.PACPort, config.DynamicRuntimePorts), config.RoutedHosts, config.RoutedSuffixes, relayPort)
 	pacURL, closePAC, err := pacServer.Start()
 	if err != nil {
+		captureCoreFailure(telemetry.CodeStartupFailure)
 		logger.Printf("could not start local PAC: %v", err)
 		return fmt.Errorf("start protected gateway PAC: %w", err)
 	}
@@ -286,16 +343,26 @@ func Run(ctx context.Context, options RunOptions) error {
 			statusStore.Update(func(status *RuntimeStatus) {
 				status.Media = ReduceNativeMedia(status.Media, sample)
 			})
-			native := statusStore.Snapshot().Media.Native
+			media := statusStore.Snapshot().Media
+			if telemetryEvent, ok := telemetryEventForMedia(media, config.RoutingMode); ok {
+				telemetryReporter.Capture(telemetryEvent)
+			}
+			native := media.Native
 			logger.Printf("native media diagnostic: state=%s demand=%t stats=%t audio_packets=%d video_packets=%d decoded=%d receiver_count=%d", native.State, native.DemandActive, native.StatsAvailable, native.AudioPackets, native.VideoPackets, native.FramesDecoded, native.ReceiverCount)
 			return
 		}
 		statusStore.Update(func(status *RuntimeStatus) {
 			status.Media = ReduceMedia(status.Media, MediaEvent{Session: event.Session, Kind: event.Kind, At: event.At})
 		})
+		media := statusStore.Snapshot().Media
+		media.Native.State = MediaUnknown
+		if telemetryEvent, ok := telemetryEventForMedia(media, config.RoutingMode); ok {
+			telemetryReporter.Capture(telemetryEvent)
+		}
 	})
 	bridgeReady := true
 	if err := bridgeServer.Start(runCtx); err != nil {
+		captureCoreFailure(telemetry.CodeBridgeFailure)
 		bridgeReady = false
 		logger.Printf("could not start Discord reload bridge: %v", err)
 	} else {
@@ -468,9 +535,18 @@ func Run(ctx context.Context, options RunOptions) error {
 		PurgeTelemetry:   telemetryPurge,
 		Reconnect: func(actionCtx context.Context) error {
 			_, err := recovery.Recover(actionCtx)
+			if err != nil {
+				captureCoreFailure(telemetry.CodeRecoveryFailure)
+			}
 			return err
 		},
-		RepairDiscord: repairDiscord,
+		RepairDiscord: func(actionCtx context.Context) error {
+			err := repairDiscord(actionCtx)
+			if err != nil {
+				captureCoreFailure(telemetry.CodeRecoveryFailure)
+			}
+			return err
+		},
 		Reload: func(actionCtx context.Context) error {
 			if !bridgeReady {
 				return bridge.ErrUnavailable
@@ -511,7 +587,11 @@ func Run(ctx context.Context, options RunOptions) error {
 		ensureProtectedExistingDiscord(runCtx, config, relayAddress, bridgeServer, logger)
 	}
 
-	return launchDiscord(runCtx, config, pacURL, fullProxyURL, options.DryRun, options.Attach, options.PreserveDiscord, bridgeReady, statusStore, logger)
+	err = launchDiscord(runCtx, config, pacURL, fullProxyURL, options.DryRun, options.Attach, options.PreserveDiscord, bridgeReady, statusStore, logger)
+	if err != nil {
+		captureCoreFailure(telemetry.CodeStartupFailure)
+	}
+	return err
 }
 
 func runtimeAddress(port int, dynamic bool) string {
