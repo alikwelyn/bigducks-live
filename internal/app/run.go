@@ -285,6 +285,10 @@ func Run(ctx context.Context, options RunOptions) error {
 	})
 	defer unbind()
 
+	if config.AutoStartDiscord && discord.IsRunning() && bridgeReady {
+		ensureProtectedExistingDiscord(runCtx, config, relayAddress, bridgeServer, logger)
+	}
+
 	fullProxyURL := ""
 	if config.RoutingMode == RoutingModeFull {
 		fullProxyURL = "socks5://" + relayAddress
@@ -430,6 +434,40 @@ func waitForDiscordExit(ctx context.Context, statusStore *runtimeStatusStore, lo
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func shouldRestartUnprotectedDiscord(running, autoStart, attach, protected bool) bool {
+	return running && autoStart && attach && !protected
+}
+
+func ensureProtectedExistingDiscord(ctx context.Context, config Config, relayAddress string, bridgeServer *bridge.Server, logger *logging.Logger) {
+	if !shouldRestartUnprotectedDiscord(discord.IsRunning(), config.AutoStartDiscord, true, false) || bridgeServer == nil {
+		return
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	route, err := bridgeServer.ResolveProxy(probeCtx, "https://gateway.discord.gg")
+	cancel()
+	if err != nil || strings.Contains(route, "SOCKS5 "+relayAddress) {
+		return
+	}
+	logger.Printf("existing Discord session is not using the protected route (%q); restarting it with BIG DUCKS routing", route)
+	if identity, identityErr := discord.CurrentProcess(); identityErr == nil && identity.PID > 0 {
+		discord.KillProcessTree(int(identity.PID))
+	}
+	deadline := time.NewTimer(8 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for discord.IsRunning() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			logger.Printf("Discord did not exit before protected relaunch deadline")
+			return
 		case <-ticker.C:
 		}
 	}
