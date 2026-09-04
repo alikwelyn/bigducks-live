@@ -47,6 +47,7 @@ func TestServerRejectsWrongTokenAndDeliversReload(t *testing.T) {
 		t.Fatalf("send hello: %v", err)
 	}
 	waitForBridge(t, server)
+	discardTelemetrySync(t, decoder)
 
 	reloadDone := make(chan error, 1)
 	go func() {
@@ -102,6 +103,7 @@ func TestServerDeliversNetworkControlCommands(t *testing.T) {
 		t.Fatalf("send hello: %v", err)
 	}
 	waitForBridge(t, server)
+	discardTelemetrySync(t, decoder)
 
 	closeDone := make(chan error, 1)
 	go func() {
@@ -223,6 +225,19 @@ func waitForBridge(t *testing.T, server *bridge.Server) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("bridge did not authenticate")
+}
+
+func discardTelemetrySync(t *testing.T, decoder *json.Decoder) {
+	t.Helper()
+	var message struct {
+		Type string `json:"type"`
+	}
+	if err := decoder.Decode(&message); err != nil {
+		t.Fatalf("read telemetry sync: %v", err)
+	}
+	if message.Type != "telemetry_sync" {
+		t.Fatalf("initial bridge message = %q, want telemetry_sync", message.Type)
+	}
 }
 
 func contains(value, fragment string) bool {

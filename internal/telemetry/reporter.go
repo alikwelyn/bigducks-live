@@ -89,6 +89,21 @@ func (r *Reporter) Disable() error {
 	return nil
 }
 
+func (r *Reporter) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	client := r.client
+	r.client = nil
+	r.enabled = false
+	r.mu.Unlock()
+	if client == nil {
+		return nil
+	}
+	return client.Close()
+}
+
 func (r *Reporter) Purge() error {
 	if r == nil || r.options.CacheDir == "" {
 		return nil

@@ -56,6 +56,7 @@ type protocolMessage struct {
 	Event   string         `json:"event,omitempty"`
 	At      time.Time      `json:"at,omitempty"`
 	Native  map[string]any `json:"native,omitempty"`
+	Enabled bool           `json:"enabled,omitempty"`
 }
 
 type commandResult struct {
@@ -66,17 +67,18 @@ type commandResult struct {
 type Server struct {
 	dataDir string
 
-	mu           sync.Mutex
-	listener     net.Listener
-	conn         net.Conn
-	encoder      *json.Encoder
-	cancel       context.CancelFunc
-	token        string
-	lastSeen     time.Time
-	nextID       uint64
-	pending      map[uint64]chan commandResult
-	onMediaEvent func(MediaEvent)
-	closed       bool
+	mu               sync.Mutex
+	listener         net.Listener
+	conn             net.Conn
+	encoder          *json.Encoder
+	cancel           context.CancelFunc
+	token            string
+	lastSeen         time.Time
+	nextID           uint64
+	pending          map[uint64]chan commandResult
+	onMediaEvent     func(MediaEvent)
+	telemetryEnabled bool
+	closed           bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -166,6 +168,34 @@ func (s *Server) SetMediaEventHandler(handler func(MediaEvent)) {
 	s.mu.Lock()
 	s.onMediaEvent = handler
 	s.mu.Unlock()
+}
+
+func (s *Server) SetTelemetryEnabled(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.telemetryEnabled = enabled
+	if s.encoder != nil && s.conn != nil && !s.closed {
+		_ = s.encoder.Encode(protocolMessage{Type: "telemetry_sync", Enabled: enabled})
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) TestTelemetry(ctx context.Context) error {
+	_, err := s.command(ctx, protocolMessage{Type: "telemetry_test"})
+	return err
+}
+
+func (s *Server) DisableTelemetry(ctx context.Context) error {
+	s.SetTelemetryEnabled(false)
+	_, err := s.command(ctx, protocolMessage{Type: "telemetry_disable"})
+	return err
+}
+
+func (s *Server) PurgeTelemetry(ctx context.Context) error {
+	_, err := s.command(ctx, protocolMessage{Type: "telemetry_purge"})
+	return err
 }
 
 func (s *Server) Reload(ctx context.Context) error {
@@ -311,6 +341,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	s.conn = conn
 	s.encoder = json.NewEncoder(conn)
 	s.lastSeen = time.Now()
+	_ = s.encoder.Encode(protocolMessage{Type: "telemetry_sync", Enabled: s.telemetryEnabled})
 	s.mu.Unlock()
 	_ = conn.SetReadDeadline(time.Time{})
 

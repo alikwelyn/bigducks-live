@@ -25,9 +25,15 @@ const (
 	RecoveryStopped         RecoveryState = "stopped"
 )
 
+type TelemetryStatus struct {
+	Enabled    bool   `json:"enabled"`
+	LastResult string `json:"lastResult,omitempty"`
+}
+
 type RuntimeStatus struct {
 	State           RecoveryState
 	Media           MediaStatus
+	Telemetry       TelemetryStatus
 	PoolSize        int
 	TunnelCount     int
 	BridgeConnected bool
@@ -49,11 +55,15 @@ type RuntimeEvent struct {
 }
 
 type RuntimeBindings struct {
-	Reconnect     func(context.Context) error
-	RepairDiscord func(context.Context) error
-	Reload        func(context.Context) error
-	TestRoute     func(context.Context) error
-	Status        func() RuntimeStatus
+	Reconnect        func(context.Context) error
+	RepairDiscord    func(context.Context) error
+	Reload           func(context.Context) error
+	TestRoute        func(context.Context) error
+	EnableTelemetry  func(context.Context) error
+	DisableTelemetry func(context.Context) error
+	TestTelemetry    func(context.Context) error
+	PurgeTelemetry   func(context.Context) error
+	Status           func() RuntimeStatus
 }
 
 type RuntimeControl struct {
@@ -133,6 +143,38 @@ func (c *RuntimeControl) Reload(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	return reload(ctx)
+}
+
+func (c *RuntimeControl) EnableTelemetry(ctx context.Context) error {
+	return c.telemetryAction(ctx, func(bindings RuntimeBindings) func(context.Context) error { return bindings.EnableTelemetry })
+}
+
+func (c *RuntimeControl) DisableTelemetry(ctx context.Context) error {
+	return c.telemetryAction(ctx, func(bindings RuntimeBindings) func(context.Context) error { return bindings.DisableTelemetry })
+}
+
+func (c *RuntimeControl) TestTelemetry(ctx context.Context) error {
+	return c.telemetryAction(ctx, func(bindings RuntimeBindings) func(context.Context) error { return bindings.TestTelemetry })
+}
+
+func (c *RuntimeControl) PurgeTelemetry(ctx context.Context) error {
+	return c.telemetryAction(ctx, func(bindings RuntimeBindings) func(context.Context) error { return bindings.PurgeTelemetry })
+}
+
+func (c *RuntimeControl) telemetryAction(ctx context.Context, selectAction func(RuntimeBindings) func(context.Context) error) error {
+	if c == nil {
+		return ErrRuntimeUnavailable
+	}
+	c.mu.Lock()
+	action := selectAction(c.bindings)
+	c.mu.Unlock()
+	if action == nil {
+		return ErrRuntimeUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return action(ctx)
 }
 
 func (c *RuntimeControl) TestRoute(ctx context.Context) error {

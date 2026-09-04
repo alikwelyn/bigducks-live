@@ -50,6 +50,32 @@ func TestRuntimeControlRepairDiscordUsesCurrentBinding(t *testing.T) {
 	}
 }
 
+func TestRuntimeControlTelemetryUsesCurrentBindings(t *testing.T) {
+	calls := 0
+	control := app.NewRuntimeControl()
+	control.Bind(app.RuntimeBindings{
+		EnableTelemetry:  func(context.Context) error { calls++; return nil },
+		DisableTelemetry: func(context.Context) error { calls++; return nil },
+		TestTelemetry:    func(context.Context) error { calls++; return nil },
+		PurgeTelemetry:   func(context.Context) error { calls++; return nil },
+	})
+	if err := control.EnableTelemetry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.DisableTelemetry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.TestTelemetry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.PurgeTelemetry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 4 {
+		t.Fatalf("calls = %d", calls)
+	}
+}
+
 func TestRuntimeControlReloadUsesCurrentBinding(t *testing.T) {
 	called := 0
 	control := app.NewRuntimeControl()

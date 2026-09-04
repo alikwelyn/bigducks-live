@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alikwelyn/bigducks-live/internal/bridge"
+	"github.com/alikwelyn/bigducks-live/internal/buildinfo"
 	"github.com/alikwelyn/bigducks-live/internal/discord"
 	"github.com/alikwelyn/bigducks-live/internal/injection"
 	"github.com/alikwelyn/bigducks-live/internal/instance"
@@ -23,6 +24,7 @@ import (
 	"github.com/alikwelyn/bigducks-live/internal/pac"
 	"github.com/alikwelyn/bigducks-live/internal/proxy"
 	"github.com/alikwelyn/bigducks-live/internal/relay"
+	"github.com/alikwelyn/bigducks-live/internal/telemetry"
 )
 
 var ErrAlreadyRunning = errors.New("BIG DUCKS já está em execução")
@@ -104,6 +106,24 @@ func Run(ctx context.Context, options RunOptions) error {
 		control = NewRuntimeControl()
 	}
 	statusStore := newRuntimeStatusStore()
+	telemetryReporter := telemetry.NewReporter(telemetry.Options{
+		Release:  buildinfo.Version,
+		CacheDir: filepath.Join(config.DataDir, "telemetry", "core"),
+		Mode:     string(config.RoutingMode),
+	})
+	defer telemetryReporter.Close()
+	if config.TelemetryEnabled {
+		if err := telemetryReporter.Enable(); err != nil {
+			logger.Printf("could not enable telemetry: %v", err)
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.Telemetry = TelemetryStatus{Enabled: false, LastResult: "enable_failed"}
+			})
+		} else {
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.Telemetry = TelemetryStatus{Enabled: true, LastResult: "enabled"}
+			})
+		}
+	}
 	control.SetStatus(statusStore.Snapshot())
 	if config.Disabled {
 		statusStore.Update(func(status *RuntimeStatus) {
@@ -117,6 +137,19 @@ func Run(ctx context.Context, options RunOptions) error {
 	tracker := relay.NewTracker()
 	defer tracker.CloseAll()
 	var stateSaveMu sync.Mutex
+	var telemetryConfigMu sync.Mutex
+	configPath := filepath.Join(config.DataDir, ConfigFileName)
+	setTelemetryPreference := func(enabled bool) error {
+		telemetryConfigMu.Lock()
+		defer telemetryConfigMu.Unlock()
+		updated := config
+		updated.TelemetryEnabled = enabled
+		if err := SaveConfig(configPath, updated); err != nil {
+			return err
+		}
+		config.TelemetryEnabled = enabled
+		return nil
+	}
 
 	setupCtx, cancelSetup := context.WithTimeout(runCtx, config.StartupBudget)
 	var entries []model.VerifiedEndpoint
@@ -267,6 +300,7 @@ func Run(ctx context.Context, options RunOptions) error {
 		logger.Printf("could not start Discord reload bridge: %v", err)
 	} else {
 		defer bridgeServer.Close()
+		bridgeServer.SetTelemetryEnabled(telemetryReporter.Enabled())
 	}
 	fullProxyURL := ""
 	if config.RoutingMode == RoutingModeFull {
@@ -358,6 +392,64 @@ func Run(ctx context.Context, options RunOptions) error {
 		}
 		return err
 	}
+	telemetryEnable := func(actionCtx context.Context) error {
+		if err := telemetryReporter.Enable(); err != nil {
+			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "enable_failed"} })
+			return err
+		}
+		if err := setTelemetryPreference(true); err != nil {
+			_ = telemetryReporter.Disable()
+			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "save_failed"} })
+			return err
+		}
+		if bridgeReady {
+			bridgeServer.SetTelemetryEnabled(true)
+		}
+		statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{Enabled: true, LastResult: "enabled"} })
+		return nil
+	}
+	telemetryDisable := func(actionCtx context.Context) error {
+		if err := telemetryReporter.Disable(); err != nil {
+			return err
+		}
+		if err := setTelemetryPreference(false); err != nil {
+			return err
+		}
+		if bridgeReady {
+			if err := bridgeServer.DisableTelemetry(actionCtx); err != nil && !errors.Is(err, bridge.ErrUnavailable) {
+				return err
+			}
+		}
+		statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "disabled"} })
+		return nil
+	}
+	telemetryTest := func(actionCtx context.Context) error {
+		if err := telemetryReporter.Test(actionCtx); err != nil {
+			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = "core_test_failed" })
+			return err
+		}
+		if !bridgeReady {
+			return bridge.ErrUnavailable
+		}
+		if err := bridgeServer.TestTelemetry(actionCtx); err != nil {
+			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = "bridge_test_failed" })
+			return err
+		}
+		statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = "test_sent" })
+		return nil
+	}
+	telemetryPurge := func(actionCtx context.Context) error {
+		if err := telemetryReporter.Purge(); err != nil {
+			return err
+		}
+		if bridgeReady {
+			if err := bridgeServer.PurgeTelemetry(actionCtx); err != nil && !errors.Is(err, bridge.ErrUnavailable) {
+				return err
+			}
+		}
+		statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = "purged" })
+		return nil
+	}
 	recovery := NewRecoveryCoordinator(RecoveryCoordinatorOptions{
 		Pool: managed, Tunnels: tracker, Bridge: bridgeServer, Status: statusStore, Logger: logger,
 		DiscordAlive: discord.IsRunning, StartDiscord: startDiscord,
@@ -370,6 +462,10 @@ func Run(ctx context.Context, options RunOptions) error {
 		},
 	})
 	unbind := control.Bind(RuntimeBindings{
+		EnableTelemetry:  telemetryEnable,
+		DisableTelemetry: telemetryDisable,
+		TestTelemetry:    telemetryTest,
+		PurgeTelemetry:   telemetryPurge,
 		Reconnect: func(actionCtx context.Context) error {
 			_, err := recovery.Recover(actionCtx)
 			return err
