@@ -42,7 +42,7 @@ h2 { margin-bottom: 0; font-size: 19px; line-height: 1.22; letter-spacing: -.025
 
 .dashboard { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.14fr) minmax(390px, .86fr); gap: 14px; overflow: hidden; }
 .left-column { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(170px, 1fr) auto auto auto; gap: 10px; overflow: hidden; }
-.hero { min-width: 0; min-height: 0; padding: 14px 16px; }
+.hero { min-width: 0; min-height: 192px; padding: 14px 16px; overflow: hidden; }
 .route-overview { min-width: 0; display: grid; grid-template-columns: 104px minmax(0, 1fr); align-items: center; gap: 15px; }
 .shield-badge { width: 96px; height: 96px; display: grid; place-items: center; border: 1px solid rgba(75,228,155,.25); border-radius: 50%; background: radial-gradient(circle, rgba(75,228,155,.17), rgba(75,228,155,.02) 67%, transparent 68%); }
 .shield-badge svg { width: 68px; height: 68px; fill: rgba(75,228,155,.12); stroke: var(--green); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 12px rgba(75,228,155,.3)); }
@@ -127,8 +127,37 @@ h2 { margin-bottom: 0; font-size: 19px; line-height: 1.22; letter-spacing: -.025
 .technical[open] { position: fixed; z-index: 20; inset: 18px; display: grid; grid-template-rows: 52px minmax(0, 1fr); background: #071426; box-shadow: 0 22px 70px rgba(0,0,0,.65); }
 .technical[open] summary { border-bottom: 1px solid var(--border); }
 .technical pre { min-height: 0; overflow: auto; margin: 0; padding: 16px; color: #b9cce0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: 12px/1.55 "Cascadia Mono", Consolas, monospace; }
-.toast { position: fixed; z-index: 30; right: 20px; bottom: 20px; max-width: calc(100% - 40px); padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #132942; box-shadow: 0 14px 40px rgba(0,0,0,.36); opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity 180ms ease, transform 180ms ease; }
+.toast { position: fixed; z-index: 30; right: 20px; bottom: 20px; max-width: min(560px, calc(100% - 40px)); padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #132942; box-shadow: 0 14px 40px rgba(0,0,0,.36); overflow-wrap: anywhere; opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity 180ms ease, transform 180ms ease; }
 .toast.visible { opacity: 1; transform: translateY(0); }
+
+@media (max-height: 720px) {
+  .shell { padding: 10px; grid-template-rows: 88px minmax(0, 1fr) 44px; gap: 8px; }
+  .brandbar { gap: 12px; padding: 8px 12px; }
+  .brandmark { width: 68px; height: 68px; flex-basis: 68px; }
+  h1 { font-size: 28px; }
+  .subtitle { margin-top: 2px; font-size: 13px; }
+  .dashboard { grid-template-columns: minmax(0, 1.14fr) minmax(340px, .86fr); gap: 8px; }
+  .left-column { grid-template-rows: minmax(154px, 1fr) auto auto auto; gap: 6px; }
+  .hero { min-height: 154px; padding: 10px 12px; }
+  .route-overview { grid-template-columns: 86px minmax(0, 1fr); gap: 10px; }
+  .shield-badge { width: 78px; height: 78px; }
+  .shield-badge svg { width: 56px; height: 56px; }
+  .route-copy h2 { font-size: 24px; }
+  .status-detail { margin-top: 5px; }
+  .metrics { gap: 6px; margin-top: 8px; }
+  .metric { padding: 6px 8px; }
+  .metric strong { font-size: 16px; }
+  .primary { min-height: 56px; gap: 9px; padding: 8px 12px; }
+  .secondary-grid { gap: 6px; margin-top: 6px; }
+  .secondary { min-height: 42px; gap: 6px; padding: 6px; }
+  .update-card { min-height: 64px; gap: 8px; padding: 8px 10px; }
+  .update-icon { width: 26px; height: 26px; }
+  .telemetry-card { padding: 6px 10px; }
+  .timeline { padding: 12px 14px; }
+  .events { margin-top: 8px; }
+  .events li { gap: 8px; padding: 8px 0; }
+  .technical summary { min-height: 44px; padding: 0 12px; }
+}
 
 @keyframes pulse { 50% { opacity: .45; transform: scale(.82); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }

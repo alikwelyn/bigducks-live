@@ -57,21 +57,21 @@ func TestHUDWindowUsesFixedLandscapeDimensions(t *testing.T) {
 }
 
 func TestHUDClientSizeFitsTheDesktopWorkArea(t *testing.T) {
-	outer := windowRect{Left: 0, Top: 0, Right: 1196, Bottom: 739}
+	outer := windowRect{Left: 0, Top: 0, Right: 1256, Bottom: 799}
 	workArea := windowRect{Left: 0, Top: 0, Right: 1366, Bottom: 720}
 	width, height := fitClientSize(HUDWidth, HUDHeight, outer, workArea)
-	if width != 1180 || height != 681 {
-		t.Fatalf("fitted client = %dx%d, want 1180x681", width, height)
+	if width != 1240 || height != 681 {
+		t.Fatalf("fitted client = %dx%d, want 1240x681", width, height)
 	}
 
-	left, top := centeredWindowOrigin(windowRect{Right: 1196, Bottom: 720}, workArea)
-	if left != 85 || top != 0 {
-		t.Fatalf("centered origin = (%d,%d), want (85,0)", left, top)
+	left, top := centeredWindowOrigin(windowRect{Right: 1256, Bottom: 720}, workArea)
+	if left != 55 || top != 0 {
+		t.Fatalf("centered origin = (%d,%d), want (55,0)", left, top)
 	}
 }
 
 func TestHUDClientSizeKeepsRequestedSizeWhenItFits(t *testing.T) {
-	outer := windowRect{Right: 1196, Bottom: 739}
+	outer := windowRect{Right: 1256, Bottom: 799}
 	workArea := windowRect{Left: 100, Top: 40, Right: 2020, Bottom: 1080}
 	width, height := fitClientSize(HUDWidth, HUDHeight, outer, workArea)
 	if width != HUDWidth || height != HUDHeight {

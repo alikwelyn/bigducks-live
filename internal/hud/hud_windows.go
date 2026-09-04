@@ -59,8 +59,8 @@ type UpdateView struct {
 }
 
 const (
-	HUDWidth        = 1180
-	HUDHeight       = 700
+	HUDWidth        = 1240
+	HUDHeight       = 760
 	zoomGuardScript = `(function () {
   const keys = new Set(["+", "=", "-", "_", "0", "Add", "Subtract"]);
   document.addEventListener("keydown", function (event) {
