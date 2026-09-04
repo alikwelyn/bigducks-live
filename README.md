@@ -24,7 +24,7 @@ Requisitos: Windows 10 ou 11 x64, Discord oficial e Microsoft Edge WebView2 Runt
 3. Feche o Discord completamente, inclusive pelo ícone ao lado do relógio. Isso é necessário apenas na primeira instalação ou quando a integração for reparada.
 4. Abra `BigDucks.exe`.
 
-O pato aparece na bandeja e o HUD abre automaticamente. Nas próximas inicializações do Windows, o BIG DUCKS abre em segundo plano e inicia o Discord.
+O pato aparece na bandeja e o HUD abre automaticamente. Em instalações novas, o BIG DUCKS abre em segundo plano nas próximas inicializações do Windows e aguarda o Discord por padrão. Para iniciar o Discord automaticamente, edite `%LOCALAPPDATA%\DiscordStream\config.json` e defina `"autoStartDiscord": true`. Configurações antigas, criadas antes dessa opção existir, preservam o comportamento anterior e continuam iniciando o Discord.
 
 ## Uso
 
@@ -54,7 +54,7 @@ Os arquivos continuam em `%LOCALAPPDATA%\DiscordStream` por compatibilidade segu
 
 Proxies públicos são instáveis e não são controlados por este projeto. A conexão com o gateway continua protegida por TLS de ponta a ponta, mas o operador do proxy pode observar seu endereço IP, o domínio de destino, horários e volume de tráfego. Não use este projeto como VPN e não envie outros aplicativos pelo relay local.
 
-O BIG DUCKS reduz a falha causada por gateways regionais e proxies mortos, mas não pode garantir disponibilidade do Discord, da lista pública ou de qualquer proxy. Se nenhum candidato passar nos testes, o gateway espera e continua procurando em vez de expor uma conexão direta como se estivesse protegida.
+O BIG DUCKS reduz a falha causada por gateways regionais e proxies mortos, mas não pode garantir disponibilidade do Discord, da lista pública ou de qualquer proxy. Se nenhum candidato passar nos testes, o gateway espera e continua procurando em vez de expor uma conexão direta como se estivesse protegida. O fallback direto permanece desativado por padrão.
 
 Este projeto não é afiliado, aprovado ou mantido pelo Discord. Alterações no cliente oficial podem exigir uma atualização do BIG DUCKS.
 
