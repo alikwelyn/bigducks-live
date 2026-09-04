@@ -28,6 +28,12 @@ const ui = {
 };
 
 const stateCopy = {
+  disabled: ["Proteção desativada", "O BIG DUCKS está desligado nas configurações.", "failed"],
+  discord_closed: ["Discord fechado", "Abra o Discord para iniciar a proteção.", "working"],
+  discord_starting: ["Iniciando Discord", "Aguardando o cliente terminar de abrir.", "working"],
+  discord_running: ["Discord aberto", "A sessão não foi iniciada com a rota protegida.", "failed"],
+  starting_protection: ["Preparando a proteção", "O núcleo está configurando a rota protegida.", "working"],
+  direct: ["Conexão direta", "O gateway está conectado sem proxy; a proteção regional está desativada.", "failed"],
   starting: ["Preparando a proteção", "O núcleo está verificando proxies e configurando a rota.", "working"],
   protected: ["Live protegida", "O gateway do Discord está passando por uma saída verificada.", "protected"],
   reconnecting: ["Trocando a rota", "Aguarde enquanto o Discord abre uma nova conexão protegida.", "working"],
@@ -88,7 +94,7 @@ function renderStatus(status) {
   ui.pool.textContent = String(status.poolSize ?? 0);
   ui.tunnels.textContent = String(status.tunnelCount ?? 0);
 	ui.bridge.textContent = status.latencyMS ? `${status.latencyMS} ms` : "—";
-  ui.reload.disabled = !status.bridgeConnected;
+  ui.reload.disabled = !status.bridgeConnected || state === "discord_closed" || state === "disabled";
   ui.technical.textContent = [
     `estado: ${state}`,
     `proxies verificados: ${status.poolSize ?? 0}`,
@@ -96,6 +102,9 @@ function renderStatus(status) {
 		`bridge Electron: ${status.bridgeConnected ? "conectada" : "desconectada"}`,
 		`saída ativa: ${status.activeProxy || "nenhuma"}`,
 		`latência verificada: ${status.latencyMS ? `${status.latencyMS} ms` : "não informada"}`,
+    `mídia: ${status.media?.state || "não informada"}`,
+    `frames de vídeo: ${status.media?.videoFrames ?? 0}`,
+    `pacotes de áudio: ${status.media?.audioPackets ?? 0}`,
     `injeção: ${status.injectionState || "não informada"}`,
     status.lastError ? `último erro: ${status.lastError}` : "último erro: nenhum"
 	].join("\n");

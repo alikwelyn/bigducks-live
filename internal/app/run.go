@@ -182,7 +182,13 @@ func Run(ctx context.Context, options RunOptions) error {
 		allowedSuffixes = []string{"discord.com", "discord.gg", "discordapp.com", "discordapp.net", "discord.media", "discordcdn.com"}
 	}
 	relayTimeout := config.ProbeTimeout * 2
-	connector := gatewayConnector{pool: managed, tracker: tracker, status: statusStore, logger: logger}
+	connector := gatewayConnector{
+		pool: managed, tracker: tracker, status: statusStore, logger: logger,
+		allowDirectFallback: config.AllowDirectFallback,
+		directDial: func(dialCtx context.Context, host string, port int) (net.Conn, error) {
+			return (&net.Dialer{Timeout: config.HeartbeatTimeout}).DialContext(dialCtx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		},
+	}
 	relayServer := &relay.Server{
 		Address:         runtimeAddress(config.RelayPort, config.DynamicRuntimePorts),
 		Allowlist:       allowlist,
@@ -224,6 +230,13 @@ func Run(ctx context.Context, options RunOptions) error {
 	recovery := NewRecoveryCoordinator(RecoveryCoordinatorOptions{
 		Pool: managed, Tunnels: tracker, Bridge: bridgeServer, Status: statusStore, Logger: logger,
 		DiscordAlive: discord.IsRunning,
+		Aggressive:   config.AggressiveRecovery,
+		SecondStage: func(actionCtx context.Context) error {
+			if !bridgeReady {
+				return bridge.ErrUnavailable
+			}
+			return bridgeServer.Reload(actionCtx)
+		},
 	})
 	unbind := control.Bind(RuntimeBindings{
 		Reconnect: func(actionCtx context.Context) error {

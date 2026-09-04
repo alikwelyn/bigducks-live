@@ -31,6 +31,23 @@ func TestGatewayConnectorNeverFallsBackWhenPoolIsEmpty(t *testing.T) {
 	}
 }
 
+func TestGatewayConnectorCanUseExplicitDirectFallback(t *testing.T) {
+	pool := &gatewayPoolStub{err: proxy.ErrNoProxy}
+	status := newRuntimeStatusStore()
+	connector := gatewayConnector{
+		pool: pool, status: status, allowDirectFallback: true,
+		directDial: func(context.Context, string, int) (net.Conn, error) { return &gatewayTestConn{}, nil },
+	}
+	connection, err := connector.Dial(context.Background(), "gateway.discord.gg", 443)
+	if err != nil || connection == nil {
+		t.Fatalf("Dial() = %#v, %v; want direct connection", connection, err)
+	}
+	connection.Close()
+	if got := status.Snapshot().State; got != RecoveryDirect {
+		t.Fatalf("state = %q, want %q", got, RecoveryDirect)
+	}
+}
+
 func TestGatewayConnectorTracksSuccessfulProxyTunnel(t *testing.T) {
 	endpoint := model.Endpoint{Scheme: "socks5", Host: "proxy", Port: 1080}
 	pool := &gatewayPoolStub{result: proxy.DialResult{Conn: &gatewayTestConn{}, Endpoint: endpoint}}

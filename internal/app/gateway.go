@@ -19,11 +19,13 @@ type gatewayDialPool interface {
 }
 
 type gatewayConnector struct {
-	pool        gatewayDialPool
-	tracker     *relay.Tracker
-	status      *runtimeStatusStore
-	logger      *logging.Logger
-	onConnected func(model.Endpoint)
+	pool                gatewayDialPool
+	tracker             *relay.Tracker
+	status              *runtimeStatusStore
+	logger              *logging.Logger
+	onConnected         func(model.Endpoint)
+	allowDirectFallback bool
+	directDial          func(context.Context, string, int) (net.Conn, error)
 }
 
 func (c gatewayConnector) Dial(ctx context.Context, host string, port int) (net.Conn, error) {
@@ -39,6 +41,25 @@ func (c gatewayConnector) Dial(ctx context.Context, host string, port int) (net.
 	}
 	result, err := c.pool.DialWithEndpoint(ctx, host, port)
 	if err != nil || result.Conn == nil {
+		if c.allowDirectFallback && c.directDial != nil {
+			connection, directErr := c.directDial(ctx, host, port)
+			if directErr == nil && connection != nil {
+				if c.status != nil {
+					c.status.Update(func(status *RuntimeStatus) {
+						status.State = RecoveryDirect
+						status.LastError = ""
+						status.LastMessage = "Gateway conectado diretamente; proteção regional desativada"
+					})
+				}
+				if c.logger != nil {
+					c.logger.Printf("gateway connection uses direct fallback; protected routing is disabled")
+				}
+				return connection, nil
+			}
+			if directErr != nil {
+				err = directErr
+			}
+		}
 		if err == nil {
 			err = proxy.ErrNoProxy
 		}

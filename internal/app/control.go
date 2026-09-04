@@ -17,6 +17,7 @@ const (
 	RecoveryDiscordRunning  RecoveryState = "discord_running"
 	RecoveryStarting        RecoveryState = "starting"
 	RecoveryProtected       RecoveryState = "protected"
+	RecoveryDirect          RecoveryState = "direct"
 	RecoveryReconnecting    RecoveryState = "reconnecting"
 	RecoveryNoProxy         RecoveryState = "no_proxy"
 	RecoveryFailed          RecoveryState = "failed"

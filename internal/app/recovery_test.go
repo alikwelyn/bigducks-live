@@ -48,6 +48,23 @@ func TestRecoveryCoordinatorAbortsWhenDiscordIsClosed(t *testing.T) {
 	}
 }
 
+func TestRecoveryCoordinatorAggressiveRecoveryRunsSecondStage(t *testing.T) {
+	pool := &recoveryPoolStub{entries: []model.VerifiedEndpoint{{Endpoint: model.Endpoint{Scheme: "socks5", Host: "active", Port: 1080}}}}
+	tunnels := &recoveryTunnelsStub{generation: 1}
+	called := false
+	coordinator := NewRecoveryCoordinator(RecoveryCoordinatorOptions{
+		Pool: pool, Tunnels: tunnels, Status: newRuntimeStatusStore(),
+		Aggressive:  true,
+		SecondStage: func(context.Context) error { called = true; return nil },
+	})
+	if _, err := coordinator.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	if !called {
+		t.Fatal("aggressive recovery did not run second stage")
+	}
+}
+
 func TestRecoveryCoordinatorReportsNoProxy(t *testing.T) {
 	pool := &recoveryPoolStub{refreshErr: proxy.ErrNoProxy}
 	status := newRuntimeStatusStore()

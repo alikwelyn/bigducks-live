@@ -42,6 +42,8 @@ type RecoveryCoordinatorOptions struct {
 	Logger        *logging.Logger
 	BridgeTimeout time.Duration
 	DiscordAlive  func() bool
+	Aggressive    bool
+	SecondStage   func(context.Context) error
 }
 
 type RecoveryCoordinator struct {
@@ -52,6 +54,8 @@ type RecoveryCoordinator struct {
 	logger        *logging.Logger
 	bridgeTimeout time.Duration
 	discordAlive  func() bool
+	aggressive    bool
+	secondStage   func(context.Context) error
 	gate          chan struct{}
 }
 
@@ -68,6 +72,8 @@ func NewRecoveryCoordinator(options RecoveryCoordinatorOptions) *RecoveryCoordin
 		logger:        options.Logger,
 		bridgeTimeout: bridgeTimeout,
 		discordAlive:  options.DiscordAlive,
+		aggressive:    options.Aggressive,
+		secondStage:   options.SecondStage,
 		gate:          make(chan struct{}, 1),
 	}
 }
@@ -127,6 +133,13 @@ func (c *RecoveryCoordinator) Recover(ctx context.Context) (RecoveryResult, erro
 		return RecoveryResult{State: RecoveryFailed, Message: message, UsedBridge: usedBridge}, err
 	}
 
+	if c.aggressive && c.secondStage != nil {
+		if err := c.secondStage(ctx); err != nil {
+			message := "A rota foi trocada, mas a recuperação da mídia falhou"
+			c.setStatus(RecoveryFailed, err.Error(), message)
+			return RecoveryResult{State: RecoveryFailed, Message: message, UsedBridge: usedBridge}, err
+		}
+	}
 	message := "A live está usando uma nova rota protegida"
 	c.setStatus(RecoveryProtected, "", message)
 	if c.logger != nil {
