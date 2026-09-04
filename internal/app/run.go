@@ -237,14 +237,22 @@ func Run(ctx context.Context, options RunOptions) error {
 		fullProxyURL = "socks5://" + relayAddress
 		logger.Printf("full control mode uses the managed local relay; Discord media domains remain direct")
 	}
-	startDiscord := func(startCtx context.Context) error {
-		if !config.AutoStartDiscord {
+	launchProtectedDiscord := func(startCtx context.Context, force bool) error {
+		if !force && !config.AutoStartDiscord {
 			return ErrDiscordClosed
+		}
+		if err := startCtx.Err(); err != nil {
+			return err
 		}
 		discordPath, findErr := discord.FindLatest(config.DiscordRoot)
 		if findErr != nil {
 			return findErr
 		}
+		statusStore.Update(func(status *RuntimeStatus) {
+			status.State = RecoveryDiscordStarting
+			status.LastError = ""
+			status.LastMessage = "Abrindo o Discord pela rota protegida"
+		})
 		if bridgeReady {
 			resources := filepath.Join(filepath.Dir(discordPath), "resources")
 			injectionResult, injectionErr := ensureInjectionWithRetry(4, func() (injection.Result, error) {
@@ -274,6 +282,46 @@ func Run(ctx context.Context, options RunOptions) error {
 		}()
 		return nil
 	}
+	startDiscord := func(startCtx context.Context) error {
+		return launchProtectedDiscord(startCtx, false)
+	}
+	var repairMu sync.Mutex
+	repairDiscord := func(repairCtx context.Context) error {
+		repairMu.Lock()
+		defer repairMu.Unlock()
+		err := repairDiscordPolicy(config.AutoStartDiscord, config.Disabled, func() error {
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.State = RecoveryDiscordStarting
+				status.LastError = ""
+				status.LastMessage = "Fechando a sessão atual do Discord"
+			})
+			identity, identityErr := discord.CurrentProcess()
+			if identityErr != nil {
+				return fmt.Errorf("inspect Discord process: %w", identityErr)
+			}
+			if identity.PID > 0 {
+				logger.Printf("closing Discord process tree for explicit repair (pid %d)", identity.PID)
+				discord.KillProcessTree(int(identity.PID))
+			}
+			waitForDiscordShutdown(repairCtx, logger)
+			if discord.IsRunning() {
+				return errors.New("Discord did not close before the protected repair deadline")
+			}
+			if err := launchProtectedDiscord(repairCtx, true); err != nil {
+				return fmt.Errorf("launch protected Discord during repair: %w", err)
+			}
+			logger.Printf("explicit Discord repair completed")
+			return nil
+		})
+		if err != nil {
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.State = RecoveryFailed
+				status.LastError = err.Error()
+				status.LastMessage = "Não foi possível corrigir a sessão do Discord"
+			})
+		}
+		return err
+	}
 	recovery := NewRecoveryCoordinator(RecoveryCoordinatorOptions{
 		Pool: managed, Tunnels: tracker, Bridge: bridgeServer, Status: statusStore, Logger: logger,
 		DiscordAlive: discord.IsRunning, StartDiscord: startDiscord,
@@ -290,6 +338,7 @@ func Run(ctx context.Context, options RunOptions) error {
 			_, err := recovery.Recover(actionCtx)
 			return err
 		},
+		RepairDiscord: repairDiscord,
 		Reload: func(actionCtx context.Context) error {
 			if !bridgeReady {
 				return bridge.ErrUnavailable
