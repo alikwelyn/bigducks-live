@@ -16,17 +16,40 @@ import (
 )
 
 func IsRunning() bool {
-	output, err := exec.Command("tasklist.exe", "/FI", "IMAGENAME eq Discord.exe", "/NH").Output()
+	identity, err := CurrentProcess()
+	return err == nil && identity.PID != 0
+}
+
+func CurrentProcess() (ProcessIdentity, error) {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		return false
+		return ProcessIdentity{}, err
 	}
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) > 0 && strings.EqualFold(fields[0], "Discord.exe") {
-			return true
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	if err := windows.Process32First(snapshot, &entry); err != nil {
+		return ProcessIdentity{}, err
+	}
+	var discordPIDs []uint32
+	for {
+		name := windows.UTF16ToString(entry.ExeFile[:])
+		if strings.EqualFold(name, "Discord.exe") {
+			discordPIDs = append(discordPIDs, entry.ProcessID)
+		}
+		err := windows.Process32Next(snapshot, &entry)
+		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+			break
+		}
+		if err != nil {
+			return ProcessIdentity{}, err
 		}
 	}
-	return false
+	if len(discordPIDs) == 0 {
+		return ProcessIdentity{}, nil
+	}
+	// Discord's main process is the oldest matching process. This avoids
+	// treating short-lived crash/update children as the active client.
+	return ProcessIdentity{PID: discordPIDs[0], Token: strconv.FormatUint(uint64(discordPIDs[0]), 10)}, nil
 }
 
 func WaitForProcessTree(ctx context.Context, command *exec.Cmd) error {

@@ -77,6 +77,14 @@ func Run(ctx context.Context, options RunOptions) error {
 	}
 	statusStore := newRuntimeStatusStore()
 	control.SetStatus(statusStore.Snapshot())
+	if config.Disabled {
+		statusStore.Update(func(status *RuntimeStatus) {
+			status.State = RecoveryDisabled
+			status.LastMessage = "A proteção está desativada nas configurações"
+		})
+		logger.Printf("protection is disabled by configuration")
+		return waitForDisabled(runCtx)
+	}
 	tracker := relay.NewTracker()
 	defer tracker.CloseAll()
 	var stateSaveMu sync.Mutex
@@ -120,10 +128,12 @@ func Run(ctx context.Context, options RunOptions) error {
 				verified.CheckedAt = time.Now().Unix()
 				return verified, nil
 			}
-			if err := proxy.ProbeGateway(probeCtx, endpoint, config.HeartbeatTimeout); err != nil {
+			verified, err := proxy.ProbeEndpoint(probeCtx, endpoint, config.HeartbeatTimeout)
+			if err != nil {
 				return model.VerifiedEndpoint{}, err
 			}
-			return model.VerifiedEndpoint{Endpoint: endpoint, LatencyMS: int(time.Since(started).Milliseconds()), CheckedAt: time.Now().Unix()}, nil
+			verified.LatencyMS = int(time.Since(started).Milliseconds())
+			return verified, nil
 		},
 		WaitBudget:       config.RecoveryWait,
 		HeartbeatTimeout: config.HeartbeatTimeout,
@@ -285,8 +295,20 @@ func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL stri
 	}
 	running := discord.IsRunning()
 	if running && !attach {
-		logger.Printf("Discord is already running; close it completely from the tray and retry")
-		return errors.New("Discord is already running; close it from the tray and retry")
+		logger.Printf("Discord is already running; monitoring the existing session without claiming protected routing")
+		statusStore.Update(func(status *RuntimeStatus) {
+			status.State = RecoveryDiscordRunning
+			status.LastMessage = "Discord já estava aberto; a proteção aguarda uma sessão iniciada pelo BIG DUCKS"
+		})
+		return waitForDiscordExit(ctx, statusStore, logger)
+	}
+	if !running && !config.AutoStartDiscord {
+		statusStore.Update(func(status *RuntimeStatus) {
+			status.State = RecoveryDiscordClosed
+			status.LastMessage = "Aguardando o Discord ser aberto"
+		})
+		logger.Printf("Discord is closed; automatic launch is disabled")
+		return waitForDiscord(ctx, statusStore, logger)
 	}
 	if bridgeReady && !running {
 		resources := filepath.Join(filepath.Dir(discordPath), "resources")
@@ -311,8 +333,7 @@ func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL stri
 	}
 	if running {
 		logger.Printf("attached protection core to the running Discord session")
-		<-ctx.Done()
-		return ctx.Err()
+		return waitForDiscordExit(ctx, statusStore, logger)
 	}
 
 	var command *exec.Cmd
@@ -340,6 +361,56 @@ func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL stri
 	}
 	logger.Printf("Discord exited")
 	return nil
+}
+
+func waitForDiscord(ctx context.Context, statusStore *runtimeStatusStore, logger *logging.Logger) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		if discord.IsRunning() {
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.State = RecoveryDiscordRunning
+				status.LastMessage = "Discord aberto; a proteção aguarda uma sessão iniciada pelo BIG DUCKS"
+			})
+		} else {
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.State = RecoveryDiscordClosed
+				status.LastMessage = "Aguardando o Discord ser aberto"
+			})
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForDisabled(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func waitForDiscordExit(ctx context.Context, statusStore *runtimeStatusStore, logger *logging.Logger) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		if !discord.IsRunning() {
+			statusStore.Update(func(status *RuntimeStatus) {
+				status.State = RecoveryDiscordClosed
+				status.LastMessage = "O Discord foi fechado"
+			})
+			if logger != nil {
+				logger.Printf("Discord exited; protection is now idle")
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func reasonSuffix(reason string) string {
