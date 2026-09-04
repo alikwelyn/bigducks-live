@@ -1,5 +1,5 @@
-import '../../../shared/rtc.js';
-import '../../../shared/adaptation.js';
+import { profileFor } from '../../../shared/adaptation.js';
+import { createBroadcaster } from '../../../shared/media.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -10,12 +10,18 @@ function renderCapture() {
   document.querySelector('#start').onclick = async () => {
     const status = document.querySelector('#status');
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 60, max: 60 } }, audio: document.querySelector('#audio').checked });
-      const settings = stream.getVideoTracks()[0]?.getSettings() ?? {};
-      document.querySelector('#source').textContent = `Fonte: ${settings.displaySurface ?? 'selecionada'}`;
-      document.querySelector('#fps').textContent = `FPS alvo: ${document.querySelector('#quality').value}`;
-      status.textContent = 'Captura pronta. Conecte esta página ao relay para iniciar a transmissão.';
-      stream.getVideoTracks()[0]?.addEventListener('ended', () => { status.textContent = 'Captura encerrada.'; });
+      const quality = document.querySelector('#quality').value;
+      const profile = profileFor(quality === 'adaptive' ? '720p60' : quality);
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
+      const params = new URLSearchParams(location.search);
+      const sessionResponse = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: params.get('room') || 'demo', user: params.get('user') || crypto.randomUUID(), role: 'publisher' }) });
+      if (!sessionResponse.ok) throw new Error('relay session unavailable');
+      const { token } = await sessionResponse.json();
+      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}`);
+      await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+      const broadcaster = await createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, onStatus: ({ codec, width, height, fps }) => { document.querySelector('#source').textContent = `Fonte: ${width}×${height}`; document.querySelector('#fps').textContent = `Codec: ${codec} / ${fps} FPS`; }, onEnd: () => { status.textContent = 'Captura encerrada.'; } });
+      status.textContent = 'Transmitindo. Mantenha esta página aberta.';
+      window.addEventListener('beforeunload', () => { broadcaster.stop(); socket.close(); }, { once: true });
     } catch (error) { status.textContent = error?.name === 'NotAllowedError' ? 'Permissão de captura cancelada.' : 'Não foi possível iniciar a captura.'; }
   };
 }

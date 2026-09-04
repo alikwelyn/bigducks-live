@@ -39,7 +39,9 @@ export function audioConstraints() {
   return { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
 }
 
-export async function createBroadcaster({ ws, profile, audio = false, stream = null, onStatus = () => {}, onEnd = () => {} }) {
+import { VIDEO_DELTA, VIDEO_KEYFRAME, encodePacket } from './protocol.js';
+
+export async function createBroadcaster({ ws, profile, audio = false, stream = null, slot = 0, onStatus = () => {}, onEnd = () => {} }) {
   if (!stream) stream = await navigator.mediaDevices.getDisplayMedia({ ...captureConstraints({ fps: profile.fps, audio }) });
   const track = stream.getVideoTracks()[0];
   if (!track) throw new Error('screen capture returned no video track');
@@ -47,16 +49,33 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   const settings = track.getSettings();
   const size = fitWithin(settings.width || profile.width, settings.height || profile.height);
   const encoder = new VideoEncoder({
-    output: (chunk, metadata) => {
+    output: (chunk) => {
       const payload = new Uint8Array(chunk.byteLength);
       chunk.copyTo(payload);
-      ws.send({ type: chunk.type === 'key' ? 1 : 2, payload, metadata });
+      ws.send(encodePacket({ slot, type: chunk.type === 'key' ? VIDEO_KEYFRAME : VIDEO_DELTA, sentAt: Date.now(), clock: performance.now(), payload }));
     },
     error: (error) => onEnd(error),
   });
   const codec = codecCandidates(size.width, size.height, profile.fps)[0];
   encoder.configure({ codec: codec.codec, width: size.width, height: size.height, framerate: profile.fps, bitrate: profile.bitrate, latencyMode: 'realtime', avc: codec.avc });
-  track.addEventListener('ended', () => { encoder.close(); onEnd(new Error('capture ended')); });
+  let stopped = false;
+  let reader;
+  const processor = typeof MediaStreamTrackProcessor === 'function' ? new MediaStreamTrackProcessor({ track }) : null;
+  const pump = async () => {
+    if (!processor) return;
+    reader = processor.readable.getReader();
+    try {
+      while (!stopped) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (encoder.encodeQueueSize > 2) { value.close(); continue; }
+        encoder.encode(value, { keyFrame: encoder.encodeQueueSize === 0 && Date.now() % 3000 < 100 });
+        value.close();
+      }
+    } catch (error) { if (!stopped) onEnd(error); }
+  };
+  track.addEventListener('ended', () => { if (!stopped) onEnd(new Error('capture ended')); });
   onStatus({ codec: codec.codec, ...size, fps: profile.fps });
-  return { stream, encoder, stop() { encoder.close(); stream.getTracks().forEach((item) => item.stop()); } };
+  void pump();
+  return { stream, encoder, stop() { stopped = true; reader?.cancel(); encoder.close(); stream.getTracks().forEach((item) => item.stop()); } };
 }
