@@ -222,6 +222,7 @@ func Run(ctx context.Context, options RunOptions) error {
 	}
 	recovery := NewRecoveryCoordinator(RecoveryCoordinatorOptions{
 		Pool: managed, Tunnels: tracker, Bridge: bridgeServer, Status: statusStore, Logger: logger,
+		DiscordAlive: discord.IsRunning,
 	})
 	unbind := control.Bind(RuntimeBindings{
 		Reconnect: func(actionCtx context.Context) error {
