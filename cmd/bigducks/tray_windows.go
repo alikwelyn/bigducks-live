@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/alikwelyn/bigducks-live/internal/app"
+	"github.com/alikwelyn/bigducks-live/internal/discord"
 	"github.com/alikwelyn/bigducks-live/internal/hud"
 	"github.com/alikwelyn/bigducks-live/internal/logging"
 	"github.com/alikwelyn/bigducks-live/internal/startup"
@@ -28,12 +29,14 @@ const (
 	trayOpenLabel    = "Abrir"
 	trayRestartLabel = "Reiniciar"
 	trayQuitLabel    = "Sair"
+	trayEnableLabel  = "Ativar"
 )
 
 type trayController struct {
 	core       *supervisor.Supervisor
 	helperPath string
 	dataDir    string
+	configPath string
 	logger     *logging.Logger
 	closed     chan struct{}
 	closeOnce  sync.Once
@@ -41,6 +44,7 @@ type trayController struct {
 	openItem    *systray.MenuItem
 	restartItem *systray.MenuItem
 	quitItem    *systray.MenuItem
+	enableItem  *systray.MenuItem
 	openOnReady bool
 	updating    atomic.Bool
 }
@@ -54,6 +58,7 @@ func runTray(config app.Config, _ *startup.Manager, helperPath string, _ bool, o
 		helperPath:  helperPath,
 		logger:      logger,
 		dataDir:     config.DataDir,
+		configPath:  filepath.Join(config.DataDir, app.ConfigFileName),
 		closed:      make(chan struct{}),
 		openOnReady: openOnReady,
 	}
@@ -71,7 +76,11 @@ func (c *trayController) onReady() {
 	systray.SetTooltip("BIG DUCKS LIVE — iniciando proteção")
 	c.openItem = systray.AddMenuItem(trayOpenLabel, "Abrir o painel de proteção das lives")
 	c.restartItem = systray.AddMenuItem(trayRestartLabel, "Reiniciar somente o núcleo, mantendo o Discord aberto")
-	c.quitItem = systray.AddMenuItem(trayQuitLabel, "Encerrar o BIG DUCKS sem fechar o Discord")
+	c.quitItem = systray.AddMenuItem(trayQuitLabel, "Encerrar o BIG DUCKS e fechar completamente o Discord")
+	c.enableItem = systray.AddMenuItem(trayEnableLabel, "Ativar a proteção quando ela estiver desativada")
+	if !c.configDisabled() {
+		c.enableItem.Disable()
+	}
 	c.restartItem.Disable()
 	go c.menuLoop()
 	go c.startCore()
@@ -165,6 +174,39 @@ func (c *trayController) onExit() {
 	}
 }
 
+func (c *trayController) quitEverything() {
+	c.updating.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := c.core.Stop(ctx); err != nil {
+		c.logger.Printf("could not stop protection core before exit: %v", err)
+	}
+	cancel()
+	if identity, err := discord.CurrentProcess(); err == nil && identity.PID > 0 {
+		discord.KillProcessTree(int(identity.PID))
+	}
+	systray.Quit()
+}
+
+func (c *trayController) configDisabled() bool {
+	config, err := app.LoadConfig(c.configPath)
+	return err == nil && config.Disabled
+}
+
+func (c *trayController) enableProtection(item *systray.MenuItem) {
+	config, err := app.LoadConfig(c.configPath)
+	if err != nil {
+		c.logger.Printf("could not load configuration to enable protection: %v", err)
+		return
+	}
+	config.Disabled = false
+	if err := app.SaveConfig(c.configPath, config); err != nil {
+		c.logger.Printf("could not enable protection: %v", err)
+		return
+	}
+	item.Disable()
+	c.restartCore()
+}
+
 func (c *trayController) menuLoop() {
 	for {
 		select {
@@ -173,7 +215,9 @@ func (c *trayController) menuLoop() {
 		case <-c.restartItem.ClickedCh:
 			go c.restartCore()
 		case <-c.quitItem.ClickedCh:
-			systray.Quit()
+			go c.quitEverything()
+		case <-c.enableItem.ClickedCh:
+			go c.enableProtection(c.enableItem)
 		case <-c.closed:
 			return
 		}

@@ -16,8 +16,11 @@ import (
 )
 
 func TestTrayMenuUsesOnlyShortUserFacingLabels(t *testing.T) {
-	got := []string{trayOpenLabel, trayRestartLabel, trayQuitLabel}
-	want := []string{"Abrir", "Reiniciar", "Sair"}
+	got := []string{trayOpenLabel, trayRestartLabel, trayQuitLabel, trayEnableLabel}
+	want := []string{"Abrir", "Reiniciar", "Sair", "Ativar"}
+	if len(got) != len(want) {
+		t.Fatalf("menu labels = %#v, want %#v", got, want)
+	}
 	for index := range want {
 		if got[index] != want[index] {
 			t.Fatalf("tray label %d = %q, want %q", index, got[index], want[index])
