@@ -28,6 +28,19 @@ func TestPageContainsAccessibleRecoveryControls(t *testing.T) {
 	}
 }
 
+func TestTelemetryCardUsesCompactHorizontalLayout(t *testing.T) {
+	page := hud.PageHTML()
+	for _, required := range []string{
+		"grid-template-columns: minmax(210px, 1fr) minmax(360px, auto)",
+		"grid-row: 1 / 4",
+		"min-height: 44px",
+	} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("HUD telemetry layout does not contain %q", required)
+		}
+	}
+}
+
 func TestPageContainsTelemetryControlsAndPrivacyCopy(t *testing.T) {
 	page := hud.PageHTML()
 	for _, required := range []string{
