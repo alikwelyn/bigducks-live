@@ -11,17 +11,22 @@ var ErrRuntimeUnavailable = errors.New("o núcleo do BIG DUCKS não está dispon
 type RecoveryState string
 
 const (
-	RecoveryStarting       RecoveryState = "starting"
-	RecoveryProtected      RecoveryState = "protected"
-	RecoveryReconnecting   RecoveryState = "reconnecting"
-	RecoveryNoProxy        RecoveryState = "no_proxy"
-	RecoveryFailed         RecoveryState = "failed"
-	RecoveryRepairRequired RecoveryState = "repair_required"
-	RecoveryStopped        RecoveryState = "stopped"
+	RecoveryDisabled        RecoveryState = "disabled"
+	RecoveryDiscordClosed   RecoveryState = "discord_closed"
+	RecoveryDiscordStarting RecoveryState = "discord_starting"
+	RecoveryDiscordRunning  RecoveryState = "discord_running"
+	RecoveryStarting        RecoveryState = "starting"
+	RecoveryProtected       RecoveryState = "protected"
+	RecoveryReconnecting    RecoveryState = "reconnecting"
+	RecoveryNoProxy         RecoveryState = "no_proxy"
+	RecoveryFailed          RecoveryState = "failed"
+	RecoveryRepairRequired  RecoveryState = "repair_required"
+	RecoveryStopped         RecoveryState = "stopped"
 )
 
 type RuntimeStatus struct {
 	State           RecoveryState
+	Media           MediaStatus
 	PoolSize        int
 	TunnelCount     int
 	BridgeConnected bool

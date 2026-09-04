@@ -32,6 +32,22 @@ func TestRecoveryCoordinatorCompletesAfterElectronRedial(t *testing.T) {
 	}
 }
 
+func TestRecoveryCoordinatorAbortsWhenDiscordIsClosed(t *testing.T) {
+	pool := &recoveryPoolStub{entries: []model.VerifiedEndpoint{{Endpoint: model.Endpoint{Scheme: "socks5", Host: "active", Port: 1080}}}}
+	status := newRuntimeStatusStore()
+	coordinator := NewRecoveryCoordinator(RecoveryCoordinatorOptions{
+		Pool: pool, Tunnels: &recoveryTunnelsStub{}, Status: status,
+		DiscordAlive: func() bool { return false },
+	})
+	_, err := coordinator.Recover(context.Background())
+	if !errors.Is(err, ErrDiscordClosed) {
+		t.Fatalf("Recover() error = %v, want ErrDiscordClosed", err)
+	}
+	if got := status.Snapshot().State; got != RecoveryDiscordClosed {
+		t.Fatalf("status = %q, want discord_closed", got)
+	}
+}
+
 func TestRecoveryCoordinatorReportsNoProxy(t *testing.T) {
 	pool := &recoveryPoolStub{refreshErr: proxy.ErrNoProxy}
 	status := newRuntimeStatusStore()

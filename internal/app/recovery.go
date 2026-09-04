@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/alikwelyn/bigducks-live/internal/logging"
 	"github.com/alikwelyn/bigducks-live/internal/model"
 )
+
+var ErrDiscordClosed = errors.New("Discord is closed")
 
 type recoveryPool interface {
 	Snapshot() []model.VerifiedEndpoint
@@ -38,6 +41,7 @@ type RecoveryCoordinatorOptions struct {
 	Status        *runtimeStatusStore
 	Logger        *logging.Logger
 	BridgeTimeout time.Duration
+	DiscordAlive  func() bool
 }
 
 type RecoveryCoordinator struct {
@@ -47,6 +51,7 @@ type RecoveryCoordinator struct {
 	status        *runtimeStatusStore
 	logger        *logging.Logger
 	bridgeTimeout time.Duration
+	discordAlive  func() bool
 	gate          chan struct{}
 }
 
@@ -62,6 +67,7 @@ func NewRecoveryCoordinator(options RecoveryCoordinatorOptions) *RecoveryCoordin
 		status:        options.Status,
 		logger:        options.Logger,
 		bridgeTimeout: bridgeTimeout,
+		discordAlive:  options.DiscordAlive,
 		gate:          make(chan struct{}, 1),
 	}
 }
@@ -80,6 +86,10 @@ func (c *RecoveryCoordinator) Recover(ctx context.Context) (RecoveryResult, erro
 		return RecoveryResult{State: RecoveryFailed}, ctx.Err()
 	}
 
+	if c.discordAlive != nil && !c.discordAlive() {
+		c.setStatus(RecoveryDiscordClosed, ErrDiscordClosed.Error(), "O Discord está fechado")
+		return RecoveryResult{State: RecoveryDiscordClosed, Message: "O Discord está fechado"}, ErrDiscordClosed
+	}
 	c.setStatus(RecoveryReconnecting, "", "Preparando uma nova rota para a live")
 	if len(c.pool.Snapshot()) == 0 {
 		if err := c.pool.Refresh(ctx, true); err != nil {
