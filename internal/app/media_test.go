@@ -3,7 +3,28 @@ package app
 import (
 	"testing"
 	"time"
+
+	"github.com/alikwelyn/bigducks-live/internal/telemetry"
 )
+
+func TestMediaFailureReportsOnlyOnTransition(t *testing.T) {
+	capture := &capturedTelemetry{}
+	before := MediaStatus{}
+	after := ReduceMedia(before, MediaEvent{Session: "discord-session-secret", Kind: "stream_start"})
+	reportMediaTransition(capture, before, after)
+	before = after
+	after = ReduceMedia(before, MediaEvent{Session: "discord-session-secret", Kind: "audio_packet"})
+	reportMediaTransition(capture, before, after)
+	before = after
+	after = ReduceMedia(before, MediaEvent{Session: "discord-session-secret", Kind: "audio_packet"})
+	reportMediaTransition(capture, before, after)
+	if len(capture.events) != 1 || capture.events[0].Code != telemetry.CodeAudioOnly {
+		t.Fatalf("captured events = %#v", capture.events)
+	}
+	if capture.events[0].Detail != "" {
+		t.Fatalf("free text captured = %q", capture.events[0].Detail)
+	}
+}
 
 func TestReduceMediaKeepsVideoFailureSeparateFromGateway(t *testing.T) {
 	now := time.Unix(10, 0)

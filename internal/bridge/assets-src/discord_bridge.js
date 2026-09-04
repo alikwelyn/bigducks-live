@@ -17,7 +17,7 @@ if (!global.__discordStreamBridgeLoaded) {
   const telemetryCodes = new Set([
     "bridge_failure", "audio_only", "video_stalled", "receiver_timeout",
     "rtc_disconnected", "native_probe_unavailable", "native_transmitter_stalled",
-    "native_receiver_audio_only", "native_receiver_no_packets", "native_decoder_stalled", "native_render_unknown",
+    "native_receiver_no_packets", "native_decoder_stalled", "native_render_unknown",
     "telemetry_test"
   ]);
   let telemetryEnabled = false;

@@ -98474,7 +98474,6 @@ if (!global.__discordStreamBridgeLoaded) {
     "rtc_disconnected",
     "native_probe_unavailable",
     "native_transmitter_stalled",
-    "native_receiver_audio_only",
     "native_receiver_no_packets",
     "native_decoder_stalled",
     "native_render_unknown",

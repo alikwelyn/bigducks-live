@@ -1,6 +1,10 @@
 package app
 
-import "time"
+import (
+	"time"
+
+	"github.com/alikwelyn/bigducks-live/internal/telemetry"
+)
 
 type MediaState string
 
@@ -80,6 +84,56 @@ type MediaEvent struct {
 	Session string
 	Kind    string
 	At      time.Time
+}
+
+type mediaTelemetryReporter interface {
+	Capture(telemetry.Event)
+}
+
+func reportMediaTransition(reporter mediaTelemetryReporter, before, after MediaStatus) {
+	reportMediaTransitionWithMode(reporter, before, after, "")
+}
+
+func reportMediaTransitionWithMode(reporter mediaTelemetryReporter, before, after MediaStatus, mode string) {
+	if reporter == nil || before.State == after.State {
+		return
+	}
+	codes := map[MediaState]telemetry.Code{
+		MediaAudioOnly:                telemetry.CodeAudioOnly,
+		MediaVideoStalled:             telemetry.CodeVideoStalled,
+		MediaReceiverTimeout:          telemetry.CodeReceiverTimeout,
+		MediaRTCDisconnected:          telemetry.CodeRTCDisconnected,
+		MediaNativeReceiverAudioOnly:  telemetry.CodeAudioOnly,
+		MediaNativeReceiverNoPackets:  telemetry.CodeNativeReceiverNoPackets,
+		MediaNativeDecoderStalled:     telemetry.CodeNativeDecoderStalled,
+		MediaNativeTransmitterStalled: telemetry.CodeNativeTransmitterStalled,
+		MediaNativeProbeUnavailable:   telemetry.CodeNativeProbeUnavailable,
+		MediaNativeRenderUnknown:      telemetry.CodeNativeRenderUnknown,
+		MediaNativeRTCDisconnected:    telemetry.CodeRTCDisconnected,
+	}
+	code, ok := codes[after.State]
+	if !ok {
+		return
+	}
+	audioPackets := after.Native.AudioPackets
+	if after.Native.State == MediaUnknown {
+		audioPackets = after.AudioPackets
+	}
+	reporter.Capture(telemetry.Event{
+		Component:      telemetry.ComponentMedia,
+		Code:           code,
+		State:          string(after.State),
+		Mode:           mode,
+		StatsAvailable: after.Native.StatsAvailable,
+		HasAudioSSRC:   after.Native.HasAudioSSRC,
+		HasVideoSSRC:   after.Native.HasVideoSSRC,
+		AudioPackets:   audioPackets,
+		VideoPackets:   after.Native.VideoPackets,
+		AudioBytes:     after.Native.AudioBytes,
+		VideoBytes:     after.Native.VideoBytes,
+		FramesDecoded:  after.Native.FramesDecoded,
+		ReceiverCount:  after.Native.ReceiverCount,
+	})
 }
 
 func ReduceMedia(status MediaStatus, event MediaEvent) MediaStatus {

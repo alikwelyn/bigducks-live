@@ -18,7 +18,6 @@ const (
 	CodeRTCDisconnected          Code = "rtc_disconnected"
 	CodeNativeProbeUnavailable   Code = "native_probe_unavailable"
 	CodeNativeTransmitterStalled Code = "native_transmitter_stalled"
-	CodeNativeReceiverAudioOnly  Code = "native_receiver_audio_only"
 	CodeNativeReceiverNoPackets  Code = "native_receiver_no_packets"
 	CodeNativeDecoderStalled     Code = "native_decoder_stalled"
 	CodeNativeRenderUnknown      Code = "native_render_unknown"

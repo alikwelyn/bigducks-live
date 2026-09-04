@@ -62,7 +62,7 @@ Proxies públicos são instáveis e não são controlados por este projeto. A co
 
 O BIG DUCKS reduz a falha causada por gateways regionais e proxies mortos, mas não pode garantir disponibilidade do Discord, da lista pública ou de qualquer proxy. Se nenhum candidato passar nos testes, o gateway espera e continua procurando em vez de expor uma conexão direta como se estivesse protegida. O fallback direto permanece desativado por padrão.
 
-O diagnóstico detalhado e o roteiro A/B estão em [docs/native-rtc-diagnostics.md](docs/native-rtc-diagnostics.md). A telemetria é habilitada explicitamente no HUD; desabilitá-la bloqueia novos eventos e remove apenas a fila local. IPs, tokens, URLs completas, caminhos, IDs Discord, SSRC, mensagens e logs não são enviados.
+O diagnóstico detalhado e o roteiro A/B estão em [docs/native-rtc-diagnostics.md](docs/native-rtc-diagnostics.md). A telemetria é habilitada explicitamente no HUD; desabilitá-la bloqueia novos eventos e remove apenas a fila local. IPs, tokens, URLs completas, caminhos, IDs Discord, SSRC, mensagens e logs não são enviados. Consulte [docs/telemetry.md](docs/telemetry.md) para o contrato completo e a remoção de eventos já enviados.
 
 Este projeto não é afiliado, aprovado ou mantido pelo Discord. Alterações no cliente oficial podem exigir uma atualização do BIG DUCKS.
 

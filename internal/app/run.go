@@ -57,57 +57,6 @@ func nativeSampleFromBridgeEvent(event bridge.MediaEvent) (NativeMediaSample, bo
 	}, true
 }
 
-func telemetryEventForMedia(status MediaStatus, mode RoutingMode) (telemetry.Event, bool) {
-	state := status.State
-	code := telemetry.Code("")
-	switch status.Native.State {
-	case MediaNativeProbeUnavailable:
-		code = telemetry.CodeNativeProbeUnavailable
-	case MediaNativeTransmitterStalled:
-		code = telemetry.CodeNativeTransmitterStalled
-	case MediaNativeReceiverAudioOnly:
-		code = telemetry.CodeNativeReceiverAudioOnly
-	case MediaNativeReceiverNoPackets:
-		code = telemetry.CodeNativeReceiverNoPackets
-	case MediaNativeDecoderStalled:
-		code = telemetry.CodeNativeDecoderStalled
-	case MediaNativeRenderUnknown:
-		code = telemetry.CodeNativeRenderUnknown
-	case MediaNativeRTCDisconnected:
-		code = telemetry.CodeRTCDisconnected
-	}
-	if code == "" {
-		switch status.State {
-		case MediaAudioOnly:
-			code = telemetry.CodeAudioOnly
-		case MediaVideoStalled:
-			code = telemetry.CodeVideoStalled
-		case MediaReceiverTimeout:
-			code = telemetry.CodeReceiverTimeout
-		case MediaRTCDisconnected:
-			code = telemetry.CodeRTCDisconnected
-		}
-	}
-	if code == "" {
-		return telemetry.Event{}, false
-	}
-	return telemetry.Event{
-		Component:      telemetry.ComponentMedia,
-		Code:           code,
-		State:          string(state),
-		Mode:           string(mode),
-		StatsAvailable: status.Native.StatsAvailable,
-		HasAudioSSRC:   status.Native.HasAudioSSRC,
-		HasVideoSSRC:   status.Native.HasVideoSSRC,
-		AudioPackets:   status.Native.AudioPackets,
-		VideoPackets:   status.Native.VideoPackets,
-		AudioBytes:     status.Native.AudioBytes,
-		VideoBytes:     status.Native.VideoBytes,
-		FramesDecoded:  status.Native.FramesDecoded,
-		ReceiverCount:  status.Native.ReceiverCount,
-	}, true
-}
-
 type RunOptions struct {
 	Config          Config
 	DryRun          bool
@@ -374,25 +323,22 @@ func Run(ctx context.Context, options RunOptions) error {
 	bridgeServer := bridge.NewServer(config.DataDir)
 	bridgeServer.SetMediaEventHandler(func(event bridge.MediaEvent) {
 		if sample, ok := nativeSampleFromBridgeEvent(event); ok {
+			before := statusStore.Snapshot().Media
 			statusStore.Update(func(status *RuntimeStatus) {
 				status.Media = ReduceNativeMedia(status.Media, sample)
 			})
 			media := statusStore.Snapshot().Media
-			if telemetryEvent, ok := telemetryEventForMedia(media, config.RoutingMode); ok {
-				telemetryReporter.Capture(telemetryEvent)
-			}
+			reportMediaTransitionWithMode(telemetryReporter, before, media, string(config.RoutingMode))
 			native := media.Native
 			logger.Printf("native media diagnostic: state=%s demand=%t stats=%t audio_packets=%d video_packets=%d decoded=%d receiver_count=%d", native.State, native.DemandActive, native.StatsAvailable, native.AudioPackets, native.VideoPackets, native.FramesDecoded, native.ReceiverCount)
 			return
 		}
+		before := statusStore.Snapshot().Media
 		statusStore.Update(func(status *RuntimeStatus) {
 			status.Media = ReduceMedia(status.Media, MediaEvent{Session: event.Session, Kind: event.Kind, At: event.At})
 		})
 		media := statusStore.Snapshot().Media
-		media.Native.State = MediaUnknown
-		if telemetryEvent, ok := telemetryEventForMedia(media, config.RoutingMode); ok {
-			telemetryReporter.Capture(telemetryEvent)
-		}
+		reportMediaTransitionWithMode(telemetryReporter, before, media, string(config.RoutingMode))
 	})
 	bridgeReady := true
 	if err := bridgeServer.Start(runCtx); err != nil {

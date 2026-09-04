@@ -18,7 +18,6 @@ var allowedCodes = map[Code]struct{}{
 	CodeRTCDisconnected:          {},
 	CodeNativeProbeUnavailable:   {},
 	CodeNativeTransmitterStalled: {},
-	CodeNativeReceiverAudioOnly:  {},
 	CodeNativeReceiverNoPackets:  {},
 	CodeNativeDecoderStalled:     {},
 	CodeNativeRenderUnknown:      {},
