@@ -15,7 +15,8 @@ Aplicativo portátil para Windows que mantém as lives do Discord acessíveis po
 - `Corrigir Discord` fecha e reabre a sessão pela rota protegida, sem usar o Gerenciador de Tarefas;
 - `Sair` fecha o HUD, o núcleo e toda a árvore do Discord;
 - logs e arquivos locais recebem permissões legíveis pelo usuário atual;
-- atualizações vêm de Releases do GitHub e só são instaladas após assinatura Ed25519 e SHA-256 válidos.
+- atualizações vêm de Releases do GitHub e só são instaladas após assinatura Ed25519 e SHA-256 válidos;
+- o diagnóstico RTC nativo do Go Live é somente leitura e ajuda a separar transporte, decoder e renderização.
 
 ## Instalação
 
@@ -36,7 +37,8 @@ No HUD:
 - **Testar rota** confirma tanto o host canônico quanto um gateway regional;
 - **Recarregar Discord** recarrega a janela usando a integração Electron;
 - **Abrir log** abre o arquivo técnico no Bloco de Notas sem exigir administrador;
-- **Atualizar agora** baixa, valida e instala uma Release assinada.
+- **Atualizar agora** baixa, valida e instala uma Release assinada;
+- **Detalhes técnicos** mostram o diagnóstico nativo do RTC sem exibir SSRC ou identificadores.
 
 No ícone do pato ao lado do relógio:
 
@@ -58,6 +60,8 @@ Os arquivos continuam em `%LOCALAPPDATA%\DiscordStream` por compatibilidade segu
 Proxies públicos são instáveis e não são controlados por este projeto. A conexão com o gateway continua protegida por TLS de ponta a ponta, mas o operador do proxy pode observar seu endereço IP, o domínio de destino, horários e volume de tráfego. Não use este projeto como VPN e não envie outros aplicativos pelo relay local.
 
 O BIG DUCKS reduz a falha causada por gateways regionais e proxies mortos, mas não pode garantir disponibilidade do Discord, da lista pública ou de qualquer proxy. Se nenhum candidato passar nos testes, o gateway espera e continua procurando em vez de expor uma conexão direta como se estivesse protegida. O fallback direto permanece desativado por padrão.
+
+O diagnóstico detalhado e o roteiro A/B estão em [docs/native-rtc-diagnostics.md](docs/native-rtc-diagnostics.md).
 
 Este projeto não é afiliado, aprovado ou mantido pelo Discord. Alterações no cliente oficial podem exigir uma atualização do BIG DUCKS.
 
