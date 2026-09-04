@@ -1,0 +1,15 @@
+import { describe, expect, it } from 'vitest';
+import { PROFILES, chooseAdaptiveProfile, profileFor } from './adaptation.js';
+
+describe('quality adaptation', () => {
+  it('exposes the three selectable profiles', () => {
+    expect(PROFILES.map(({ name }) => name)).toEqual(['720p60', '1080p30', '1080p60']);
+    expect(profileFor('1080p30')).toMatchObject({ width: 1920, height: 1080, fps: 30 });
+  });
+
+  it('downgrades under loss and latency, then recovers gradually', () => {
+    expect(chooseAdaptiveProfile('1080p60', { loss: 0.12, rtt: 450, encodeQueue: 3 })).toBe('720p60');
+    expect(chooseAdaptiveProfile('720p60', { loss: 0, rtt: 40, encodeQueue: 0, healthyForMs: 12000 })).toBe('1080p30');
+    expect(chooseAdaptiveProfile('1080p30', { loss: 0, rtt: 40, encodeQueue: 0, healthyForMs: 12000 })).toBe('1080p60');
+  });
+});
