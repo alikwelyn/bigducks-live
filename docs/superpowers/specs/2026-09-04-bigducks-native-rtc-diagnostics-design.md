@@ -24,7 +24,7 @@ A primeira mudança adiciona observabilidade. Nenhuma ação automática destró
 
 ## Arquitetura
 
-A bridge carregada no processo principal registrará um preload de sessão antes das janelas do Discord nascerem. O preload executará no mundo isolado do Electron, interceptará somente o carregamento do módulo `discord_voice` e envolverá os factories `createVoiceConnectionWithOptions`, `createOwnStreamConnectionWithOptions` e `VoiceConnection` sem modificar argumentos ou retornos.
+A bridge carregada no processo principal registrará um preload de sessão no primeiro callback de `app.whenReady`, antes de o módulo principal oficial do Discord criar janelas. O preload executará no mundo isolado do Electron, interceptará somente o carregamento do módulo `discord_voice` e envolverá os factories `createVoiceConnectionWithOptions`, `createOwnStreamConnectionWithOptions` e `VoiceConnection` sem modificar argumentos ou retornos.
 
 A bridge consultará o resumo nativo pelo `executeJavaScriptInIsolatedWorld(999, ...)`. Um probe separado no mundo principal observará somente a demanda `Remote media sink wants:` e a abertura de WebSockets `*.discord.media`. Os dois resumos serão correlacionados na bridge por janela temporal, sem enviar valores de SSRC ou identificadores Discord.
 

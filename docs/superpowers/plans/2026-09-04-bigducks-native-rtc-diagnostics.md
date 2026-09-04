@@ -377,7 +377,16 @@ Expected: FAIL because the current asset has no native probe.
 
 - [ ] **Step 3: Add the idempotent preload and safe normalizer**
 
-At the beginning of the bridge asset, before the existing `app.whenReady().then(connect)`, add a self-contained preload source with these exact responsibilities:
+Before the existing `app.whenReady().then(connect)`, add a self-contained preload source with these exact responsibilities. Register it from the first ready callback so the session exists before registration, but before the official Discord main module creates any window:
+
+```js
+app.whenReady().then(() => {
+  registerNativePreload();
+  connect();
+}).catch(scheduleReconnect);
+```
+
+The preload source must have these responsibilities:
 
 ```js
 const VOICE_WORLD_ID = 999;
@@ -392,44 +401,87 @@ const voicePreloadSource = `(() => {
     return result !== null && result >= 0 && result <= Number.MAX_SAFE_INTEGER ? result : null;
   };
   const has = value => value !== undefined && value !== null && value !== "";
-  const normalize = raw => ({
-    available: !!raw,
-    audioPackets: counter(raw && (raw.audioPackets ?? raw.packetsReceivedAudio)),
-    videoPackets: counter(raw && (raw.videoPackets ?? raw.packetsReceivedVideo)),
-    audioBytes: counter(raw && (raw.audioBytes ?? raw.bytesReceivedAudio)),
-    videoBytes: counter(raw && (raw.videoBytes ?? raw.bytesReceivedVideo)),
-    audioFrames: counter(raw && raw.audioFrames),
-    videoFrames: counter(raw && (raw.videoFrames ?? raw.framesReceived)),
-    captureFrames: counter(raw && (raw.captureFrames ?? raw.pipewireFrames)),
-    encodedFrames: counter(raw && (raw.encodedFrames ?? raw.framesEncoded)),
-    framesDecoded: counter(raw && (raw.framesDecoded ?? raw.framesDecodedVideo)),
-    framesDropped: counter(raw && (raw.framesDropped ?? raw.framesDroppedVideo)),
-    receiverCount: counter(raw && raw.receiverCount),
-    hasAudioSsrc: has(raw && (raw.audioSsrc ?? raw.audioSSRC)),
-    hasVideoSsrc: has(raw && (raw.videoSsrc ?? raw.videoSSRC)),
-    width: counter(raw && (raw.width ?? raw.frameWidth)),
-    height: counter(raw && (raw.height ?? raw.frameHeight)),
-    inputFPS: finite(raw && raw.inputFrameRate),
-    encodedFPS: finite(raw && raw.encodeFrameRate)
-  });
+  const asObject = raw => {
+    if (typeof raw === "string") { try { return JSON.parse(raw); } catch (_) { return null; } }
+    return raw && typeof raw === "object" ? raw : null;
+  };
+  const normalize = raw => {
+    const root = asObject(raw);
+    const candidates = [];
+    const add = value => { if (value && typeof value === "object") candidates.push(value); };
+    add(root);
+    ["inbound", "outbound", "receiver", "received", "video", "audio", "screenshare"].forEach(key => add(root && root[key]));
+    ["audio", "video"].forEach(kind => {
+      ["inbound", "outbound", "receiver", "received", "video", "audio"].forEach(parent => add(root && root[parent] && root[parent][kind]));
+    });
+    const pick = keys => {
+      for (const candidate of candidates) for (const key of keys) {
+        if (candidate[key] !== undefined) return candidate[key];
+      }
+      return null;
+    };
+    return {
+      available: root !== null,
+      audioPackets: counter(pick(["audioPackets", "packetsReceivedAudio", "packetsReceived"])),
+      videoPackets: counter(pick(["videoPackets", "packetsReceivedVideo", "packetsReceived"])),
+      audioBytes: counter(pick(["audioBytes", "bytesReceivedAudio", "bytesReceived"])),
+      videoBytes: counter(pick(["videoBytes", "bytesReceivedVideo", "bytesReceived"])),
+      audioFrames: counter(pick(["audioFrames", "framesReceivedAudio"])),
+      videoFrames: counter(pick(["videoFrames", "framesReceived", "framesReceivedVideo"])),
+      captureFrames: counter(pick(["captureFrames", "inputFrames", "pipewireFrames", "x11Frames"])),
+      encodedFrames: counter(pick(["encodedFrames", "framesEncoded"])),
+      framesDecoded: counter(pick(["framesDecoded", "framesDecodedVideo"])),
+      framesDropped: counter(pick(["framesDropped", "framesDroppedVideo"])),
+      receiverCount: counter(pick(["receiverCount", "receivedReceiverCount"])),
+      hasAudioSsrc: has(pick(["audioSsrc", "audioSSRC", "ssrcAudio"])),
+      hasVideoSsrc: has(pick(["videoSsrc", "videoSSRC", "ssrcVideo", "ssrc"])),
+      width: counter(pick(["width", "frameWidth"])),
+      height: counter(pick(["height", "frameHeight"])),
+      inputFPS: finite(pick(["inputFrameRate", "inputFPS"])),
+      encodedFPS: finite(pick(["encodeFrameRate", "encodedFPS"]))
+    };
+  };
   const register = (kind, creator, conn) => {
     if (!conn || (typeof conn !== "object" && typeof conn !== "function")) return conn;
     if (state.connections.some(item => item.conn === conn)) return conn;
-    state.connections.push({ id: state.nextId++, kind, creator, conn, createdAt: Date.now(), destroyed: false });
+    const record = { id: state.nextId++, kind, creator, conn, createdAt: Date.now(), destroyed: false };
+    state.connections.push(record);
     if (state.connections.length > 16) state.connections.shift();
+    try {
+      if (typeof conn.destroy === "function") {
+        const destroy = conn.destroy;
+        conn.destroy = function () { record.destroyed = true; return destroy.apply(this, arguments); };
+      }
+    } catch (_) {}
     return conn;
   };
   const hook = voice => {
     if (!voice || state.hooked) return voice;
+    let found = false;
     ["createVoiceConnectionWithOptions", "createOwnStreamConnectionWithOptions"].forEach(name => {
       const original = voice[name];
       if (typeof original !== "function") return;
+      found = true;
       voice[name] = function () {
         const kind = name === "createOwnStreamConnectionWithOptions" ? "stream" : "voice";
         return register(kind, name, original.apply(this, arguments));
       };
     });
-    state.hooked = true;
+    try {
+      const OriginalVoiceConnection = voice.VoiceConnection;
+      if (typeof OriginalVoiceConnection === "function") {
+        function BigDucksVoiceConnection() {
+          const instance = Reflect.construct(OriginalVoiceConnection, arguments, BigDucksVoiceConnection);
+          if (!state.connections.some(item => item.conn === instance)) register("unknown", "VoiceConnection", instance);
+          return instance;
+        }
+        Object.setPrototypeOf(BigDucksVoiceConnection, OriginalVoiceConnection);
+        BigDucksVoiceConnection.prototype = OriginalVoiceConnection.prototype;
+        voice.VoiceConnection = BigDucksVoiceConnection;
+        found = true;
+      }
+    } catch (_) {}
+    state.hooked = found;
     return voice;
   };
   const install = () => {
@@ -448,7 +500,9 @@ const voicePreloadSource = `(() => {
   };
   const sample = async connection => {
     if (connection.destroyed || !connection.conn) return { available: false };
-    const method = connection.conn.getFilteredStats || connection.conn.getStats;
+    const method = connection.kind === "stream"
+      ? (connection.conn.getFilteredStats || connection.conn.getStats)
+      : (connection.conn.getStats || connection.conn.getFilteredStats);
     if (typeof method !== "function") return { available: false };
     return await new Promise(resolve => {
       let done = false;
@@ -461,7 +515,8 @@ const voicePreloadSource = `(() => {
       };
       timer = setTimeout(() => finish(null), 2000);
       try {
-        const returned = method === connection.conn.getFilteredStats
+        const filtered = method === connection.conn.getFilteredStats;
+        const returned = filtered
           ? method.call(connection.conn, 2, finish)
           : method.call(connection.conn, finish);
         if (returned && typeof returned.then === "function") returned.then(finish, () => finish(null));
