@@ -1,4 +1,6 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { decodePacket, parseControl, stringifyControl } from '../shared/protocol.js';
@@ -13,9 +15,18 @@ function json(response, status, body) {
 export function createRelayServer({ secret, allowDevSessions = false, maxViewers = 25, iceServers = [] } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers });
+  const staticRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/activity');
   const httpServer = http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://relay.local');
     if (request.method === 'GET' && url.pathname === '/healthz') return json(response, 200, { ok: true });
+    if (request.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
+      const relative = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
+      const file = path.resolve(staticRoot, relative);
+      if (file.startsWith(staticRoot) && fs.existsSync(file)) {
+        response.writeHead(200, { 'content-type': file.endsWith('.css') ? 'text/css' : file.endsWith('.js') ? 'text/javascript' : 'text/html' });
+        return fs.createReadStream(file).pipe(response);
+      }
+    }
     if (request.method === 'GET' && url.pathname === '/api/ice') return json(response, 200, { iceServers });
     if (request.method === 'POST' && url.pathname === '/api/session') {
       if (!allowDevSessions) return json(response, 403, { error: 'Discord session verification is required' });
@@ -56,6 +67,10 @@ export function createRelayServer({ secret, allowDevSessions = false, maxViewers
           return;
         }
         const message = parseControl(data);
+        if (claims.role === 'publisher' && ['start', 'stop'].includes(message.type)) {
+          for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stringifyControl(message));
+          return;
+        }
         if (claims.role === 'viewer' && message.type === 'watch') {
           rooms.watch(claims.room, claims.user, message.slot);
           rooms.get(claims.room)?.publisher?.socket?.send(stringifyControl({ type: 'need-keyframe', slot: message.slot, viewer: claims.user }));
@@ -86,6 +101,8 @@ export function createRelayServer({ secret, allowDevSessions = false, maxViewers
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const server = createRelayServer({ secret: process.env.SESSION_SECRET, allowDevSessions: process.env.NODE_ENV !== 'production' });
-  server.listen(Number(process.env.PORT) || 3001).then(() => console.log(`relay listening on ${server.port}`));
+  const { loadConfig } = await import('./config.js');
+  const config = loadConfig();
+  const server = createRelayServer(config);
+  server.listen(config.port).then(() => console.log(`relay listening on ${server.port}`));
 }
