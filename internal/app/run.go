@@ -176,18 +176,6 @@ func Run(ctx context.Context, options RunOptions) error {
 		}
 	}
 	control.SetStatus(statusStore.Snapshot())
-	if config.Disabled {
-		statusStore.Update(func(status *RuntimeStatus) {
-			status.State = RecoveryDisabled
-			status.LastMessage = "A proteção está desativada nas configurações"
-		})
-		control.SetStatus(statusStore.Snapshot())
-		logger.Printf("protection is disabled by configuration")
-		return waitForDisabled(runCtx)
-	}
-	tracker := relay.NewTracker()
-	defer tracker.CloseAll()
-	var stateSaveMu sync.Mutex
 	var telemetryConfigMu sync.Mutex
 	configPath := filepath.Join(config.DataDir, ConfigFileName)
 	setTelemetryPreference := func(enabled bool) error {
@@ -204,6 +192,52 @@ func Run(ctx context.Context, options RunOptions) error {
 	captureCoreFailure := func(code telemetry.Code) {
 		telemetryReporter.Capture(telemetry.Event{Component: telemetry.ComponentCore, Code: code, Mode: string(config.RoutingMode)})
 	}
+	if config.Disabled {
+		statusStore.Update(func(status *RuntimeStatus) {
+			status.State = RecoveryDisabled
+			status.LastMessage = "A proteção está desativada nas configurações"
+		})
+		control.SetStatus(statusStore.Snapshot())
+		unbind := control.Bind(RuntimeBindings{
+			EnableTelemetry: func(context.Context) error {
+				if err := telemetryReporter.Enable(); err != nil {
+					return err
+				}
+				if err := setTelemetryPreference(true); err != nil {
+					_ = telemetryReporter.Disable()
+					return err
+				}
+				statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{Enabled: true, LastResult: "enabled"} })
+				return nil
+			},
+			DisableTelemetry: func(context.Context) error {
+				if err := telemetryReporter.Disable(); err != nil {
+					return err
+				}
+				if err := setTelemetryPreference(false); err != nil {
+					statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "save_failed"} })
+					return err
+				}
+				statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "disabled"} })
+				return nil
+			},
+			TestTelemetry: func(actionCtx context.Context) error { return telemetryReporter.Test(actionCtx) },
+			PurgeTelemetry: func(context.Context) error {
+				if err := telemetryReporter.Purge(); err != nil {
+					return err
+				}
+				statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = "purged" })
+				return nil
+			},
+			Status: statusStore.Snapshot,
+		})
+		defer unbind()
+		logger.Printf("protection is disabled by configuration")
+		return waitForDisabled(runCtx)
+	}
+	tracker := relay.NewTracker()
+	defer tracker.CloseAll()
+	var stateSaveMu sync.Mutex
 
 	setupCtx, cancelSetup := context.WithTimeout(runCtx, config.StartupBudget)
 	var entries []model.VerifiedEndpoint
@@ -480,6 +514,7 @@ func Run(ctx context.Context, options RunOptions) error {
 			return err
 		}
 		if err := setTelemetryPreference(false); err != nil {
+			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry = TelemetryStatus{LastResult: "save_failed"} })
 			return err
 		}
 		if bridgeReady {

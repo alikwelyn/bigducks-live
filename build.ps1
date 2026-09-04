@@ -23,9 +23,21 @@ npm ci --ignore-scripts --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) {
     throw "Node dependency installation failed"
 }
-npm run build:bridge
-if ($LASTEXITCODE -ne 0) {
-    throw "Discord bridge bundle failed"
+$PreviousBigDucksVersion = $env:BIG_DUCKS_VERSION
+$env:BIG_DUCKS_VERSION = $Version
+try {
+    npm run build:bridge
+    if ($LASTEXITCODE -ne 0) {
+        throw "Discord bridge bundle failed"
+    }
+}
+finally {
+    if ($null -eq $PreviousBigDucksVersion) {
+        Remove-Item Env:BIG_DUCKS_VERSION -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:BIG_DUCKS_VERSION = $PreviousBigDucksVersion
+    }
 }
 
 go test ./...

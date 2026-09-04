@@ -13,5 +13,8 @@ await build({
   minify: false,
   treeShaking: true,
   sourcemap: false,
+  define: {
+    __BIG_DUCKS_RELEASE__: JSON.stringify(process.env.BIG_DUCKS_VERSION || "0.1.7"),
+  },
   write: true,
 });

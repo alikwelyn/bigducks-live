@@ -12,7 +12,7 @@ if (!global.__discordStreamBridgeLoaded) {
 
   const clientURL = /^https:\/\/(?:canary|ptb\.)?discord\.com\/(?:app|channels|login)/;
   const dataRoot = process.env.LOCALAPPDATA || app.getPath("userData");
-  const BIG_DUCKS_RELEASE = "0.1.7";
+  const BIG_DUCKS_RELEASE = __BIG_DUCKS_RELEASE__;
   const telemetryCachePath = path.join(dataRoot, "DiscordStream", "telemetry", "electron");
   const telemetryCodes = new Set([
     "bridge_failure", "audio_only", "video_stalled", "receiver_timeout",
