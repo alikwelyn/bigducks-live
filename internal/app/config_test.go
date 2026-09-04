@@ -24,6 +24,9 @@ func TestDefaultConfigUsesGatewayOnlyDefaults(t *testing.T) {
 	if config.RoutingMode != app.RoutingModeGateway {
 		t.Fatalf("RoutingMode = %q, want %q", config.RoutingMode, app.RoutingModeGateway)
 	}
+	if config.AutoStartDiscord || config.AllowDirectFallback || config.AggressiveRecovery {
+		t.Fatalf("unsafe defaults: autoStart=%t directFallback=%t aggressive=%t", config.AutoStartDiscord, config.AllowDirectFallback, config.AggressiveRecovery)
+	}
 	if config.RelayPort != 55367 || config.PACPort != 55368 {
 		t.Fatalf("runtime ports = relay %d PAC %d", config.RelayPort, config.PACPort)
 	}
@@ -36,6 +39,9 @@ func TestConfigRoundTripPersistsSupportedOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := app.DefaultConfig()
 	original.Disabled = true
+	original.AutoStartDiscord = true
+	original.AllowDirectFallback = true
+	original.AggressiveRecovery = true
 	original.ProxySourceURL = "https://proxy.example/list"
 	original.CacheTTL = 2 * time.Hour
 	original.ProbeTimeout = 3 * time.Second
@@ -57,7 +63,7 @@ func TestConfigRoundTripPersistsSupportedOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if !loaded.Disabled || loaded.ProxySourceURL != original.ProxySourceURL || loaded.CacheTTL != original.CacheTTL || loaded.ProbeTimeout != original.ProbeTimeout || loaded.RoutingMode != app.RoutingModeFull || loaded.RelayPort != original.RelayPort || loaded.PACPort != original.PACPort {
+	if !loaded.Disabled || !loaded.AutoStartDiscord || !loaded.AllowDirectFallback || !loaded.AggressiveRecovery || loaded.ProxySourceURL != original.ProxySourceURL || loaded.CacheTTL != original.CacheTTL || loaded.ProbeTimeout != original.ProbeTimeout || loaded.RoutingMode != app.RoutingModeFull || loaded.RelayPort != original.RelayPort || loaded.PACPort != original.PACPort {
 		t.Fatalf("loaded overrides = %#v", loaded)
 	}
 	if !loaded.ExcludedCountries["BR"] || !loaded.ExcludedCountries["US"] {

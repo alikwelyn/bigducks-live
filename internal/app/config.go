@@ -32,6 +32,9 @@ type Config struct {
 	DataDir             string
 	DiscordRoot         string
 	Disabled            bool
+	AutoStartDiscord    bool
+	AllowDirectFallback bool
+	AggressiveRecovery  bool
 	RoutingMode         RoutingMode
 	ProxySourceURL      string
 	RoutedHosts         []string
@@ -54,14 +57,17 @@ type Config struct {
 }
 
 type persistedConfig struct {
-	Disabled          bool     `json:"disabled,omitempty"`
-	RoutingMode       string   `json:"routingMode,omitempty"`
-	ProxySourceURL    string   `json:"proxySourceURL,omitempty"`
-	CacheTTL          string   `json:"cacheTTL,omitempty"`
-	ProbeTimeout      string   `json:"probeTimeout,omitempty"`
-	ExcludedCountries []string `json:"excludedCountries,omitempty"`
-	RelayPort         int      `json:"relayPort,omitempty"`
-	PACPort           int      `json:"pacPort,omitempty"`
+	Disabled            bool     `json:"disabled,omitempty"`
+	AutoStartDiscord    bool     `json:"autoStartDiscord,omitempty"`
+	AllowDirectFallback bool     `json:"allowDirectFallback,omitempty"`
+	AggressiveRecovery  bool     `json:"aggressiveRecovery,omitempty"`
+	RoutingMode         string   `json:"routingMode,omitempty"`
+	ProxySourceURL      string   `json:"proxySourceURL,omitempty"`
+	CacheTTL            string   `json:"cacheTTL,omitempty"`
+	ProbeTimeout        string   `json:"probeTimeout,omitempty"`
+	ExcludedCountries   []string `json:"excludedCountries,omitempty"`
+	RelayPort           int      `json:"relayPort,omitempty"`
+	PACPort             int      `json:"pacPort,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -187,6 +193,9 @@ func LoadConfig(path string) (Config, error) {
 		config.RoutingMode = RoutingMode(stored.RoutingMode)
 	}
 	config.Disabled = stored.Disabled
+	config.AutoStartDiscord = stored.AutoStartDiscord
+	config.AllowDirectFallback = stored.AllowDirectFallback
+	config.AggressiveRecovery = stored.AggressiveRecovery
 	if stored.RelayPort > 0 {
 		config.RelayPort = stored.RelayPort
 	}
@@ -229,14 +238,17 @@ func SaveConfig(path string, config Config) error {
 	}
 	sort.Strings(countries)
 	data, err := json.MarshalIndent(persistedConfig{
-		Disabled:          config.Disabled,
-		RoutingMode:       string(config.RoutingMode),
-		ProxySourceURL:    config.ProxySourceURL,
-		CacheTTL:          config.CacheTTL.String(),
-		ProbeTimeout:      config.ProbeTimeout.String(),
-		ExcludedCountries: countries,
-		RelayPort:         config.RelayPort,
-		PACPort:           config.PACPort,
+		Disabled:            config.Disabled,
+		AutoStartDiscord:    config.AutoStartDiscord,
+		AllowDirectFallback: config.AllowDirectFallback,
+		AggressiveRecovery:  config.AggressiveRecovery,
+		RoutingMode:         string(config.RoutingMode),
+		ProxySourceURL:      config.ProxySourceURL,
+		CacheTTL:            config.CacheTTL.String(),
+		ProbeTimeout:        config.ProbeTimeout.String(),
+		ExcludedCountries:   countries,
+		RelayPort:           config.RelayPort,
+		PACPort:             config.PACPort,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
