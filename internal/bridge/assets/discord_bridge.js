@@ -98264,6 +98264,8 @@ if (!global.__discordStreamBridgeLoaded) {
         autoSessionTracking: false,
         enableAutoPerformanceTracking: false,
         integrations: [],
+        // The bridge starts from app.whenReady; do not register Electron IPC/protocol handlers.
+        ipcMode: 0,
         getSessions: () => [],
         transport: makeNodeTransport,
         tracesSampleRate: 0,
