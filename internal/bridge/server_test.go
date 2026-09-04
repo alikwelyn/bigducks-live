@@ -186,6 +186,20 @@ func TestEmbeddedScriptTargetsOnlyDiscordClientWindows(t *testing.T) {
 	}
 }
 
+func TestEmbeddedScriptContainsNativeRTCProbe(t *testing.T) {
+	script := string(bridge.Script())
+	for _, required := range []string{
+		"registerPreloadScript", "big-ducks-native-rtc", "executeJavaScriptInIsolatedWorld",
+		"discord_voice", "createVoiceConnectionWithOptions",
+		"createOwnStreamConnectionWithOptions", "getFilteredStats", "Remote media sink wants:",
+		"hasVideoSsrc", "captureFrames", "encodedFrames", "framesDecoded",
+	} {
+		if !contains(script, required) {
+			t.Fatalf("embedded script does not contain %q", required)
+		}
+	}
+}
+
 func readBridgeControl(t *testing.T, dataDir string) bridge.ControlFile {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dataDir, bridge.ControlFileName))
