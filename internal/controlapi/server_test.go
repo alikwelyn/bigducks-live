@@ -15,10 +15,12 @@ func TestServerAuthenticatesAndDispatchesRuntimeActions(t *testing.T) {
 	runtime := app.NewRuntimeControl()
 	reconnectCalls := 0
 	routeCalls := 0
+	repairCalls := 0
 	runtime.Bind(app.RuntimeBindings{
-		Reconnect: func(context.Context) error { reconnectCalls++; return nil },
-		Reload:    func(context.Context) error { return nil },
-		TestRoute: func(context.Context) error { routeCalls++; return nil },
+		Reconnect:     func(context.Context) error { reconnectCalls++; return nil },
+		RepairDiscord: func(context.Context) error { repairCalls++; return nil },
+		Reload:        func(context.Context) error { return nil },
+		TestRoute:     func(context.Context) error { routeCalls++; return nil },
 		Status: func() app.RuntimeStatus {
 			return app.RuntimeStatus{State: app.RecoveryProtected, PoolSize: 3, TunnelCount: 1, BridgeConnected: true}
 		},
@@ -52,8 +54,11 @@ func TestServerAuthenticatesAndDispatchesRuntimeActions(t *testing.T) {
 	if err := client.TestRoute(context.Background()); err != nil {
 		t.Fatalf("TestRoute() error = %v", err)
 	}
-	if reconnectCalls != 1 || routeCalls != 1 {
-		t.Fatalf("action calls: reconnect=%d route=%d", reconnectCalls, routeCalls)
+	if err := client.RepairDiscord(context.Background()); err != nil {
+		t.Fatalf("RepairDiscord() error = %v", err)
+	}
+	if reconnectCalls != 1 || routeCalls != 1 || repairCalls != 1 {
+		t.Fatalf("action calls: reconnect=%d route=%d repair=%d", reconnectCalls, routeCalls, repairCalls)
 	}
 	if err := client.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)

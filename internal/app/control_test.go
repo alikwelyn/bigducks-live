@@ -29,6 +29,27 @@ func TestRuntimeControlReconnectUsesCurrentBinding(t *testing.T) {
 	}
 }
 
+func TestRuntimeControlRepairDiscordUsesCurrentBinding(t *testing.T) {
+	called := 0
+	control := app.NewRuntimeControl()
+	control.Bind(app.RuntimeBindings{
+		RepairDiscord: func(context.Context) error {
+			called++
+			return nil
+		},
+	})
+	if err := control.RepairDiscord(context.Background()); err != nil {
+		t.Fatalf("RepairDiscord() error = %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("repair calls = %d, want 1", called)
+	}
+	control = app.NewRuntimeControl()
+	if err := control.RepairDiscord(context.Background()); !errors.Is(err, app.ErrRuntimeUnavailable) {
+		t.Fatalf("RepairDiscord() without binding = %v, want ErrRuntimeUnavailable", err)
+	}
+}
+
 func TestRuntimeControlReloadUsesCurrentBinding(t *testing.T) {
 	called := 0
 	control := app.NewRuntimeControl()

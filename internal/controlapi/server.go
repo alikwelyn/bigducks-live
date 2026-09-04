@@ -76,6 +76,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/status", s.auth(s.status))
 	mux.HandleFunc("/v1/reconnect", s.auth(s.action(s.options.Runtime.Reconnect)))
+	mux.HandleFunc("/v1/repair-discord", s.auth(s.action(s.options.Runtime.RepairDiscord)))
 	mux.HandleFunc("/v1/reload", s.auth(s.action(s.options.Runtime.Reload)))
 	mux.HandleFunc("/v1/test-route", s.auth(s.action(s.options.Runtime.TestRoute)))
 	mux.HandleFunc("/v1/shutdown", s.auth(s.shutdown))

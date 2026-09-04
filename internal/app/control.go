@@ -49,10 +49,11 @@ type RuntimeEvent struct {
 }
 
 type RuntimeBindings struct {
-	Reconnect func(context.Context) error
-	Reload    func(context.Context) error
-	TestRoute func(context.Context) error
-	Status    func() RuntimeStatus
+	Reconnect     func(context.Context) error
+	RepairDiscord func(context.Context) error
+	Reload        func(context.Context) error
+	TestRoute     func(context.Context) error
+	Status        func() RuntimeStatus
 }
 
 type RuntimeControl struct {
@@ -100,6 +101,22 @@ func (c *RuntimeControl) Reconnect(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	return reconnect(ctx)
+}
+
+func (c *RuntimeControl) RepairDiscord(ctx context.Context) error {
+	if c == nil {
+		return ErrRuntimeUnavailable
+	}
+	c.mu.Lock()
+	repair := c.bindings.RepairDiscord
+	c.mu.Unlock()
+	if repair == nil {
+		return ErrRuntimeUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return repair(ctx)
 }
 
 func (c *RuntimeControl) Reload(ctx context.Context) error {

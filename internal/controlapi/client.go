@@ -43,6 +43,9 @@ func (c *Client) Status(ctx context.Context) (app.RuntimeStatus, error) {
 func (c *Client) Reconnect(ctx context.Context) error {
 	return c.request(ctx, http.MethodPost, "/v1/reconnect", nil)
 }
+func (c *Client) RepairDiscord(ctx context.Context) error {
+	return c.request(ctx, http.MethodPost, "/v1/repair-discord", nil)
+}
 func (c *Client) Reload(ctx context.Context) error {
 	return c.request(ctx, http.MethodPost, "/v1/reload", nil)
 }
