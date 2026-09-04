@@ -58,7 +58,7 @@ type Config struct {
 
 type persistedConfig struct {
 	Disabled            bool     `json:"disabled,omitempty"`
-	AutoStartDiscord    bool     `json:"autoStartDiscord,omitempty"`
+	AutoStartDiscord    *bool    `json:"autoStartDiscord,omitempty"`
 	AllowDirectFallback bool     `json:"allowDirectFallback,omitempty"`
 	AggressiveRecovery  bool     `json:"aggressiveRecovery,omitempty"`
 	RoutingMode         string   `json:"routingMode,omitempty"`
@@ -193,7 +193,14 @@ func LoadConfig(path string) (Config, error) {
 		config.RoutingMode = RoutingMode(stored.RoutingMode)
 	}
 	config.Disabled = stored.Disabled
-	config.AutoStartDiscord = stored.AutoStartDiscord
+	if stored.AutoStartDiscord == nil {
+		// Configurations written before autoStartDiscord existed implicitly
+		// started Discord. Keep that behavior for existing installations; a
+		// newly created configuration still uses the safe default (false).
+		config.AutoStartDiscord = true
+	} else {
+		config.AutoStartDiscord = *stored.AutoStartDiscord
+	}
 	config.AllowDirectFallback = stored.AllowDirectFallback
 	config.AggressiveRecovery = stored.AggressiveRecovery
 	if stored.RelayPort > 0 {
@@ -239,7 +246,7 @@ func SaveConfig(path string, config Config) error {
 	sort.Strings(countries)
 	data, err := json.MarshalIndent(persistedConfig{
 		Disabled:            config.Disabled,
-		AutoStartDiscord:    config.AutoStartDiscord,
+		AutoStartDiscord:    boolPointer(config.AutoStartDiscord),
 		AllowDirectFallback: config.AllowDirectFallback,
 		AggressiveRecovery:  config.AggressiveRecovery,
 		RoutingMode:         string(config.RoutingMode),
@@ -265,6 +272,10 @@ func SaveConfig(path string, config Config) error {
 		return fmt.Errorf("replace config: %w", err)
 	}
 	return nil
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }
 
 func cloneCountries(source map[string]bool) map[string]bool {

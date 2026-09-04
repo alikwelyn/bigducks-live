@@ -35,6 +35,34 @@ func TestDefaultConfigUsesGatewayOnlyDefaults(t *testing.T) {
 	}
 }
 
+func TestLegacyConfigPreservesAutomaticDiscordStartup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"routingMode":"gateway"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	loaded, err := app.LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !loaded.AutoStartDiscord {
+		t.Fatal("legacy config unexpectedly disabled automatic Discord startup")
+	}
+}
+
+func TestSavedSafeConfigKeepsAutomaticDiscordStartupDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := app.SaveConfig(path, app.DefaultConfig()); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	loaded, err := app.LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if loaded.AutoStartDiscord {
+		t.Fatal("saved safe config enabled automatic Discord startup")
+	}
+}
+
 func TestConfigRoundTripPersistsSupportedOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := app.DefaultConfig()
