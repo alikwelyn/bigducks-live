@@ -82,6 +82,7 @@ func Run(ctx context.Context, options RunOptions) error {
 			status.State = RecoveryDisabled
 			status.LastMessage = "A proteção está desativada nas configurações"
 		})
+		control.SetStatus(statusStore.Snapshot())
 		logger.Printf("protection is disabled by configuration")
 		return waitForDisabled(runCtx)
 	}
@@ -128,7 +129,7 @@ func Run(ctx context.Context, options RunOptions) error {
 				verified.CheckedAt = time.Now().Unix()
 				return verified, nil
 			}
-			verified, err := proxy.ProbeEndpoint(probeCtx, endpoint, config.HeartbeatTimeout)
+			verified, err := proxy.ProbeGatewayRegion(probeCtx, endpoint, config.HeartbeatTimeout)
 			if err != nil {
 				return model.VerifiedEndpoint{}, err
 			}
