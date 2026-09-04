@@ -83,6 +83,7 @@ Use Go 1.26 ou posterior e Node.js para Windows x64:
 ```powershell
 npm ci
 npm run build:bridge
+npm run check:bridge
 go test ./...
 go vet ./...
 .\build.ps1

@@ -3,7 +3,8 @@
   "private": true,
   "version": "0.1.7",
   "scripts": {
-    "build:bridge": "node scripts/build-bridge.mjs"
+    "build:bridge": "node scripts/build-bridge.mjs",
+    "check:bridge": "node scripts/check-bridge.mjs"
   },
   "dependencies": {
     "@sentry/electron": "7.18.0"

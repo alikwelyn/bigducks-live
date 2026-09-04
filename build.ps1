@@ -30,6 +30,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Discord bridge bundle failed"
     }
+    npm run check:bridge
+    if ($LASTEXITCODE -ne 0) {
+        throw "Discord bridge reproducibility check failed"
+    }
 }
 finally {
     if ($null -eq $PreviousBigDucksVersion) {

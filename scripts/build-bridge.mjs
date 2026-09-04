@@ -2,7 +2,7 @@ import { build } from "esbuild";
 
 await build({
   entryPoints: ["internal/bridge/assets-src/discord_bridge.js"],
-  outfile: "internal/bridge/assets/discord_bridge.js",
+  outfile: process.env.BIG_DUCKS_BRIDGE_OUTPUT || "internal/bridge/assets/discord_bridge.js",
   bundle: true,
   platform: "node",
   format: "cjs",
