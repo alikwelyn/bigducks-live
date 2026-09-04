@@ -16,7 +16,8 @@ Aplicativo portátil para Windows que mantém as lives do Discord acessíveis po
 - `Sair` fecha o HUD, o núcleo e toda a árvore do Discord;
 - logs e arquivos locais recebem permissões legíveis pelo usuário atual;
 - atualizações vêm de Releases do GitHub e só são instaladas após assinatura Ed25519 e SHA-256 válidos;
-- o diagnóstico RTC nativo do Go Live é somente leitura e ajuda a separar transporte, decoder e renderização.
+- o diagnóstico RTC nativo do Go Live é somente leitura e ajuda a separar transporte, decoder e renderização;
+- a telemetria Sentry é opcional, começa desativada e envia somente eventos agregados e sanitizados do núcleo/bridge.
 
 ## Instalação
 
@@ -53,7 +54,7 @@ O aplicativo inicia um relay SOCKS local e entrega ao Discord um arquivo PAC. Ap
 
 Uma pequena integração JavaScript reversível no Electron permite fechar conexões de rede, resolver o PAC e recarregar a janela. Se Vencord ou Equicord já estiver instalado, o loader reconhecido é encadeado e preservado. Nenhuma DLL é injetada e não é necessário executar como administrador.
 
-Os arquivos continuam em `%LOCALAPPDATA%\DiscordStream` por compatibilidade segura com instalações anteriores. O diretório inclui configuração, pool de proxies, backups reversíveis, canal local autenticado e `discordstream.log`.
+Os arquivos continuam em `%LOCALAPPDATA%\DiscordStream` por compatibilidade segura com instalações anteriores. O diretório inclui configuração, pool de proxies, backups reversíveis, canal local autenticado e `discordstream.log`. A fila local de telemetria, quando existir, fica em `%LOCALAPPDATA%\DiscordStream\telemetry`.
 
 ## Privacidade e limitações
 
@@ -61,7 +62,7 @@ Proxies públicos são instáveis e não são controlados por este projeto. A co
 
 O BIG DUCKS reduz a falha causada por gateways regionais e proxies mortos, mas não pode garantir disponibilidade do Discord, da lista pública ou de qualquer proxy. Se nenhum candidato passar nos testes, o gateway espera e continua procurando em vez de expor uma conexão direta como se estivesse protegida. O fallback direto permanece desativado por padrão.
 
-O diagnóstico detalhado e o roteiro A/B estão em [docs/native-rtc-diagnostics.md](docs/native-rtc-diagnostics.md).
+O diagnóstico detalhado e o roteiro A/B estão em [docs/native-rtc-diagnostics.md](docs/native-rtc-diagnostics.md). A telemetria é habilitada explicitamente no HUD; desabilitá-la bloqueia novos eventos e remove apenas a fila local. IPs, tokens, URLs completas, caminhos, IDs Discord, SSRC, mensagens e logs não são enviados.
 
 Este projeto não é afiliado, aprovado ou mantido pelo Discord. Alterações no cliente oficial podem exigir uma atualização do BIG DUCKS.
 
@@ -77,13 +78,17 @@ Isso restaura o loader anterior do Discord e sua entrada original de inicializa�
 
 ## Desenvolvimento
 
-Use Go 1.26 ou posterior em Windows x64:
+Use Go 1.26 ou posterior e Node.js para Windows x64:
 
 ```powershell
+npm ci
+npm run build:bridge
 go test ./...
 go vet ./...
 .\build.ps1
 ```
+
+A bridge commitada em `internal/bridge/assets/discord_bridge.js` é gerada determinísticamente de `internal/bridge/assets-src/discord_bridge.js` com as versões fixadas em `package-lock.json`. Não edite o bundle diretamente.
 
 O artefato fica em `dist\BigDucks.exe`, com ícone e metadados do Windows. Tags `vX.Y.Z` executam o workflow de Release, assinam o manifesto e publicam os três arquivos consumidos pelo atualizador.
 

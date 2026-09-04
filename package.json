@@ -1,0 +1,14 @@
+{
+  "name": "bigducks-live",
+  "private": true,
+  "version": "0.1.7",
+  "scripts": {
+    "build:bridge": "node scripts/build-bridge.mjs"
+  },
+  "dependencies": {
+    "@sentry/electron": "7.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
