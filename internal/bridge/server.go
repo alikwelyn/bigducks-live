@@ -37,14 +37,23 @@ type Status struct {
 	LastSeen  time.Time
 }
 
+type MediaEvent struct {
+	Session string    `json:"session,omitempty"`
+	Kind    string    `json:"event"`
+	At      time.Time `json:"at,omitempty"`
+}
+
 type protocolMessage struct {
-	Type  string `json:"type"`
-	Token string `json:"token,omitempty"`
-	ID    uint64 `json:"id,omitempty"`
-	OK    bool   `json:"ok,omitempty"`
-	Error string `json:"error,omitempty"`
-	URL   string `json:"url,omitempty"`
-	Value string `json:"value,omitempty"`
+	Type    string    `json:"type"`
+	Token   string    `json:"token,omitempty"`
+	ID      uint64    `json:"id,omitempty"`
+	OK      bool      `json:"ok,omitempty"`
+	Error   string    `json:"error,omitempty"`
+	URL     string    `json:"url,omitempty"`
+	Value   string    `json:"value,omitempty"`
+	Session string    `json:"session,omitempty"`
+	Event   string    `json:"event,omitempty"`
+	At      time.Time `json:"at,omitempty"`
 }
 
 type commandResult struct {
@@ -55,16 +64,17 @@ type commandResult struct {
 type Server struct {
 	dataDir string
 
-	mu       sync.Mutex
-	listener net.Listener
-	conn     net.Conn
-	encoder  *json.Encoder
-	cancel   context.CancelFunc
-	token    string
-	lastSeen time.Time
-	nextID   uint64
-	pending  map[uint64]chan commandResult
-	closed   bool
+	mu           sync.Mutex
+	listener     net.Listener
+	conn         net.Conn
+	encoder      *json.Encoder
+	cancel       context.CancelFunc
+	token        string
+	lastSeen     time.Time
+	nextID       uint64
+	pending      map[uint64]chan commandResult
+	onMediaEvent func(MediaEvent)
+	closed       bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -145,6 +155,15 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = s.Close()
 	}()
 	return nil
+}
+
+func (s *Server) SetMediaEventHandler(handler func(MediaEvent)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.onMediaEvent = handler
+	s.mu.Unlock()
 }
 
 func (s *Server) Reload(ctx context.Context) error {
@@ -298,6 +317,16 @@ func (s *Server) handleClient(conn net.Conn) {
 		var message protocolMessage
 		if err := decoder.Decode(&message); err != nil {
 			return
+		}
+		if message.Type == "media_event" {
+			s.mu.Lock()
+			handler := s.onMediaEvent
+			s.lastSeen = time.Now()
+			s.mu.Unlock()
+			if handler != nil {
+				handler(MediaEvent{Session: message.Session, Kind: message.Event, At: message.At})
+			}
+			continue
 		}
 		if message.Type != "result" || message.ID == 0 {
 			continue

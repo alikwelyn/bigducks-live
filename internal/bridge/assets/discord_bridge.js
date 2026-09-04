@@ -21,6 +21,13 @@ if (!global.__discordStreamBridgeLoaded) {
     socket.write(JSON.stringify({ type: "result", id, ok, error: error || "", value: value || "" }) + "\n");
   }
 
+  // Client patches can report media health without exposing the bridge socket.
+  global.__BIG_DUCKS_REPORT_MEDIA_EVENT = function reportMediaEvent(event, session) {
+    if (!socket || socket.destroyed || typeof event !== "string") return false;
+    socket.write(JSON.stringify({ type: "media_event", event, session: typeof session === "string" ? session : "", at: new Date().toISOString() }) + "\n");
+    return true;
+  };
+
   async function closeConnections(id) {
     try {
       await session.defaultSession.closeAllConnections();

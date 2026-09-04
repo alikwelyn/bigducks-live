@@ -220,6 +220,11 @@ func Run(ctx context.Context, options RunOptions) error {
 	defer closePAC()
 
 	bridgeServer := bridge.NewServer(config.DataDir)
+	bridgeServer.SetMediaEventHandler(func(event bridge.MediaEvent) {
+		statusStore.Update(func(status *RuntimeStatus) {
+			status.Media = ReduceMedia(status.Media, MediaEvent{Session: event.Session, Kind: event.Kind, At: event.At})
+		})
+	})
 	bridgeReady := true
 	if err := bridgeServer.Start(runCtx); err != nil {
 		bridgeReady = false
