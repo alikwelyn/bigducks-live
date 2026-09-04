@@ -25,18 +25,19 @@ import (
 )
 
 type StatusView struct {
-	State           string             `json:"state"`
-	Media           app.MediaStatus    `json:"media"`
-	PoolSize        int                `json:"poolSize"`
-	TunnelCount     int                `json:"tunnelCount"`
-	BridgeConnected bool               `json:"bridgeConnected"`
-	InjectionState  string             `json:"injectionState"`
-	RepairRequired  bool               `json:"repairRequired"`
-	LastError       string             `json:"lastError"`
-	LastMessage     string             `json:"lastMessage"`
-	ActiveProxy     string             `json:"activeProxy"`
-	LatencyMS       int                `json:"latencyMS"`
-	RecentEvents    []app.RuntimeEvent `json:"recentEvents"`
+	State           string              `json:"state"`
+	Media           app.MediaStatus     `json:"media"`
+	PoolSize        int                 `json:"poolSize"`
+	TunnelCount     int                 `json:"tunnelCount"`
+	BridgeConnected bool                `json:"bridgeConnected"`
+	InjectionState  string              `json:"injectionState"`
+	RepairRequired  bool                `json:"repairRequired"`
+	Telemetry       app.TelemetryStatus `json:"telemetry"`
+	LastError       string              `json:"lastError"`
+	LastMessage     string              `json:"lastMessage"`
+	ActiveProxy     string              `json:"activeProxy"`
+	LatencyMS       int                 `json:"latencyMS"`
+	RecentEvents    []app.RuntimeEvent  `json:"recentEvents"`
 }
 
 type controller struct {
@@ -113,15 +114,19 @@ func runWindow(dataDir string) (err error) {
 		updateView: UpdateView{Current: buildinfo.Version},
 	}
 	bindings := map[string]any{
-		"bigDucksStatus":        control.status,
-		"bigDucksReconnect":     control.reconnect,
-		"bigDucksTestRoute":     control.testRoute,
-		"bigDucksReload":        control.reload,
-		"bigDucksOpenLog":       control.openLog,
-		"bigDucksCheckUpdate":   control.checkUpdate,
-		"bigDucksUpdateStatus":  control.updateStatus,
-		"bigDucksInstallUpdate": control.installUpdate,
-		"bigDucksClose":         control.close,
+		"bigDucksStatus":           control.status,
+		"bigDucksReconnect":        control.reconnect,
+		"bigDucksTestRoute":        control.testRoute,
+		"bigDucksReload":           control.reload,
+		"bigDucksOpenLog":          control.openLog,
+		"bigDucksCheckUpdate":      control.checkUpdate,
+		"bigDucksUpdateStatus":     control.updateStatus,
+		"bigDucksInstallUpdate":    control.installUpdate,
+		"bigDucksEnableTelemetry":  control.enableTelemetry,
+		"bigDucksDisableTelemetry": control.disableTelemetry,
+		"bigDucksTestTelemetry":    control.testTelemetry,
+		"bigDucksPurgeTelemetry":   control.purgeTelemetry,
+		"bigDucksClose":            control.close,
 	}
 	for name, binding := range bindings {
 		if bindErr := view.Bind(name, binding); bindErr != nil {
@@ -265,7 +270,8 @@ func (c *controller) status() StatusView {
 	return StatusView{
 		State: string(status.State), Media: status.Media, PoolSize: status.PoolSize, TunnelCount: status.TunnelCount,
 		BridgeConnected: status.BridgeConnected, InjectionState: status.InjectionState,
-		RepairRequired: status.RepairRequired, LastError: status.LastError, LastMessage: status.LastMessage,
+		RepairRequired: status.RepairRequired, Telemetry: status.Telemetry,
+		LastError: status.LastError, LastMessage: status.LastMessage,
 		ActiveProxy: status.ActiveProxy, LatencyMS: status.LatencyMS,
 		RecentEvents: append([]app.RuntimeEvent(nil), status.RecentEvents...),
 	}
@@ -281,6 +287,22 @@ func (c *controller) testRoute() error {
 
 func (c *controller) reload() error {
 	return c.action(8*time.Second, (*controlapi.Client).Reload)
+}
+
+func (c *controller) enableTelemetry() error {
+	return c.action(10*time.Second, (*controlapi.Client).EnableTelemetry)
+}
+
+func (c *controller) disableTelemetry() error {
+	return c.action(10*time.Second, (*controlapi.Client).DisableTelemetry)
+}
+
+func (c *controller) testTelemetry() error {
+	return c.action(10*time.Second, (*controlapi.Client).TestTelemetry)
+}
+
+func (c *controller) purgeTelemetry() error {
+	return c.action(10*time.Second, (*controlapi.Client).PurgeTelemetry)
 }
 
 func (c *controller) openLog() error {

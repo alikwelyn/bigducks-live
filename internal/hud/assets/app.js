@@ -24,7 +24,15 @@ const ui = {
   version: document.querySelector("#version"),
   updateTitle: document.querySelector("#update-title"),
   updateDetail: document.querySelector("#update-detail"),
-  updateAction: document.querySelector("#update-action")
+  updateAction: document.querySelector("#update-action"),
+  telemetryTitle: document.querySelector("#telemetry-title"),
+  telemetryDetail: document.querySelector("#telemetry-detail"),
+  telemetryDot: document.querySelector("#telemetry-dot"),
+  telemetryEnabled: document.querySelector("#telemetry-enabled"),
+  telemetryEnable: document.querySelector("#telemetry-enable"),
+  telemetryDisable: document.querySelector("#telemetry-disable"),
+  telemetryTest: document.querySelector("#telemetry-test"),
+  telemetryPurge: document.querySelector("#telemetry-purge")
 };
 
 const stateCopy = {
@@ -51,6 +59,17 @@ const technicalCopy = {
   "proxy heartbeat failed": "A rota anterior parou de responder; o BIG DUCKS está escolhendo outra.",
   "no verified proxy available": "Nenhuma saída verificada respondeu dentro do prazo.",
   "context deadline exceeded": "A operação demorou mais que o limite de segurança."
+};
+
+const telemetryCopy = {
+  enabled: ["Telemetria ativada", "Diagnósticos agregados do núcleo e da bridge podem ser enviados.", "ATIVADA"],
+  disabled: ["Telemetria desativada", "Nenhum evento novo será enviado; a fila local fica disponível para purga.", "DESATIVADA"],
+  enable_failed: ["Telemetria não ativada", "Não foi possível inicializar o transporte seguro.", "ERRO"],
+  save_failed: ["Preferência não salva", "A telemetria foi interrompida, mas a configuração não foi gravada.", "ERRO"],
+  test_sent: ["Telemetria ativada", "O evento de teste foi enviado e confirmado pelo transporte.", "ATIVADA"],
+  purged: ["Telemetria ativada", "A fila local foi apagada; eventos já enviados não são removidos daqui.", "ATIVADA"],
+  core_test_failed: ["Teste não enviado", "O núcleo não confirmou o envio do evento de teste.", "ERRO"],
+  bridge_test_failed: ["Bridge não confirmou", "O núcleo enviou, mas a bridge não confirmou o teste.", "ERRO"]
 };
 
 function readableDetail(detail, fallback) {
@@ -83,9 +102,24 @@ function addEvent(title, detail, kind = "info") {
   while (ui.events.children.length > 5) ui.events.lastElementChild.remove();
 }
 
+function renderTelemetry(status) {
+  const telemetry = status.telemetry || {};
+  const enabled = telemetry.enabled === true;
+  const copy = telemetryCopy[telemetry.lastResult] || telemetryCopy[enabled ? "enabled" : "disabled"];
+  ui.telemetryTitle.textContent = copy[0];
+  ui.telemetryDetail.textContent = copy[1];
+  ui.telemetryEnabled.textContent = copy[2];
+  ui.telemetryDot.className = `status-dot ${enabled ? "protected" : "failed"}`;
+  ui.telemetryEnable.disabled = enabled;
+  ui.telemetryDisable.disabled = !enabled;
+  ui.telemetryTest.disabled = !enabled;
+  ui.telemetryPurge.disabled = false;
+}
+
 function renderStatus(status) {
   const state = status.state || "stopped";
   const copy = stateCopy[state] || stateCopy.failed;
+  renderTelemetry(status);
 	ui.hero.dataset.state = state;
   ui.title.textContent = copy[0];
 	const routeSummary = status.activeProxy ? `${status.activeProxy}${status.latencyMS ? ` • ${status.latencyMS} ms` : ""}` : "";
@@ -157,6 +191,13 @@ ui.reload.addEventListener("click", () => perform(ui.reload, "Recarregando…", 
 ui.log.addEventListener("click", async () => {
   try { await window.bigDucksOpenLog(); }
   catch (error) { showToast(`Não foi possível abrir o log: ${error}`); }
+});
+ui.telemetryEnable.addEventListener("click", () => perform(ui.telemetryEnable, "Ativando…", window.bigDucksEnableTelemetry, "Telemetria ativada"));
+ui.telemetryDisable.addEventListener("click", () => perform(ui.telemetryDisable, "Desativando…", window.bigDucksDisableTelemetry, "Telemetria desativada"));
+ui.telemetryTest.addEventListener("click", () => perform(ui.telemetryTest, "Enviando…", window.bigDucksTestTelemetry, "Teste de telemetria confirmado"));
+ui.telemetryPurge.addEventListener("click", () => {
+  if (!window.confirm("Apagar a fila local de telemetria? Eventos já enviados não podem ser removidos por aqui.")) return;
+  perform(ui.telemetryPurge, "Apagando…", window.bigDucksPurgeTelemetry, "Fila local apagada");
 });
 
 let updatePollTimer;

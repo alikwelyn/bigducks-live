@@ -68,6 +68,25 @@
           </div>
           <button id="update-action" class="button update-button" type="button">Verificar</button>
         </section>
+
+        <section class="telemetry-card" aria-labelledby="telemetry-title">
+          <div class="telemetry-heading">
+            <span id="telemetry-dot" class="status-dot failed" aria-hidden="true"></span>
+            <div>
+              <p class="label">TELEMETRIA OPCIONAL</p>
+              <h2 id="telemetry-title">Telemetria desativada</h2>
+            </div>
+            <span id="telemetry-enabled" class="telemetry-state">DESATIVADA</span>
+          </div>
+          <p id="telemetry-detail" class="telemetry-detail">A telemetria começa desativada e só envia diagnósticos agregados após sua escolha.</p>
+          <p class="telemetry-note">Não envia IP, tokens, mensagens, URLs completas, caminhos ou IDs Discord. A fila local pode ser apagada aqui.</p>
+          <div class="telemetry-actions">
+            <button id="telemetry-enable" class="button telemetry-primary" type="button"><span>Ativar</span></button>
+            <button id="telemetry-disable" class="button secondary" type="button"><span>Desativar</span></button>
+            <button id="telemetry-test" class="button secondary" type="button"><span>Enviar teste</span></button>
+            <button id="telemetry-purge" class="button secondary telemetry-danger" type="button"><span>Apagar fila local</span></button>
+          </div>
+        </section>
       </div>
 
       <section class="timeline" aria-labelledby="events-title">

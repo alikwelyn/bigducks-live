@@ -13,6 +13,8 @@ func TestPageContainsAccessibleRecoveryControls(t *testing.T) {
 		"BIG DUCKS", "Reconectar live", "Testar rota", "Recarregar Discord",
 		`aria-live="polite"`, `:focus-visible`, `prefers-reduced-motion`,
 		"data:image/png;base64,", "bigDucksStatus", "bigDucksReconnect",
+		"TELEMETRIA OPCIONAL", "bigDucksEnableTelemetry", "bigDucksDisableTelemetry",
+		"bigDucksTestTelemetry", "bigDucksPurgeTelemetry", "telemetry-enabled",
 	} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("HUD page does not contain %q", required)
@@ -20,6 +22,18 @@ func TestPageContainsAccessibleRecoveryControls(t *testing.T) {
 	}
 	if strings.Contains(page, "{{") {
 		t.Fatal("HUD page contains an unresolved asset placeholder")
+	}
+}
+
+func TestPageContainsTelemetryControlsAndPrivacyCopy(t *testing.T) {
+	page := hud.PageHTML()
+	for _, required := range []string{
+		"A telemetria começa desativada", "Não envia IP", "tokens",
+		"fila local", "confirm", "Telemetria desativada",
+	} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("HUD page does not contain %q", required)
+		}
 	}
 }
 
