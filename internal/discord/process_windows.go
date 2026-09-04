@@ -30,11 +30,11 @@ func CurrentProcess() (ProcessIdentity, error) {
 	if err := windows.Process32First(snapshot, &entry); err != nil {
 		return ProcessIdentity{}, err
 	}
-	var discordPIDs []uint32
+	var records []processRecord
 	for {
 		name := windows.UTF16ToString(entry.ExeFile[:])
 		if strings.EqualFold(name, "Discord.exe") {
-			discordPIDs = append(discordPIDs, entry.ProcessID)
+			records = append(records, processRecord{pid: entry.ProcessID, parent: entry.ParentProcessID})
 		}
 		err := windows.Process32Next(snapshot, &entry)
 		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
@@ -44,12 +44,21 @@ func CurrentProcess() (ProcessIdentity, error) {
 			return ProcessIdentity{}, err
 		}
 	}
-	if len(discordPIDs) == 0 {
+	if len(records) == 0 {
 		return ProcessIdentity{}, nil
 	}
-	// Discord's main process is the oldest matching process. This avoids
-	// treating short-lived crash/update children as the active client.
-	return ProcessIdentity{PID: discordPIDs[0], Token: strconv.FormatUint(uint64(discordPIDs[0]), 10)}, nil
+	known := make(map[uint32]bool, len(records))
+	for _, record := range records {
+		known[record.pid] = true
+	}
+	// The main client is the matching process that is not a child of another
+	// Discord.exe. This avoids selecting crash/update/renderer descendants.
+	for _, record := range records {
+		if !known[record.parent] {
+			return ProcessIdentity{PID: record.pid, Token: strconv.FormatUint(uint64(record.pid), 10)}, nil
+		}
+	}
+	return ProcessIdentity{PID: records[0].pid, Token: strconv.FormatUint(uint64(records[0].pid), 10)}, nil
 }
 
 func WaitForProcessTree(ctx context.Context, command *exec.Cmd) error {
