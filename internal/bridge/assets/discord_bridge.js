@@ -98278,6 +98278,12 @@ if (!global.__discordStreamBridgeLoaded) {
       captureBridgeEvent("bridge_failure", { operationFailed: true });
       return Promise.reject(error);
     }
+  }, queueTelemetryConfiguration = function(enabled) {
+    const next = telemetryConfigPromise.catch(() => {
+    }).then(() => configureTelemetry(enabled));
+    telemetryConfigPromise = next.catch(() => {
+    });
+    return next;
   }, sendMessage = function(message) {
     if (!socket || socket.destroyed) return false;
     try {
@@ -98401,7 +98407,7 @@ if (!global.__discordStreamBridgeLoaded) {
       else if (message.type === "close_connections" && Number.isSafeInteger(message.id)) void closeConnections(message.id);
       else if (message.type === "resolve_proxy" && Number.isSafeInteger(message.id)) void resolveProxy(message.id, message.url);
       else if (message.type === "telemetry_sync") {
-        void configureTelemetry(message.enabled === true).catch(() => {
+        void queueTelemetryConfiguration(message.enabled === true).catch(() => {
         });
       } else if (message.type === "telemetry_test" && Number.isSafeInteger(message.id)) {
         void testElectronTelemetry(message.id);
@@ -98483,10 +98489,12 @@ if (!global.__discordStreamBridgeLoaded) {
   ]);
   let telemetryEnabled = false;
   let telemetryReady = false;
+  let telemetryConfigPromise = Promise.resolve();
   const telemetryLastSentAt = /* @__PURE__ */ new Map();
   async function testElectronTelemetry(id) {
-    if (!telemetryEnabled || !telemetryReady) return reply(id, false, "Telemetry is disabled");
     try {
+      await telemetryConfigPromise;
+      if (!telemetryEnabled || !telemetryReady) return reply(id, false, "Telemetry is disabled");
       const accepted = captureBridgeEvent("telemetry_test", { connected: true });
       if (!accepted) return reply(id, false, "Telemetry event was not accepted");
       void Promise.resolve(Sentry.flush(2e3)).catch(() => {
@@ -98498,7 +98506,7 @@ if (!global.__discordStreamBridgeLoaded) {
   }
   async function disableElectronTelemetry(id) {
     try {
-      await configureTelemetry(false);
+      await queueTelemetryConfiguration(false);
       reply(id, true, "");
     } catch (_) {
       reply(id, false, "Telemetry disable failed");

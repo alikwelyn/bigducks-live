@@ -20,6 +20,7 @@ const ui = {
   reconnect: document.querySelector("#reconnect"),
   route: document.querySelector("#test-route"),
   reload: document.querySelector("#reload"),
+  repair: document.querySelector("#repair"),
   log: document.querySelector("#open-log"),
   version: document.querySelector("#version"),
   updateTitle: document.querySelector("#update-title"),
@@ -134,6 +135,7 @@ function renderStatus(status) {
   ui.tunnels.textContent = String(status.tunnelCount ?? 0);
 	ui.bridge.textContent = status.latencyMS ? `${status.latencyMS} ms` : "—";
   ui.reload.disabled = !status.bridgeConnected || state === "discord_closed" || state === "disabled";
+  ui.repair.disabled = state === "disabled" || state === "stopped";
   ui.technical.textContent = [
     `estado: ${state}`,
     `proxies verificados: ${status.poolSize ?? 0}`,
@@ -195,6 +197,10 @@ async function perform(button, pending, action, success) {
 ui.reconnect.addEventListener("click", () => perform(ui.reconnect, "Liberando…", window.bigDucksReconnect, "Live liberada"));
 ui.route.addEventListener("click", () => perform(ui.route, "Testando…", window.bigDucksTestRoute, "Conexão validada"));
 ui.reload.addEventListener("click", () => perform(ui.reload, "Recarregando…", window.bigDucksReload, "Janela do Discord recarregada"));
+ui.repair.addEventListener("click", () => {
+  if (!window.confirm("Corrigir a integração? O Discord será fechado e reaberto pela rota protegida.")) return;
+  perform(ui.repair, "Corrigindo…", window.bigDucksRepairDiscord, "Discord corrigido");
+});
 ui.log.addEventListener("click", async () => {
   try { await window.bigDucksOpenLog(); }
   catch (error) { showToast(`Não foi possível abrir o log: ${error}`); }

@@ -118,6 +118,7 @@ func runWindow(dataDir string) (err error) {
 		"bigDucksReconnect":        control.reconnect,
 		"bigDucksTestRoute":        control.testRoute,
 		"bigDucksReload":           control.reload,
+		"bigDucksRepairDiscord":    control.repairDiscord,
 		"bigDucksOpenLog":          control.openLog,
 		"bigDucksCheckUpdate":      control.checkUpdate,
 		"bigDucksUpdateStatus":     control.updateStatus,
@@ -287,6 +288,10 @@ func (c *controller) testRoute() error {
 
 func (c *controller) reload() error {
 	return c.action(8*time.Second, (*controlapi.Client).Reload)
+}
+
+func (c *controller) repairDiscord() error {
+	return c.action(45*time.Second, (*controlapi.Client).RepairDiscord)
 }
 
 func (c *controller) enableTelemetry() error {

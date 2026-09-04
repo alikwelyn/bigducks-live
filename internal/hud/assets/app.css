@@ -73,7 +73,7 @@ h2 { margin-bottom: 0; font-size: 19px; line-height: 1.22; letter-spacing: -.025
 .primary strong { font-size: 15px; }
 .primary small { margin-top: 1px; color: #3d3217; font-size: 12px; }
 .primary .button-arrow { width: 24px; height: 24px; }
-.secondary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.secondary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
 .secondary { display: flex; align-items: center; justify-content: center; gap: 9px; padding: 9px; color: var(--ink); background: var(--surface-raised); border: 1px solid var(--border); }
 .secondary:hover { border-color: #3e6389; background: #172d49; }
 

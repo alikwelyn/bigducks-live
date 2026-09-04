@@ -41,6 +41,17 @@ func TestTelemetryCardUsesCompactHorizontalLayout(t *testing.T) {
 	}
 }
 
+func TestHUDProvidesExplicitDiscordRepairAction(t *testing.T) {
+	page := hud.PageHTML()
+	for _, required := range []string{
+		`id="repair"`, "Corrigir Discord", "bigDucksRepairDiscord",
+	} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("HUD repair action does not contain %q", required)
+		}
+	}
+}
+
 func TestTelemetryUsesAccessibleSwitchControl(t *testing.T) {
 	page := hud.PageHTML()
 	for _, required := range []string{
