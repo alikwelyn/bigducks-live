@@ -32,3 +32,60 @@ func TestReduceMediaTracksReceiverTimeoutAndDisconnect(t *testing.T) {
 		t.Fatalf("disconnect state = %q", status.State)
 	}
 }
+
+func TestReduceNativeMediaRequiresTwoAudioOnlySamples(t *testing.T) {
+	status := ReduceNativeMedia(MediaStatus{}, NativeMediaSample{
+		Hooked: true, StreamConnection: true, StatsAvailable: true,
+		DemandActive: true, HasAudioSSRC: true, AudioPackets: 10,
+	})
+	if status.State != MediaUnknown {
+		t.Fatalf("first sample state = %q", status.State)
+	}
+	status = ReduceNativeMedia(status, NativeMediaSample{
+		Hooked: true, StreamConnection: true, StatsAvailable: true,
+		DemandActive: true, HasAudioSSRC: true, AudioPackets: 20,
+	})
+	if status.State != MediaNativeReceiverAudioOnly {
+		t.Fatalf("state = %q", status.State)
+	}
+}
+
+func TestReduceNativeMediaDistinguishesDecoderStallFromNoVideoPackets(t *testing.T) {
+	status := ReduceNativeMedia(MediaStatus{}, NativeMediaSample{
+		Hooked: true, StatsAvailable: true, DemandActive: true,
+		VideoPackets: 10, FramesDecoded: 0,
+	})
+	status = ReduceNativeMedia(status, NativeMediaSample{
+		Hooked: true, StatsAvailable: true, DemandActive: true,
+		VideoPackets: 20, FramesDecoded: 0,
+	})
+	if status.State != MediaNativeDecoderStalled {
+		t.Fatalf("state = %q", status.State)
+	}
+}
+
+func TestReduceNativeMediaDistinguishesReceiverWithoutPackets(t *testing.T) {
+	status := ReduceNativeMedia(MediaStatus{}, NativeMediaSample{
+		Hooked: true, StatsAvailable: true, DemandActive: true, ReceiverCount: 0,
+	})
+	status = ReduceNativeMedia(status, NativeMediaSample{
+		Hooked: true, StatsAvailable: true, DemandActive: true, ReceiverCount: 0,
+	})
+	if status.State != MediaNativeReceiverNoPackets {
+		t.Fatalf("state = %q", status.State)
+	}
+}
+
+func TestReduceNativeMediaDetectsTransmitterStall(t *testing.T) {
+	status := ReduceNativeMedia(MediaStatus{}, NativeMediaSample{
+		Hooked: true, StreamConnection: true, StatsAvailable: true, DemandActive: true,
+		CaptureFrames: 100, EncodedFrames: 10, InputFPS: 30, EncodedFPS: 0,
+	})
+	status = ReduceNativeMedia(status, NativeMediaSample{
+		Hooked: true, StreamConnection: true, StatsAvailable: true, DemandActive: true,
+		CaptureFrames: 200, EncodedFrames: 10, InputFPS: 30, EncodedFPS: 0,
+	})
+	if status.State != MediaNativeTransmitterStalled {
+		t.Fatalf("state = %q", status.State)
+	}
+}
