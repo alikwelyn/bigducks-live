@@ -12,6 +12,8 @@ Aplicativo portátil para Windows que mantém as lives do Discord acessíveis po
 - toda tentativa termina em sucesso ou erro explicável — o HUD não fica em “reconectando” para sempre;
 - a bandeja supervisiona e reinicia automaticamente o núcleo se ele encerrar;
 - `Reiniciar proteção` reinicia apenas o núcleo e mantém o Discord aberto;
+- `Corrigir Discord` fecha e reabre a sessão pela rota protegida, sem usar o Gerenciador de Tarefas;
+- `Sair` fecha o HUD, o núcleo e toda a árvore do Discord;
 - logs e arquivos locais recebem permissões legíveis pelo usuário atual;
 - atualizações vêm de Releases do GitHub e só são instaladas após assinatura Ed25519 e SHA-256 válidos.
 
@@ -40,7 +42,8 @@ No ícone do pato ao lado do relógio:
 
 - **Abrir** abre uma janela independente;
 - **Reiniciar** reinicia somente o processo do núcleo;
-- **Sair** encerra o BIG DUCKS sem fechar o Discord.
+- **Corrigir Discord** pede confirmação, fecha a árvore atual e reabre o Discord pela rota protegida;
+- **Sair** fecha o HUD, o núcleo, o Discord e encerra o BIG DUCKS.
 
 ## Como funciona
 
