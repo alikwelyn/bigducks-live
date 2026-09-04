@@ -181,9 +181,18 @@ func TestServerCloseRemovesControlFile(t *testing.T) {
 
 func TestEmbeddedScriptTargetsOnlyDiscordClientWindows(t *testing.T) {
 	script := string(bridge.Script())
-	for _, required := range []string{"BrowserWindow.getAllWindows", "discord\\.com", "bridge-control.json", "webContents.reload", "closeAllConnections", "resolveProxy"} {
+	for _, required := range []string{
+		"BrowserWindow.getAllWindows", "discord\\.com", "bridge-control.json", "webContents.reload",
+		"closeAllConnections", "resolveProxy", "telemetry_sync", "telemetry_test",
+		"telemetry_disable", "telemetry_purge", "Sentry.init",
+	} {
 		if !contains(script, required) {
 			t.Fatalf("embedded script does not contain %q", required)
+		}
+	}
+	for _, forbidden := range []string{"window.Sentry", "globalThis.Sentry"} {
+		if contains(script, forbidden) {
+			t.Fatalf("embedded script installs Sentry in renderer global: %q", forbidden)
 		}
 	}
 }
