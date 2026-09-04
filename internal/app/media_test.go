@@ -38,8 +38,8 @@ func TestReduceNativeMediaRequiresTwoAudioOnlySamples(t *testing.T) {
 		Hooked: true, StreamConnection: true, StatsAvailable: true,
 		DemandActive: true, HasAudioSSRC: true, AudioPackets: 10,
 	})
-	if status.State != MediaUnknown {
-		t.Fatalf("first sample state = %q", status.State)
+	if status.State != MediaUnknown || status.Native.State != MediaUnknown {
+		t.Fatalf("first sample state = %q native=%q", status.State, status.Native.State)
 	}
 	status = ReduceNativeMedia(status, NativeMediaSample{
 		Hooked: true, StreamConnection: true, StatsAvailable: true,

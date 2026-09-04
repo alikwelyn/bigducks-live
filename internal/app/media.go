@@ -124,8 +124,12 @@ func ReduceNativeMedia(status MediaStatus, sample NativeMediaSample) MediaStatus
 		status.State = MediaUnknown
 	}
 	previousNative := status.Native
+	nativeState := previousNative.State
+	if nativeState == "" {
+		nativeState = MediaUnknown
+	}
 	status.Native = NativeMediaStatus{
-		State:            previousNative.State,
+		State:            nativeState,
 		Hooked:           sample.Hooked,
 		StreamConnection: sample.StreamConnection,
 		StatsAvailable:   sample.StatsAvailable,
