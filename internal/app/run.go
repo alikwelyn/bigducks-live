@@ -232,10 +232,52 @@ func Run(ctx context.Context, options RunOptions) error {
 	} else {
 		defer bridgeServer.Close()
 	}
+	fullProxyURL := ""
+	if config.RoutingMode == RoutingModeFull {
+		fullProxyURL = "socks5://" + relayAddress
+		logger.Printf("full control mode uses the managed local relay; Discord media domains remain direct")
+	}
+	startDiscord := func(startCtx context.Context) error {
+		if !config.AutoStartDiscord {
+			return ErrDiscordClosed
+		}
+		discordPath, findErr := discord.FindLatest(config.DiscordRoot)
+		if findErr != nil {
+			return findErr
+		}
+		if bridgeReady {
+			resources := filepath.Join(filepath.Dir(discordPath), "resources")
+			injectionResult, injectionErr := ensureInjectionWithRetry(4, func() (injection.Result, error) {
+				return injection.Ensure(resources, config.DataDir, bridge.Script())
+			})
+			if injectionErr != nil {
+				logger.Printf("could not install Discord reload bridge before recovery launch: %v", injectionErr)
+			} else {
+				logger.Printf("Discord injection state: %s%s", injectionResult.State, reasonSuffix(injectionResult.Reason))
+			}
+		}
+		var command *exec.Cmd
+		var launchErr error
+		if fullProxyURL != "" {
+			command, launchErr = discord.LaunchFull(discordPath, fullProxyURL)
+		} else {
+			command, launchErr = discord.Launch(discordPath, pacURL)
+		}
+		if launchErr != nil {
+			return launchErr
+		}
+		logger.Printf("Discord started with protected routing during recovery")
+		go func() {
+			if waitErr := discord.WaitForProcessTreePreserving(context.Background(), command); waitErr != nil {
+				logger.Printf("Discord recovery launch exited: %v", waitErr)
+			}
+		}()
+		return nil
+	}
 	recovery := NewRecoveryCoordinator(RecoveryCoordinatorOptions{
 		Pool: managed, Tunnels: tracker, Bridge: bridgeServer, Status: statusStore, Logger: logger,
-		DiscordAlive: discord.IsRunning,
-		Aggressive:   config.AggressiveRecovery,
+		DiscordAlive: discord.IsRunning, StartDiscord: startDiscord,
+		Aggressive: config.AggressiveRecovery,
 		SecondStage: func(actionCtx context.Context) error {
 			if !bridgeReady {
 				return bridge.ErrUnavailable
@@ -258,14 +300,13 @@ func Run(ctx context.Context, options RunOptions) error {
 			if !bridgeReady {
 				return bridge.ErrUnavailable
 			}
-			expected := "SOCKS5 " + relayAddress
 			for _, target := range []string{"https://gateway.discord.gg", "https://gateway-us-east1-b.discord.gg"} {
 				route, routeErr := bridgeServer.ResolveProxy(actionCtx, target)
 				if routeErr != nil {
 					return routeErr
 				}
-				if !strings.Contains(route, expected) {
-					return fmt.Errorf("Discord resolved %s as %q instead of %q", target, route, expected)
+				if !protectedProxyRoute(route, relayAddress) {
+					return fmt.Errorf("Discord resolved %s as %q instead of %q", target, route, "SOCKS5 "+relayAddress)
 				}
 			}
 			return nil
@@ -289,11 +330,6 @@ func Run(ctx context.Context, options RunOptions) error {
 		ensureProtectedExistingDiscord(runCtx, config, relayAddress, bridgeServer, logger)
 	}
 
-	fullProxyURL := ""
-	if config.RoutingMode == RoutingModeFull {
-		fullProxyURL = "socks5://" + relayAddress
-		logger.Printf("full control mode uses the managed local relay; Discord media domains remain direct")
-	}
 	return launchDiscord(runCtx, config, pacURL, fullProxyURL, options.DryRun, options.Attach, options.PreserveDiscord, bridgeReady, statusStore, logger)
 }
 
@@ -443,20 +479,50 @@ func shouldRestartUnprotectedDiscord(running, autoStart, attach, protected bool)
 	return running && autoStart && attach && !protected
 }
 
+func protectedProxyRoute(route, relayAddress string) bool {
+	return relayAddress != "" && strings.Contains(strings.ToUpper(route), strings.ToUpper("SOCKS5 "+relayAddress))
+}
+
 func ensureProtectedExistingDiscord(ctx context.Context, config Config, relayAddress string, bridgeServer *bridge.Server, logger *logging.Logger) {
 	if !shouldRestartUnprotectedDiscord(discord.IsRunning(), config.AutoStartDiscord, true, false) || bridgeServer == nil {
 		return
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	route, err := bridgeServer.ResolveProxy(probeCtx, "https://gateway.discord.gg")
-	cancel()
-	if err != nil || strings.Contains(route, "SOCKS5 "+relayAddress) {
-		return
+	checkCtx, cancelCheck := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelCheck()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if bridgeServer.Status().Connected {
+			probeCtx, cancelProbe := context.WithTimeout(checkCtx, time.Second)
+			route, err := bridgeServer.ResolveProxy(probeCtx, "https://gateway.discord.gg")
+			cancelProbe()
+			if err == nil {
+				if protectedProxyRoute(route, relayAddress) {
+					logger.Printf("existing Discord session already uses the protected route")
+					return
+				}
+				logger.Printf("existing Discord session is not using the protected route (%q); restarting it with BIG DUCKS routing", route)
+				if identity, identityErr := discord.CurrentProcess(); identityErr == nil && identity.PID > 0 {
+					discord.KillProcessTree(int(identity.PID))
+				}
+				waitForDiscordShutdown(checkCtx, logger)
+				return
+			}
+		}
+		select {
+		case <-checkCtx.Done():
+			logger.Printf("could not verify the existing Discord route before relaunch: %v; forcing a protected relaunch", checkCtx.Err())
+			if identity, identityErr := discord.CurrentProcess(); identityErr == nil && identity.PID > 0 {
+				discord.KillProcessTree(int(identity.PID))
+			}
+			waitForDiscordShutdown(ctx, logger)
+			return
+		case <-ticker.C:
+		}
 	}
-	logger.Printf("existing Discord session is not using the protected route (%q); restarting it with BIG DUCKS routing", route)
-	if identity, identityErr := discord.CurrentProcess(); identityErr == nil && identity.PID > 0 {
-		discord.KillProcessTree(int(identity.PID))
-	}
+}
+
+func waitForDiscordShutdown(ctx context.Context, logger *logging.Logger) {
 	deadline := time.NewTimer(8 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)

@@ -42,6 +42,7 @@ type RecoveryCoordinatorOptions struct {
 	Logger        *logging.Logger
 	BridgeTimeout time.Duration
 	DiscordAlive  func() bool
+	StartDiscord  func(context.Context) error
 	Aggressive    bool
 	SecondStage   func(context.Context) error
 }
@@ -54,6 +55,7 @@ type RecoveryCoordinator struct {
 	logger        *logging.Logger
 	bridgeTimeout time.Duration
 	discordAlive  func() bool
+	startDiscord  func(context.Context) error
 	aggressive    bool
 	secondStage   func(context.Context) error
 	gate          chan struct{}
@@ -72,6 +74,7 @@ func NewRecoveryCoordinator(options RecoveryCoordinatorOptions) *RecoveryCoordin
 		logger:        options.Logger,
 		bridgeTimeout: bridgeTimeout,
 		discordAlive:  options.DiscordAlive,
+		startDiscord:  options.StartDiscord,
 		aggressive:    options.Aggressive,
 		secondStage:   options.SecondStage,
 		gate:          make(chan struct{}, 1),
@@ -93,8 +96,14 @@ func (c *RecoveryCoordinator) Recover(ctx context.Context) (RecoveryResult, erro
 	}
 
 	if c.discordAlive != nil && !c.discordAlive() {
-		c.setStatus(RecoveryDiscordClosed, ErrDiscordClosed.Error(), "O Discord está fechado")
-		return RecoveryResult{State: RecoveryDiscordClosed, Message: "O Discord está fechado"}, ErrDiscordClosed
+		if c.startDiscord == nil {
+			c.setStatus(RecoveryDiscordClosed, ErrDiscordClosed.Error(), "O Discord está fechado")
+			return RecoveryResult{State: RecoveryDiscordClosed, Message: "O Discord está fechado"}, ErrDiscordClosed
+		}
+		if err := c.startDiscord(ctx); err != nil {
+			c.setStatus(RecoveryFailed, err.Error(), "Não foi possível abrir o Discord pela rota protegida")
+			return RecoveryResult{State: RecoveryFailed, Message: "Não foi possível abrir o Discord pela rota protegida"}, err
+		}
 	}
 	c.setStatus(RecoveryReconnecting, "", "Preparando uma nova rota para a live")
 	if len(c.pool.Snapshot()) == 0 {

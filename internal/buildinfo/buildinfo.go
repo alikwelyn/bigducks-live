@@ -6,6 +6,6 @@ const (
 )
 
 var (
-	Version         = "0.1.4"
+	Version         = "0.1.5"
 	UpdatePublicKey = "DAFNpbjtajdCiR+4UtmIEXzFE9njRcXRyuXpADqssEE="
 )
