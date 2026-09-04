@@ -10,11 +10,14 @@ import (
 func TestPageContainsAccessibleRecoveryControls(t *testing.T) {
 	page := hud.PageHTML()
 	for _, required := range []string{
-		"BIG DUCKS", "Reconectar live", "Testar rota", "Recarregar Discord",
+		"BIG DUCKS", "Liberar live", "Testar conexão", "Recarregar Discord",
 		`aria-live="polite"`, `:focus-visible`, `prefers-reduced-motion`,
 		"data:image/png;base64,", "bigDucksStatus", "bigDucksReconnect",
-		"TELEMETRIA OPCIONAL", "bigDucksTelemetryEnable", "bigDucksTelemetryDisable",
+		"TELEMETRIA SENTRY", "bigDucksTelemetryEnable", "bigDucksTelemetryDisable",
 		"bigDucksTelemetryTest", "bigDucksTelemetryPurge", "telemetry-enabled",
+		"STATUS DA LIVE", "Live liberada", "Liberar live", "Preparando acesso",
+		"Liberando acesso", "Buscando acesso", "Live não liberada", "Live sem proteção",
+		"Testar conexão",
 	} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("HUD page does not contain %q", required)
@@ -28,7 +31,7 @@ func TestPageContainsAccessibleRecoveryControls(t *testing.T) {
 func TestPageContainsTelemetryControlsAndPrivacyCopy(t *testing.T) {
 	page := hud.PageHTML()
 	for _, required := range []string{
-		"A telemetria começa desativada", "Não envia IP", "tokens",
+		"A telemetria começa ativada", "Não envia IP", "tokens",
 		"fila local", "confirm", "Telemetria desativada",
 	} {
 		if !strings.Contains(page, required) {

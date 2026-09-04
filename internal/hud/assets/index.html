@@ -28,29 +28,29 @@
             <div class="route-copy">
               <div class="statusline">
                 <span id="status-dot" class="status-dot" aria-hidden="true"></span>
-                <p class="label">ESTADO DA ROTA</p>
+                <p class="label">STATUS DA LIVE</p>
               </div>
-              <h2 id="protection-title">Verificando proteção…</h2>
-              <p id="status-detail" class="status-detail">Conectando ao núcleo BIG DUCKS.</p>
+              <h2 id="protection-title">Verificando acesso…</h2>
+              <p id="status-detail" class="status-detail">Conectando para liberar a live.</p>
             </div>
           </div>
-          <div class="metrics" aria-label="Métricas da proteção">
+          <div class="metrics" aria-label="Métricas da live">
             <div class="metric"><span>PROXIES</span><strong id="pool-size">—</strong></div>
             <div class="metric"><span>TÚNEIS</span><strong id="tunnel-count">—</strong></div>
             <div class="metric"><span>LATÊNCIA</span><strong id="bridge-state">—</strong></div>
           </div>
         </section>
 
-        <section class="actions" aria-label="Ações de recuperação">
+        <section class="actions" aria-label="Ações da live">
           <button id="reconnect" class="button primary" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
-            <span><strong>Reconectar live</strong><small>Troca a rota sem fechar o Discord</small></span>
+            <span><strong>Liberar live</strong><small>Abre uma conexão melhor sem fechar o Discord</small></span>
             <svg class="button-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
           </button>
           <div class="secondary-grid">
             <button id="test-route" class="button secondary" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-              <span>Testar rota</span>
+              <span>Testar conexão</span>
             </button>
             <button id="reload" class="button secondary" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg>
@@ -73,12 +73,12 @@
           <div class="telemetry-heading">
             <span id="telemetry-dot" class="status-dot failed" aria-hidden="true"></span>
             <div>
-              <p class="label">TELEMETRIA OPCIONAL</p>
-              <h2 id="telemetry-title">Telemetria desativada</h2>
+              <p class="label">TELEMETRIA SENTRY</p>
+              <h2 id="telemetry-title">Telemetria ativada</h2>
             </div>
-            <span id="telemetry-enabled" class="telemetry-state">DESATIVADA</span>
+            <span id="telemetry-enabled" class="telemetry-state">ATIVADA</span>
           </div>
-          <p id="telemetry-detail" class="telemetry-detail">A telemetria começa desativada e só envia diagnósticos agregados após sua escolha.</p>
+          <p id="telemetry-detail" class="telemetry-detail">A telemetria começa ativada e só envia diagnósticos agregados após sua escolha.</p>
           <p class="telemetry-note">Não envia IP, tokens, mensagens, URLs completas, caminhos ou IDs Discord. A fila local pode ser apagada aqui.</p>
           <div class="telemetry-actions">
             <button id="telemetry-enable" class="button telemetry-primary" type="button"><span>Ativar</span></button>

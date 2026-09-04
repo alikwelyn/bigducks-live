@@ -36,19 +36,19 @@ const ui = {
 };
 
 const stateCopy = {
-  disabled: ["Proteção desativada", "O BIG DUCKS está desligado nas configurações.", "failed"],
-  discord_closed: ["Discord fechado", "Abra o Discord para iniciar a proteção.", "working"],
-  discord_starting: ["Iniciando Discord", "Aguardando o cliente terminar de abrir.", "working"],
-  discord_running: ["Discord aberto", "A sessão não foi iniciada com a rota protegida.", "failed"],
-  starting_protection: ["Preparando a proteção", "O núcleo está configurando a rota protegida.", "working"],
-  direct: ["Conexão direta", "O gateway está conectado sem proxy; a proteção regional está desativada.", "failed"],
-  starting: ["Preparando a proteção", "O núcleo está verificando proxies e configurando a rota.", "working"],
-  protected: ["Live protegida", "O gateway do Discord está passando por uma saída verificada.", "protected"],
-  reconnecting: ["Trocando a rota", "Aguarde enquanto o Discord abre uma nova conexão protegida.", "working"],
-  no_proxy: ["Procurando uma saída", "Ainda não há proxy verificado. O IP direto não será usado pelo gateway.", "working"],
-  failed: ["A reconexão não terminou", "Veja o diagnóstico abaixo e tente novamente.", "failed"],
-  repair_required: ["Integração precisa de reparo", "Uma atualização do Discord alterou a integração do BIG DUCKS.", "failed"],
-  stopped: ["Proteção indisponível", "O núcleo não está respondendo. Use “Reiniciar proteção” no ícone do pato.", "failed"]
+  disabled: ["Proteção desligada", "Ative a proteção nas configurações para liberar a live.", "failed"],
+  discord_closed: ["Discord fechado", "Abra o Discord para liberar a live.", "working"],
+  discord_starting: ["Abrindo o Discord", "Aguarde enquanto preparamos o acesso.", "working"],
+  discord_running: ["Discord aberto", "A proteção aguarda uma sessão iniciada pelo BIG DUCKS.", "failed"],
+  starting_protection: ["Preparando acesso", "O BIG DUCKS está preparando a conexão.", "working"],
+  direct: ["Live sem proteção", "A conexão está direta, sem saída verificada.", "failed"],
+  starting: ["Preparando acesso", "Verificando a conexão e liberando a live.", "working"],
+  protected: ["Live liberada", "A conexão está pronta para transmitir e assistir.", "protected"],
+  reconnecting: ["Liberando acesso", "Aguarde enquanto abrimos uma nova conexão.", "working"],
+  no_proxy: ["Buscando acesso", "Ainda procurando uma saída verificada.", "working"],
+  failed: ["Live não liberada", "Veja os detalhes abaixo e tente novamente.", "failed"],
+  repair_required: ["Ajuste necessário", "O Discord mudou a integração; corrija para liberar a live.", "failed"],
+  stopped: ["Proteção indisponível", "Use “Reiniciar proteção” no ícone do pato.", "failed"]
 };
 
 let lastState = "";
@@ -188,8 +188,8 @@ async function perform(button, pending, action, success) {
   }
 }
 
-ui.reconnect.addEventListener("click", () => perform(ui.reconnect, "Reconectando…", window.bigDucksReconnect, "Nova rota protegida ativa"));
-ui.route.addEventListener("click", () => perform(ui.route, "Testando…", window.bigDucksTestRoute, "PAC e gateway regional validados"));
+ui.reconnect.addEventListener("click", () => perform(ui.reconnect, "Liberando…", window.bigDucksReconnect, "Live liberada"));
+ui.route.addEventListener("click", () => perform(ui.route, "Testando…", window.bigDucksTestRoute, "Conexão validada"));
 ui.reload.addEventListener("click", () => perform(ui.reload, "Recarregando…", window.bigDucksReload, "Janela do Discord recarregada"));
 ui.log.addEventListener("click", async () => {
   try { await window.bigDucksOpenLog(); }
