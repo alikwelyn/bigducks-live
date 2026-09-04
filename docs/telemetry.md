@@ -7,7 +7,7 @@ A telemetria do BIG DUCKS LIVE vem **desativada por padrão**. Ela só é ativad
 Quando ativada, a telemetria usa somente eventos tipados e agregados:
 
 - componentes `core`, `bridge` e `media`;
-- códigos fechados de falha de inicialização, bridge, injeção, recuperação, áudio sem vídeo, timeout, desconexão RTC e diagnóstico RTC nativo;
+- códigos fechados `startup_failure`, `bridge_failure`, `injection_failure`, `recovery_failure`, `audio_only`, `video_stalled`, `receiver_timeout`, `rtc_disconnected`, `native_probe_unavailable`, `native_transmitter_stalled`, `native_receiver_no_packets`, `native_decoder_stalled`, `native_render_unknown` e `telemetry_test`;
 - estado agregado, modo `gateway|full`, flags de disponibilidade/SSRC, contadores de pacotes/bytes/frames/receptores e buckets de duração;
 - um evento `telemetry_test` apenas quando o usuário aciona **Enviar teste**.
 

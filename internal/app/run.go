@@ -376,6 +376,7 @@ func Run(ctx context.Context, options RunOptions) error {
 				return injection.Ensure(resources, config.DataDir, bridge.Script())
 			})
 			if injectionErr != nil {
+				captureCoreFailure(telemetry.CodeInjectionFailure)
 				logger.Printf("could not install Discord reload bridge before recovery launch: %v", injectionErr)
 			} else {
 				logger.Printf("Discord injection state: %s%s", injectionResult.State, reasonSuffix(injectionResult.Reason))
@@ -516,14 +517,14 @@ func Run(ctx context.Context, options RunOptions) error {
 		PurgeTelemetry:   telemetryPurge,
 		Reconnect: func(actionCtx context.Context) error {
 			_, err := recovery.Recover(actionCtx)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				captureCoreFailure(telemetry.CodeRecoveryFailure)
 			}
 			return err
 		},
 		RepairDiscord: func(actionCtx context.Context) error {
 			err := repairDiscord(actionCtx)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				captureCoreFailure(telemetry.CodeRecoveryFailure)
 			}
 			return err
@@ -569,7 +570,7 @@ func Run(ctx context.Context, options RunOptions) error {
 	}
 
 	err = launchDiscord(runCtx, config, pacURL, fullProxyURL, options.DryRun, options.Attach, options.PreserveDiscord, bridgeReady, statusStore, logger)
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		captureCoreFailure(telemetry.CodeStartupFailure)
 	}
 	return err
