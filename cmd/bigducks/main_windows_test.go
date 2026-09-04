@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -16,8 +17,8 @@ import (
 )
 
 func TestTrayMenuUsesOnlyShortUserFacingLabels(t *testing.T) {
-	got := []string{trayOpenLabel, trayRestartLabel, trayQuitLabel, trayEnableLabel}
-	want := []string{"Abrir", "Reiniciar", "Sair", "Ativar"}
+	got := []string{trayOpenLabel, trayRestartLabel, trayRepairLabel, trayQuitLabel, trayEnableLabel}
+	want := []string{"Abrir", "Reiniciar", "Corrigir Discord", "Sair", "Ativar"}
 	if len(got) != len(want) {
 		t.Fatalf("menu labels = %#v, want %#v", got, want)
 	}
@@ -25,6 +26,55 @@ func TestTrayMenuUsesOnlyShortUserFacingLabels(t *testing.T) {
 		if got[index] != want[index] {
 			t.Fatalf("tray label %d = %q, want %q", index, got[index], want[index])
 		}
+	}
+}
+
+func TestRepairDeclinedDoesNotCallCore(t *testing.T) {
+	called := false
+	confirmed, err := confirmAndRepair(func() bool { return false }, func(context.Context) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("confirmAndRepair() error = %v", err)
+	}
+	if confirmed {
+		t.Fatal("declined repair was reported as confirmed")
+	}
+	if called {
+		t.Fatal("repair callback was called after confirmation was declined")
+	}
+}
+
+func TestRepairConfirmedCallsCore(t *testing.T) {
+	called := false
+	confirmed, err := confirmAndRepair(func() bool { return true }, func(context.Context) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("confirmAndRepair() error = %v", err)
+	}
+	if !confirmed {
+		t.Fatal("confirmed repair was reported as declined")
+	}
+	if !called {
+		t.Fatal("repair callback was not called after confirmation")
+	}
+}
+
+func TestCoreWatcherDoesNotRestartWhileClosing(t *testing.T) {
+	if shouldRestartCore(true, false, false) {
+		t.Fatal("core watcher would restart the core during shutdown")
+	}
+	if shouldRestartCore(false, true, false) {
+		t.Fatal("core watcher would restart the core during update")
+	}
+	if shouldRestartCore(false, false, true) {
+		t.Fatal("core watcher would restart an already running core")
+	}
+	if !shouldRestartCore(false, false, false) {
+		t.Fatal("core watcher should restart an unexpectedly stopped core")
 	}
 }
 

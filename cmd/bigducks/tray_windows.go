@@ -28,24 +28,29 @@ import (
 const (
 	trayOpenLabel    = "Abrir"
 	trayRestartLabel = "Reiniciar"
+	trayRepairLabel  = "Corrigir Discord"
 	trayQuitLabel    = "Sair"
 	trayEnableLabel  = "Ativar"
 )
 
 type trayController struct {
-	core       *supervisor.Supervisor
-	helperPath string
-	dataDir    string
-	configPath string
-	logger     *logging.Logger
-	closed     chan struct{}
-	closeOnce  sync.Once
+	core         *supervisor.Supervisor
+	helperPath   string
+	dataDir      string
+	configPath   string
+	logger       *logging.Logger
+	closed       chan struct{}
+	closeOnce    sync.Once
+	shutdownOnce sync.Once
 
 	openItem    *systray.MenuItem
 	restartItem *systray.MenuItem
+	repairItem  *systray.MenuItem
 	quitItem    *systray.MenuItem
 	enableItem  *systray.MenuItem
 	openOnReady bool
+	closing     atomic.Bool
+	repairing   atomic.Bool
 	updating    atomic.Bool
 }
 
@@ -76,12 +81,14 @@ func (c *trayController) onReady() {
 	systray.SetTooltip("BIG DUCKS LIVE — iniciando proteção")
 	c.openItem = systray.AddMenuItem(trayOpenLabel, "Abrir o painel de proteção das lives")
 	c.restartItem = systray.AddMenuItem(trayRestartLabel, "Reiniciar somente o núcleo, mantendo o Discord aberto")
+	c.repairItem = systray.AddMenuItem(trayRepairLabel, "Fechar e reabrir o Discord pela rota protegida")
 	c.quitItem = systray.AddMenuItem(trayQuitLabel, "Encerrar o BIG DUCKS e fechar completamente o Discord")
 	c.enableItem = systray.AddMenuItem(trayEnableLabel, "Ativar a proteção quando ela estiver desativada")
 	if !c.configDisabled() {
 		c.enableItem.Disable()
 	}
 	c.restartItem.Disable()
+	c.repairItem.Disable()
 	go c.menuLoop()
 	go c.startCore()
 	go c.watchForUpdate()
@@ -94,7 +101,7 @@ func (c *trayController) watchCore() {
 	for {
 		select {
 		case <-ticker.C:
-			if c.updating.Load() || c.core.Running() {
+			if !shouldRestartCore(c.closing.Load(), c.updating.Load(), c.core.Running()) {
 				continue
 			}
 			c.logger.Printf("protection core exited unexpectedly; restarting automatically")
@@ -112,6 +119,10 @@ func (c *trayController) watchCore() {
 			return
 		}
 	}
+}
+
+func shouldRestartCore(closing, updating, running bool) bool {
+	return !closing && !updating && !running
 }
 
 func (c *trayController) watchForUpdate() {
@@ -166,25 +177,61 @@ func (c *trayController) beginUpdate(path string) {
 }
 
 func (c *trayController) onExit() {
-	c.closeOnce.Do(func() { close(c.closed) })
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := c.core.Stop(ctx); err != nil {
-		c.logger.Printf("could not stop protection core cleanly: %v", err)
+	if c.closing.Load() {
+		c.shutdownResources()
+		return
 	}
+	c.closeOnce.Do(func() { close(c.closed) })
+	c.stopCore()
 }
 
 func (c *trayController) quitEverything() {
-	c.updating.Store(true)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := c.core.Stop(ctx); err != nil {
-		c.logger.Printf("could not stop protection core before exit: %v", err)
-	}
-	cancel()
-	if identity, err := discord.CurrentProcess(); err == nil && identity.PID > 0 {
-		discord.KillProcessTree(int(identity.PID))
-	}
+	c.shutdownResources()
 	systray.Quit()
+}
+
+func (c *trayController) shutdownResources() {
+	if c == nil {
+		return
+	}
+	c.shutdownOnce.Do(func() {
+		c.closing.Store(true)
+		c.updating.Store(true)
+		c.closeOnce.Do(func() { close(c.closed) })
+		if c.openItem != nil {
+			c.openItem.Disable()
+		}
+		if c.restartItem != nil {
+			c.restartItem.Disable()
+		}
+		if c.repairItem != nil {
+			c.repairItem.Disable()
+		}
+		if c.enableItem != nil {
+			c.enableItem.Disable()
+		}
+
+		hudCtx, cancelHUD := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := hud.CloseExisting(hudCtx); err != nil && c.logger != nil {
+			c.logger.Printf("could not close HUD before exit: %v", err)
+		}
+		cancelHUD()
+
+		c.stopCore()
+		if identity, err := discord.CurrentProcess(); err == nil && identity.PID > 0 {
+			discord.KillProcessTree(int(identity.PID))
+		}
+	})
+}
+
+func (c *trayController) stopCore() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if c.core != nil {
+		if err := c.core.Stop(ctx); err != nil && c.logger != nil {
+			c.logger.Printf("could not stop protection core before exit: %v", err)
+		}
+	}
 }
 
 func (c *trayController) configDisabled() bool {
@@ -214,6 +261,8 @@ func (c *trayController) menuLoop() {
 			c.openHUD()
 		case <-c.restartItem.ClickedCh:
 			go c.restartCore()
+		case <-c.repairItem.ClickedCh:
+			go c.repairDiscord()
 		case <-c.quitItem.ClickedCh:
 			go c.quitEverything()
 		case <-c.enableItem.ClickedCh:
@@ -222,6 +271,53 @@ func (c *trayController) menuLoop() {
 			return
 		}
 	}
+}
+
+func confirmAndRepair(confirm func() bool, repair func(context.Context) error) (bool, error) {
+	if confirm == nil || !confirm() {
+		return false, nil
+	}
+	if repair == nil {
+		return true, fmt.Errorf("Discord repair callback is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return true, repair(ctx)
+}
+
+func (c *trayController) repairDiscord() {
+	if c == nil || c.closing.Load() || c.updating.Load() || !c.repairing.CompareAndSwap(false, true) {
+		return
+	}
+	defer c.repairing.Store(false)
+	c.repairItem.Disable()
+	confirmedRepair := func() bool { return c.confirmRepair() }
+	repair := func(ctx context.Context) error {
+		client, err := c.core.Client()
+		if err != nil {
+			return err
+		}
+		return client.RepairDiscord(ctx)
+	}
+	confirmed, err := confirmAndRepair(confirmedRepair, repair)
+	if err != nil {
+		c.logger.Printf("Discord repair failed: %v", err)
+		systray.SetTooltip("BIG DUCKS LIVE — falha ao corrigir Discord")
+		c.showError("Não foi possível corrigir o Discord", err)
+	} else if confirmed && !c.closing.Load() {
+		systray.SetTooltip("BIG DUCKS LIVE — Discord corrigido")
+	}
+	if !c.closing.Load() && !c.updating.Load() {
+		c.repairItem.Enable()
+	}
+}
+
+func (c *trayController) confirmRepair() bool {
+	message, _ := windows.UTF16PtrFromString("O Discord será fechado e reaberto pela rota protegida. Continuar?")
+	caption, _ := windows.UTF16PtrFromString("Corrigir Discord — BIG DUCKS LIVE")
+	const idYes = 6
+	result, _ := windows.MessageBox(0, message, caption, windows.MB_ICONQUESTION|windows.MB_YESNO|windows.MB_DEFBUTTON2)
+	return result == idYes
 }
 
 func (c *trayController) startCore() {
@@ -233,7 +329,13 @@ func (c *trayController) startCore() {
 		c.showError("Não foi possível iniciar a proteção", err)
 		return
 	}
+	if c.closing.Load() {
+		return
+	}
 	c.restartItem.Enable()
+	if !c.configDisabled() {
+		c.repairItem.Enable()
+	}
 	systray.SetTooltip("BIG DUCKS LIVE — proteção ativa")
 	if c.openOnReady {
 		c.openHUD()
@@ -241,7 +343,11 @@ func (c *trayController) startCore() {
 }
 
 func (c *trayController) restartCore() {
+	if c == nil || c.closing.Load() || c.updating.Load() {
+		return
+	}
 	c.restartItem.Disable()
+	c.repairItem.Disable()
 	systray.SetTooltip("BIG DUCKS LIVE — reiniciando proteção")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -254,7 +360,12 @@ func (c *trayController) restartCore() {
 		c.logger.Printf("protection core restarted from tray without closing Discord")
 		systray.SetTooltip("BIG DUCKS LIVE — proteção reiniciada")
 	}
-	c.restartItem.Enable()
+	if !c.closing.Load() && !c.updating.Load() {
+		c.restartItem.Enable()
+		if !c.configDisabled() {
+			c.repairItem.Enable()
+		}
+	}
 }
 
 func (c *trayController) openHUD() {
