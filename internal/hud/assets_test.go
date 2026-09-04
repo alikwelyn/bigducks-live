@@ -41,6 +41,18 @@ func TestTelemetryCardUsesCompactHorizontalLayout(t *testing.T) {
 	}
 }
 
+func TestTelemetryUsesAccessibleSwitchControl(t *testing.T) {
+	page := hud.PageHTML()
+	for _, required := range []string{
+		`id="telemetry-toggle"`, `role="switch"`, `aria-checked="true"`,
+		`id="telemetry-toggle-label"`, "telemetry-toggle",
+	} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("HUD telemetry switch does not contain %q", required)
+		}
+	}
+}
+
 func TestPageContainsTelemetryControlsAndPrivacyCopy(t *testing.T) {
 	page := hud.PageHTML()
 	for _, required := range []string{

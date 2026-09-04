@@ -20,8 +20,9 @@ import (
 const ControlFileName = "bridge-control.json"
 
 var (
-	ErrUnavailable  = errors.New("Discord reload bridge is unavailable")
-	ErrDisconnected = errors.New("Discord reload bridge disconnected")
+	ErrUnavailable          = errors.New("Discord reload bridge is unavailable")
+	ErrDisconnected         = errors.New("Discord reload bridge disconnected")
+	ErrTelemetryUnsupported = errors.New("a bridge do Discord sem suporte a telemetria está instalada; use Corrigir Discord")
 )
 
 //go:embed assets/discord_bridge.js
@@ -45,18 +46,19 @@ type MediaEvent struct {
 }
 
 type protocolMessage struct {
-	Type    string         `json:"type"`
-	Token   string         `json:"token,omitempty"`
-	ID      uint64         `json:"id,omitempty"`
-	OK      bool           `json:"ok,omitempty"`
-	Error   string         `json:"error,omitempty"`
-	URL     string         `json:"url,omitempty"`
-	Value   string         `json:"value,omitempty"`
-	Session string         `json:"session,omitempty"`
-	Event   string         `json:"event,omitempty"`
-	At      time.Time      `json:"at,omitempty"`
-	Native  map[string]any `json:"native,omitempty"`
-	Enabled bool           `json:"enabled,omitempty"`
+	Type         string         `json:"type"`
+	Token        string         `json:"token,omitempty"`
+	ID           uint64         `json:"id,omitempty"`
+	OK           bool           `json:"ok,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	URL          string         `json:"url,omitempty"`
+	Value        string         `json:"value,omitempty"`
+	Session      string         `json:"session,omitempty"`
+	Event        string         `json:"event,omitempty"`
+	At           time.Time      `json:"at,omitempty"`
+	Native       map[string]any `json:"native,omitempty"`
+	Enabled      bool           `json:"enabled,omitempty"`
+	Capabilities []string       `json:"capabilities,omitempty"`
 }
 
 type commandResult struct {
@@ -67,18 +69,19 @@ type commandResult struct {
 type Server struct {
 	dataDir string
 
-	mu               sync.Mutex
-	listener         net.Listener
-	conn             net.Conn
-	encoder          *json.Encoder
-	cancel           context.CancelFunc
-	token            string
-	lastSeen         time.Time
-	nextID           uint64
-	pending          map[uint64]chan commandResult
-	onMediaEvent     func(MediaEvent)
-	telemetryEnabled bool
-	closed           bool
+	mu                 sync.Mutex
+	listener           net.Listener
+	conn               net.Conn
+	encoder            *json.Encoder
+	cancel             context.CancelFunc
+	token              string
+	lastSeen           time.Time
+	nextID             uint64
+	pending            map[uint64]chan commandResult
+	onMediaEvent       func(MediaEvent)
+	telemetryEnabled   bool
+	telemetrySupported bool
+	closed             bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -183,17 +186,26 @@ func (s *Server) SetTelemetryEnabled(enabled bool) {
 }
 
 func (s *Server) TestTelemetry(ctx context.Context) error {
+	if err := s.requireTelemetrySupport(); err != nil {
+		return err
+	}
 	_, err := s.command(ctx, protocolMessage{Type: "telemetry_test"})
 	return err
 }
 
 func (s *Server) DisableTelemetry(ctx context.Context) error {
 	s.SetTelemetryEnabled(false)
+	if !s.supportsTelemetry() {
+		return nil
+	}
 	_, err := s.command(ctx, protocolMessage{Type: "telemetry_disable"})
 	return err
 }
 
 func (s *Server) PurgeTelemetry(ctx context.Context) error {
+	if !s.supportsTelemetry() {
+		return nil
+	}
 	_, err := s.command(ctx, protocolMessage{Type: "telemetry_purge"})
 	return err
 }
@@ -340,6 +352,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	}
 	s.conn = conn
 	s.encoder = json.NewEncoder(conn)
+	s.telemetrySupported = hasCapability(hello.Capabilities, "telemetry")
 	s.lastSeen = time.Now()
 	_ = s.encoder.Encode(protocolMessage{Type: "telemetry_sync", Enabled: s.telemetryEnabled})
 	s.mu.Unlock()
@@ -400,7 +413,35 @@ func (s *Server) disconnect(conn net.Conn) {
 	}
 	s.conn = nil
 	s.encoder = nil
+	s.telemetrySupported = false
 	s.failPendingLocked(ErrDisconnected)
+}
+
+func (s *Server) requireTelemetrySupport() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn == nil || s.encoder == nil || s.closed {
+		return ErrUnavailable
+	}
+	if !s.telemetrySupported {
+		return ErrTelemetryUnsupported
+	}
+	return nil
+}
+
+func (s *Server) supportsTelemetry() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conn != nil && s.encoder != nil && s.telemetrySupported && !s.closed
+}
+
+func hasCapability(capabilities []string, wanted string) bool {
+	for _, capability := range capabilities {
+		if capability == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) failPendingLocked(err error) {

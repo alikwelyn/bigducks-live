@@ -81,8 +81,10 @@
           <p id="telemetry-detail" class="telemetry-detail">A telemetria começa ativada e só envia diagnósticos agregados após sua escolha.</p>
           <p class="telemetry-note">Não envia IP, tokens, mensagens, URLs completas, caminhos ou IDs Discord. A fila local pode ser apagada aqui.</p>
           <div class="telemetry-actions">
-            <button id="telemetry-enable" class="button telemetry-primary" type="button"><span>Ativar</span></button>
-            <button id="telemetry-disable" class="button secondary" type="button"><span>Desativar</span></button>
+            <button id="telemetry-toggle" class="button telemetry-toggle is-on" role="switch" aria-checked="true" aria-label="Desativar telemetria" type="button">
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+              <span id="telemetry-toggle-label" class="button-label">Desativar</span>
+            </button>
             <button id="telemetry-test" class="button secondary" type="button"><span>Enviar teste</span></button>
             <button id="telemetry-purge" class="button secondary telemetry-danger" type="button"><span>Apagar fila local</span></button>
           </div>

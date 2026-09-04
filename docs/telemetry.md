@@ -21,9 +21,10 @@ O tráfego do Sentry usa transporte HTTPS direto e não passa pelo PAC, relay SO
 
 ## Controles e remoção
 
-- **Ativar** inicializa o transporte e grava somente a preferência;
-- **Desativar** bloqueia novos eventos, encerra o transporte e remove a fila local;
-- **Enviar teste** envia um evento do núcleo e um da bridge, aguardando o flush limitado;
+- o **switch de telemetria** inicializa ou encerra o transporte e grava somente a preferência;
+- ao desligar, novos eventos são bloqueados e a fila local é removida;
+- **Enviar teste** envia primeiro um evento do núcleo; a bridge envia seu próprio evento quando a integração instalada suporta telemetria;
+- se o Discord já estava aberto durante a atualização, use **Corrigir Discord** uma vez para carregar a bridge Sentry atualizada;
 - **Apagar fila local** remove apenas `%LOCALAPPDATA%\DiscordStream\telemetry`, sem alterar a preferência.
 
 Eventos que já chegaram ao Sentry não podem ser removidos pelo BIG DUCKS. Para apagá-los, use o Dashboard ou a API do Sentry com as permissões administrativas do projeto.

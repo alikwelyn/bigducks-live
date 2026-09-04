@@ -26,7 +26,7 @@ func TestServerSynchronizesAndControlsTelemetry(t *testing.T) {
 	defer conn.Close()
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
-	if err := encoder.Encode(map[string]any{"type": "hello", "token": control.Token}); err != nil {
+	if err := encoder.Encode(map[string]any{"type": "hello", "token": control.Token, "capabilities": []string{"telemetry"}}); err != nil {
 		t.Fatal(err)
 	}
 	waitForBridge(t, server)

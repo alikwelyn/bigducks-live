@@ -98436,7 +98436,7 @@ if (!global.__discordStreamBridgeLoaded) {
     socket.setEncoding("utf8");
     socket.on("connect", () => {
       retryDelay = 500;
-      socket.write(JSON.stringify({ type: "hello", token: control.token }) + "\n");
+      socket.write(JSON.stringify({ type: "hello", token: control.token, capabilities: ["telemetry"] }) + "\n");
     });
     socket.on("data", (chunk) => {
       buffer += chunk;

@@ -161,6 +161,33 @@ func TestServerDeliversNetworkControlCommands(t *testing.T) {
 	}
 }
 
+func TestServerRejectsTelemetryCommandsFromLegacyBridge(t *testing.T) {
+	dataDir := t.TempDir()
+	server := bridge.NewServer(dataDir)
+	server.SetTelemetryEnabled(true)
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	control := readBridgeControl(t, dataDir)
+	conn, err := net.Dial("tcp", control.Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(conn)
+	if err := encoder.Encode(map[string]any{"type": "hello", "token": control.Token}); err != nil {
+		t.Fatal(err)
+	}
+	discardTelemetrySync(t, decoder)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := server.TestTelemetry(ctx); !errors.Is(err, bridge.ErrTelemetryUnsupported) {
+		t.Fatalf("TestTelemetry() error = %v, want %v", err, bridge.ErrTelemetryUnsupported)
+	}
+}
+
 func TestServerCloseRemovesControlFile(t *testing.T) {
 	dataDir := t.TempDir()
 	server := bridge.NewServer(dataDir)

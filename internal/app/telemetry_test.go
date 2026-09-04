@@ -3,6 +3,7 @@ package app
 import (
 	"testing"
 
+	"github.com/alikwelyn/bigducks-live/internal/bridge"
 	"github.com/alikwelyn/bigducks-live/internal/telemetry"
 )
 
@@ -12,6 +13,16 @@ type capturedTelemetry struct {
 
 func (c *capturedTelemetry) Capture(event telemetry.Event) {
 	c.events = append(c.events, event)
+}
+
+func TestLegacyBridgeDoesNotFailCoreTelemetryTest(t *testing.T) {
+	result, err := normalizeTelemetryBridgeTestError(bridge.ErrTelemetryUnsupported)
+	if err != nil {
+		t.Fatalf("normalized error = %v", err)
+	}
+	if result != "bridge_upgrade_required" {
+		t.Fatalf("normalized result = %q, want bridge_upgrade_required", result)
+	}
 }
 
 func TestReportMediaTransitionUsesOnlyAggregatedRTCFields(t *testing.T) {

@@ -348,6 +348,19 @@ func Run(ctx context.Context, options RunOptions) error {
 	} else {
 		defer bridgeServer.Close()
 		bridgeServer.SetTelemetryEnabled(telemetryReporter.Enabled())
+		if discordPath, findErr := discord.FindLatest(config.DiscordRoot); findErr == nil {
+			resources := filepath.Join(filepath.Dir(discordPath), "resources")
+			injectionResult, injectionErr := ensureInjectionWithRetry(4, func() (injection.Result, error) {
+				return injection.Ensure(resources, config.DataDir, bridge.Script())
+			})
+			if injectionErr != nil {
+				logger.Printf("could not refresh Discord reload bridge on disk: %v", injectionErr)
+			} else {
+				logger.Printf("Discord reload bridge on disk: %s%s", injectionResult.State, reasonSuffix(injectionResult.Reason))
+			}
+		} else {
+			logger.Printf("could not locate Discord while refreshing reload bridge: %v", findErr)
+		}
 	}
 	fullProxyURL := ""
 	if config.RoutingMode == RoutingModeFull {
@@ -478,14 +491,12 @@ func Run(ctx context.Context, options RunOptions) error {
 			return err
 		}
 		if !bridgeReady {
+			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = "bridge_test_failed" })
 			return bridge.ErrUnavailable
 		}
-		if err := bridgeServer.TestTelemetry(actionCtx); err != nil {
-			statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = "bridge_test_failed" })
-			return err
-		}
-		statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = "test_sent" })
-		return nil
+		result, err := normalizeTelemetryBridgeTestError(bridgeServer.TestTelemetry(actionCtx))
+		statusStore.Update(func(status *RuntimeStatus) { status.Telemetry.LastResult = result })
+		return err
 	}
 	telemetryPurge := func(actionCtx context.Context) error {
 		if err := telemetryReporter.Purge(); err != nil {
