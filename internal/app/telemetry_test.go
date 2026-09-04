@@ -6,8 +6,17 @@ import (
 	"github.com/alikwelyn/bigducks-live/internal/telemetry"
 )
 
-func TestTelemetryEventForMediaUsesOnlyAggregatedRTCFields(t *testing.T) {
-	status := MediaStatus{
+type capturedTelemetry struct {
+	events []telemetry.Event
+}
+
+func (c *capturedTelemetry) Capture(event telemetry.Event) {
+	c.events = append(c.events, event)
+}
+
+func TestReportMediaTransitionUsesOnlyAggregatedRTCFields(t *testing.T) {
+	capture := &capturedTelemetry{}
+	after := MediaStatus{
 		State: MediaNativeReceiverNoPackets,
 		Native: NativeMediaStatus{
 			State:          MediaNativeReceiverNoPackets,
@@ -19,14 +28,15 @@ func TestTelemetryEventForMediaUsesOnlyAggregatedRTCFields(t *testing.T) {
 			ReceiverCount:  0,
 		},
 	}
-	event, ok := telemetryEventForMedia(status, RoutingModeGateway)
-	if !ok {
-		t.Fatal("media state was not mapped")
+	reportMediaTransitionWithMode(capture, MediaStatus{}, after, string(RoutingModeGateway))
+	if len(capture.events) != 1 {
+		t.Fatalf("captured events = %#v", capture.events)
 	}
+	event := capture.events[0]
 	if event.Component != telemetry.ComponentMedia || event.Code != telemetry.CodeNativeReceiverNoPackets {
 		t.Fatalf("event identity = %#v", event)
 	}
-	if event.AudioPackets != 30534 || event.VideoPackets != 0 || event.HasAudioSSRC != true || event.HasVideoSSRC {
+	if event.AudioPackets != 30534 || event.VideoPackets != 0 || !event.HasAudioSSRC || event.HasVideoSSRC {
 		t.Fatalf("event aggregates = %#v", event)
 	}
 	if event.Mode != string(RoutingModeGateway) || event.Detail != "" {
@@ -34,8 +44,12 @@ func TestTelemetryEventForMediaUsesOnlyAggregatedRTCFields(t *testing.T) {
 	}
 }
 
-func TestTelemetryEventForMediaIgnoresHealthyMedia(t *testing.T) {
-	if _, ok := telemetryEventForMedia(MediaStatus{State: MediaStreaming}, RoutingModeGateway); ok {
-		t.Fatal("healthy media should not produce a failure event")
+func TestReportMediaTransitionIgnoresHealthyMediaAndRepeatedState(t *testing.T) {
+	capture := &capturedTelemetry{}
+	streaming := MediaStatus{State: MediaStreaming}
+	reportMediaTransition(capture, MediaStatus{}, streaming)
+	reportMediaTransition(capture, streaming, streaming)
+	if len(capture.events) != 0 {
+		t.Fatalf("healthy events = %#v", capture.events)
 	}
 }
