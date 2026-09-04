@@ -16,6 +16,18 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Version must use major.minor.patch"
 }
 
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "Node.js/npm is required to build the signed Discord bridge bundle"
+}
+npm ci --ignore-scripts --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) {
+    throw "Node dependency installation failed"
+}
+npm run build:bridge
+if ($LASTEXITCODE -ne 0) {
+    throw "Discord bridge bundle failed"
+}
+
 go test ./...
 if ($LASTEXITCODE -ne 0) {
     throw "Go tests failed"
