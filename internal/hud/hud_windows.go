@@ -26,6 +26,7 @@ import (
 
 type StatusView struct {
 	State           string             `json:"state"`
+	Media           app.MediaStatus    `json:"media"`
 	PoolSize        int                `json:"poolSize"`
 	TunnelCount     int                `json:"tunnelCount"`
 	BridgeConnected bool               `json:"bridgeConnected"`
@@ -262,7 +263,7 @@ func (c *controller) status() StatusView {
 		return StatusView{State: string(app.RecoveryStopped), LastError: err.Error()}
 	}
 	return StatusView{
-		State: string(status.State), PoolSize: status.PoolSize, TunnelCount: status.TunnelCount,
+		State: string(status.State), Media: status.Media, PoolSize: status.PoolSize, TunnelCount: status.TunnelCount,
 		BridgeConnected: status.BridgeConnected, InjectionState: status.InjectionState,
 		RepairRequired: status.RepairRequired, LastError: status.LastError, LastMessage: status.LastMessage,
 		ActiveProxy: status.ActiveProxy, LatencyMS: status.LatencyMS,

@@ -3,12 +3,26 @@
 package hud
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alikwelyn/bigducks-live/internal/app"
 )
+
+func TestStatusViewIncludesNativeMediaDiagnosis(t *testing.T) {
+	view := StatusView{Media: app.MediaStatus{State: app.MediaNativeReceiverAudioOnly}}
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"media":{"state":"","session":""`) && !strings.Contains(string(data), `"media":{"state":"native_receiver_audio_only"`) {
+		t.Fatalf("status view = %s", data)
+	}
+}
 
 func TestHUDCachePathIsIsolatedPerProcess(t *testing.T) {
 	root := t.TempDir()

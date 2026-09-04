@@ -103,6 +103,7 @@ function renderStatus(status) {
 		`saída ativa: ${status.activeProxy || "nenhuma"}`,
 		`latência verificada: ${status.latencyMS ? `${status.latencyMS} ms` : "não informada"}`,
     `mídia: ${status.media?.state || "não informada"}`,
+    `diagnóstico RTC nativo: ${status.media?.native?.state || "não informado"}`,
     `frames de vídeo: ${status.media?.videoFrames ?? 0}`,
     `pacotes de áudio: ${status.media?.audioPackets ?? 0}`,
     `injeção: ${status.injectionState || "não informada"}`,

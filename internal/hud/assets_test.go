@@ -23,6 +23,15 @@ func TestPageContainsAccessibleRecoveryControls(t *testing.T) {
 	}
 }
 
+func TestPageContainsNativeMediaDiagnosis(t *testing.T) {
+	page := hud.PageHTML()
+	for _, required := range []string{"diagnóstico RTC nativo", "somente leitura", "nenhum SSRC"} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("HUD page does not contain %q", required)
+		}
+	}
+}
+
 func TestPageUsesFixedLandscapeDashboardWithoutDocumentZoomOrScroll(t *testing.T) {
 	page := hud.PageHTML()
 	for _, required := range []string{
