@@ -35,13 +35,13 @@ func TestDefaultConfigUsesGatewayOnlyDefaults(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigDisablesTelemetry(t *testing.T) {
-	if app.DefaultConfig().TelemetryEnabled {
-		t.Fatal("telemetry must be disabled by default")
+func TestDefaultConfigEnablesTelemetry(t *testing.T) {
+	if !app.DefaultConfig().TelemetryEnabled {
+		t.Fatal("telemetry must be enabled by default")
 	}
 }
 
-func TestLoadConfigWithoutTelemetryFieldKeepsItDisabled(t *testing.T) {
+func TestLoadConfigWithoutTelemetryFieldEnablesIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"routingMode":"gateway"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -50,8 +50,22 @@ func TestLoadConfigWithoutTelemetryFieldKeepsItDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !config.TelemetryEnabled {
+		t.Fatal("missing telemetry field must use enabled default")
+	}
+}
+
+func TestLoadConfigWithExplicitTelemetryFalseKeepsItDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"telemetryEnabled":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := app.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if config.TelemetryEnabled {
-		t.Fatal("legacy config enabled telemetry")
+		t.Fatal("explicit false must disable telemetry")
 	}
 }
 
