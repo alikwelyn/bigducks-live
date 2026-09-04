@@ -1,6 +1,9 @@
 package injection
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 const (
 	MetadataFileName = "injection.json"
@@ -25,4 +28,10 @@ type Result struct {
 	Installed      bool
 	RepairRequired bool
 	Reason         string
+}
+
+// IsRetryable identifies an installation result that can be caused by an
+// in-progress Discord update rather than a permanent integration problem.
+func IsRetryable(result Result) bool {
+	return result.State == StateUnavailable && strings.Contains(strings.ToLower(result.Reason), "app.asar was not found")
 }

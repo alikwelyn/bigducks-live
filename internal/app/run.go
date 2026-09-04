@@ -314,7 +314,9 @@ func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL stri
 	}
 	if bridgeReady && !running {
 		resources := filepath.Join(filepath.Dir(discordPath), "resources")
-		injectionResult, injectionErr := injection.Ensure(resources, config.DataDir, bridge.Script())
+		injectionResult, injectionErr := ensureInjectionWithRetry(4, func() (injection.Result, error) {
+			return injection.Ensure(resources, config.DataDir, bridge.Script())
+		})
 		if injectionErr != nil {
 			logger.Printf("could not install Discord reload bridge: %v; continuing with external recovery", injectionErr)
 			statusStore.Update(func(status *RuntimeStatus) {
@@ -326,8 +328,8 @@ func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL stri
 			logger.Printf("Discord injection state: %s%s", injectionResult.State, reasonSuffix(injectionResult.Reason))
 			statusStore.Update(func(status *RuntimeStatus) {
 				status.InjectionState = string(injectionResult.State)
-				status.RepairRequired = injectionResult.RepairRequired
-				if injectionResult.RepairRequired {
+				status.RepairRequired = injectionResult.RepairRequired || injectionResult.State == injection.StateUnavailable
+				if status.RepairRequired {
 					status.State = RecoveryRepairRequired
 				}
 			})
