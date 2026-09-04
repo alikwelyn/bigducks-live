@@ -35,6 +35,42 @@ func TestDefaultConfigUsesGatewayOnlyDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigDisablesTelemetry(t *testing.T) {
+	if app.DefaultConfig().TelemetryEnabled {
+		t.Fatal("telemetry must be disabled by default")
+	}
+}
+
+func TestLoadConfigWithoutTelemetryFieldKeepsItDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"routingMode":"gateway"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := app.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.TelemetryEnabled {
+		t.Fatal("legacy config enabled telemetry")
+	}
+}
+
+func TestTelemetryConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	config := app.DefaultConfig()
+	config.TelemetryEnabled = true
+	if err := app.SaveConfig(path, config); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := app.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.TelemetryEnabled {
+		t.Fatal("telemetry opt-in was not persisted")
+	}
+}
+
 func TestLegacyConfigPreservesAutomaticDiscordStartup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"routingMode":"gateway"}`), 0o600); err != nil {

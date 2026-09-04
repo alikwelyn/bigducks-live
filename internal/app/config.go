@@ -35,6 +35,7 @@ type Config struct {
 	AutoStartDiscord    bool
 	AllowDirectFallback bool
 	AggressiveRecovery  bool
+	TelemetryEnabled    bool
 	RoutingMode         RoutingMode
 	ProxySourceURL      string
 	RoutedHosts         []string
@@ -61,6 +62,7 @@ type persistedConfig struct {
 	AutoStartDiscord    *bool    `json:"autoStartDiscord,omitempty"`
 	AllowDirectFallback bool     `json:"allowDirectFallback,omitempty"`
 	AggressiveRecovery  bool     `json:"aggressiveRecovery,omitempty"`
+	TelemetryEnabled    bool     `json:"telemetryEnabled"`
 	RoutingMode         string   `json:"routingMode,omitempty"`
 	ProxySourceURL      string   `json:"proxySourceURL,omitempty"`
 	CacheTTL            string   `json:"cacheTTL,omitempty"`
@@ -203,6 +205,7 @@ func LoadConfig(path string) (Config, error) {
 	}
 	config.AllowDirectFallback = stored.AllowDirectFallback
 	config.AggressiveRecovery = stored.AggressiveRecovery
+	config.TelemetryEnabled = stored.TelemetryEnabled
 	if stored.RelayPort > 0 {
 		config.RelayPort = stored.RelayPort
 	}
@@ -249,6 +252,7 @@ func SaveConfig(path string, config Config) error {
 		AutoStartDiscord:    boolPointer(config.AutoStartDiscord),
 		AllowDirectFallback: config.AllowDirectFallback,
 		AggressiveRecovery:  config.AggressiveRecovery,
+		TelemetryEnabled:    config.TelemetryEnabled,
 		RoutingMode:         string(config.RoutingMode),
 		ProxySourceURL:      config.ProxySourceURL,
 		CacheTTL:            config.CacheTTL.String(),
