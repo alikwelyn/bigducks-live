@@ -17,7 +17,7 @@ Aplicativo portátil para Windows que mantém as lives do Discord acessíveis po
 - logs e arquivos locais recebem permissões legíveis pelo usuário atual;
 - atualizações vêm de Releases do GitHub e só são instaladas após assinatura Ed25519 e SHA-256 válidos;
 - o diagnóstico RTC nativo do Go Live é somente leitura e ajuda a separar transporte, decoder e renderização;
-- a telemetria Sentry é opcional, começa desativada e envia somente eventos agregados e sanitizados do núcleo/bridge.
+- a telemetria Sentry vem ativada por padrão e envia somente eventos agregados e sanitizados do núcleo/bridge; o usuário pode desligá-la no HUD.
 
 ## Instalação
 
@@ -32,10 +32,10 @@ O pato aparece na bandeja e o HUD abre automaticamente. Em instalações novas, 
 
 ## Uso
 
-No HUD:
+No HUD, o estado principal aparece como **STATUS DA LIVE**. Quando tudo estiver pronto, ele mostra **Live liberada**.
 
-- **Reconectar live** procura ou promove uma saída verificada e força uma nova conexão do gateway, sem fechar o Discord;
-- **Testar rota** confirma tanto o host canônico quanto um gateway regional;
+- **Liberar live** procura ou promove uma saída verificada e força uma nova conexão do gateway, sem fechar o Discord;
+- **Testar conexão** confirma tanto o host canônico quanto um gateway regional;
 - **Recarregar Discord** recarrega a janela usando a integração Electron;
 - **Abrir log** abre o arquivo técnico no Bloco de Notas sem exigir administrador;
 - **Atualizar agora** baixa, valida e instala uma Release assinada;
@@ -62,7 +62,7 @@ Proxies públicos são instáveis e não são controlados por este projeto. A co
 
 O BIG DUCKS reduz a falha causada por gateways regionais e proxies mortos, mas não pode garantir disponibilidade do Discord, da lista pública ou de qualquer proxy. Se nenhum candidato passar nos testes, o gateway espera e continua procurando em vez de expor uma conexão direta como se estivesse protegida. O fallback direto permanece desativado por padrão.
 
-O diagnóstico detalhado e o roteiro A/B estão em [docs/native-rtc-diagnostics.md](docs/native-rtc-diagnostics.md). A telemetria é habilitada explicitamente no HUD; desabilitá-la bloqueia novos eventos e remove apenas a fila local. IPs, tokens, URLs completas, caminhos, IDs Discord, SSRC, mensagens e logs não são enviados. Consulte [docs/telemetry.md](docs/telemetry.md) para o contrato completo e a remoção de eventos já enviados.
+O diagnóstico detalhado e o roteiro A/B estão em [docs/native-rtc-diagnostics.md](docs/native-rtc-diagnostics.md). A telemetria vem ativada por padrão no v0.1.8; desabilitá-la no HUD bloqueia novos eventos e remove apenas a fila local. IPs, tokens, URLs completas, caminhos, IDs Discord, SSRC, mensagens e logs não são enviados. Consulte [docs/telemetry.md](docs/telemetry.md) para o contrato completo e a remoção de eventos já enviados.
 
 Este projeto não é afiliado, aprovado ou mantido pelo Discord. Alterações no cliente oficial podem exigir uma atualização do BIG DUCKS.
 

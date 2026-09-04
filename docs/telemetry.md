@@ -1,6 +1,6 @@
-# Telemetria opcional
+# Telemetria Sentry
 
-A telemetria do BIG DUCKS LIVE vem **desativada por padrão**. Ela só é ativada por uma ação explícita no HUD ou pela configuração `telemetryEnabled` em `%LOCALAPPDATA%\DiscordStream\config.json`. O núcleo é a autoridade da preferência e sincroniza o estado com a bridge autenticada.
+A telemetria do BIG DUCKS LIVE vem **ativada por padrão** no `v0.1.8`. Configurações antigas sem o campo `telemetryEnabled` também usam esse padrão; um `false` explícito no HUD ou em `%LOCALAPPDATA%\DiscordStream\config.json` desativa o envio. O núcleo é a autoridade da preferência e sincroniza o estado com a bridge autenticada.
 
 ## O que pode ser enviado
 
@@ -32,8 +32,8 @@ Eventos que já chegaram ao Sentry não podem ser removidos pelo BIG DUCKS. Para
 
 Para investigar o caso atual:
 
-1. deixe a telemetria desativada e reproduza primeiro em uma sessão vanilla;
-2. repita com a bridge/injeção do BIG DUCKS e ative a telemetria explicitamente;
+1. reproduza primeiro em uma sessão vanilla; a telemetria já estará ativa no `v0.1.8`;
+2. repita com a bridge/injeção do BIG DUCKS e mantenha a mesma configuração;
 3. use **Enviar teste** para confirmar o transporte e, depois, reproduza o Go Live;
 4. compare a mesma versão do Discord, a versão anterior e a versão atual, registrando o horário local da sessão;
 5. no HUD, abra **Detalhes técnicos** e correlacione o estado RTC nativo com os contadores agregados.
