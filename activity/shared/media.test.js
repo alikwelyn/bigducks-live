@@ -12,6 +12,16 @@ describe('media capture helpers', () => {
     expect(captureConstraints({ fps: 30, audio: true }).audio).toMatchObject({ echoCancellation: false, noiseSuppression: false });
   });
 
+  it('captures audio only from the selected tab or window to prevent duplicated system feedback', () => {
+    const constraints = captureConstraints({ fps: 30, audio: true });
+    expect(constraints).toMatchObject({
+      audio: { restrictOwnAudio: true },
+      systemAudio: 'exclude',
+      windowAudio: 'window',
+      selfBrowserSurface: 'exclude',
+    });
+  });
+
   it('selects an H264 level and fallback codecs for the requested size', () => {
     expect(h264Level(1920, 1080, 60)).toBe('2a');
     expect(codecCandidates(1920, 1080, 60)[0]).toMatchObject({ codec: 'avc1.64002a' });

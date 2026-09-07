@@ -1,7 +1,7 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { profileFor } from '../../../shared/adaptation.js';
 import { createPeer, FALLBACK_MS, fetchIceServers, tuneSenders } from '../../../shared/rtc.js';
-import { createBroadcaster, fitWithin } from '../../../shared/media.js';
+import { captureConstraints, createBroadcaster, fitWithin } from '../../../shared/media.js';
 import { createPlayer } from './player.js';
 import { connectRelaySocket } from './relay-socket.js';
 import { createSfuPublisher, createSfuViewer } from './sfu.js';
@@ -40,7 +40,7 @@ function renderCapture() {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Configure a transmissão e mantenha esta aba aberta.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Escolher tela ou janela</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar janela ou tela</button></div><label class="field">Qualidade<select id="quality"><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label><input id="audio" type="checkbox"> áudio do sistema</label></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Configure a transmissão e mantenha esta aba aberta.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Escolher tela ou janela</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar janela ou tela</button></div><label class="field">Qualidade<select id="quality"><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label title="Compartilha somente o áudio da fonte escolhida para evitar eco."><input id="audio" type="checkbox"> áudio da guia ou janela</label></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   const startButton = document.querySelector('#start');
   const stopButton = document.querySelector('#stop');
   const switchButton = document.querySelector('#switch-source');
@@ -54,7 +54,7 @@ function renderCapture() {
     try {
       const quality = document.querySelector('#quality').value;
       const profile = profileFor(quality === 'adaptive' ? '720p30' : quality);
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
+      const stream = await navigator.mediaDevices.getDisplayMedia(captureConstraints({ fps: profile.fps, audio: document.querySelector('#audio').checked }));
       const params = new URLSearchParams(location.search);
       let token = params.get('t');
       if (!token) {
@@ -149,7 +149,7 @@ function renderCapture() {
       const sfuSize = fitWithin(videoSettings.width || profile.width, videoSettings.height || profile.height, profile.width, profile.height);
       const media = sfuPublisher ? { codec: 'webrtc', ...sfuSize, fps: Math.min(videoSettings.frameRate || profile.fps, profile.fps), audioConfig } : relayMedia;
       socket.send(JSON.stringify({ type: 'start', slot, transport: sfuPublisher ? 'sfu' : 'relay', mediaToken: sfuPublisher?.mediaToken, ...media }));
-      document.querySelector('#audio-state').textContent = media.audioConfig ? `Áudio: Opus ${media.audioConfig.numberOfChannels === 1 ? 'mono' : 'estéreo'}` : 'Áudio: não capturado';
+      document.querySelector('#audio-state').textContent = media.audioConfig ? `Áudio da fonte: Opus ${media.audioConfig.numberOfChannels === 1 ? 'mono' : 'estéreo'}` : document.querySelector('#audio').checked ? 'Áudio indisponível: compartilhe uma guia ou janela' : 'Áudio: desativado';
       document.querySelector('#source').textContent = `Fonte: ${media.width}×${media.height}`;
       document.querySelector('#fps').textContent = `${sfuPublisher ? 'Cloudflare SFU' : `Codec: ${media.codec}`} / ${Math.round(media.fps)} FPS`;
       document.querySelector('#bitrate').textContent = `Bitrate máximo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`;

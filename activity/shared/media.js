@@ -27,7 +27,11 @@ export function captureConstraints({ fps = 30, width, height, audio = false } = 
       ...(height ? { height: { ideal: height } } : {}),
       frameRate: { ideal: fps, max: fps },
     },
-    audio: audio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
+    audio: audio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true } : false,
+    systemAudio: 'exclude',
+    windowAudio: audio ? 'window' : 'exclude',
+    selfBrowserSurface: 'exclude',
+    surfaceSwitching: 'include',
   };
 }
 
