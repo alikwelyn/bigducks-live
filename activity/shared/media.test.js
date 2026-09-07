@@ -8,7 +8,7 @@ describe('media capture helpers', () => {
   });
 
   it('creates screen or window capture constraints with optional audio', () => {
-    expect(captureConstraints({ fps: 60, audio: false })).toMatchObject({ video: { frameRate: { ideal: 60, max: 60 } }, audio: false });
+    expect(captureConstraints({ fps: 60, width: 1280, height: 720, audio: false })).toMatchObject({ video: { width: { ideal: 1280, max: 1280 }, height: { ideal: 720, max: 720 }, frameRate: { ideal: 60, max: 60 } }, audio: false });
     expect(captureConstraints({ fps: 30, audio: true }).audio).toMatchObject({ echoCancellation: false, noiseSuppression: false });
   });
 

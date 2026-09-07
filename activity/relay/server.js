@@ -104,7 +104,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           if (claims.role !== 'publisher') return;
           const packet = decodePacket(data);
           for (const viewer of rooms.viewersFor(claims.room, packet.slot)) {
-            if (viewer.socket.readyState === 1 && viewer.socket.bufferedAmount < 2 * 1024 * 1024) viewer.socket.send(data, { binary: true });
+            if (viewer.socket.readyState === 1 && viewer.socket.bufferedAmount < 256 * 1024) viewer.socket.send(data, { binary: true });
           }
           return;
         }

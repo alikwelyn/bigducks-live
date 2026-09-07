@@ -32,7 +32,7 @@ function renderCapture() {
     try {
       const quality = document.querySelector('#quality').value;
       const profile = profileFor(quality === 'adaptive' ? '720p60' : quality);
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { ideal: profile.width, max: profile.width }, height: { ideal: profile.height, max: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
       const params = new URLSearchParams(location.search);
       let token = params.get('t');
       if (!token) {

@@ -13,9 +13,13 @@ export function fitWithin(width, height) {
   return { width: even(Math.round(width * scale)), height: even(Math.round(height * scale)) };
 }
 
-export function captureConstraints({ fps = 30, audio = false } = {}) {
+export function captureConstraints({ fps = 30, width, height, audio = false } = {}) {
   return {
-    video: { frameRate: { ideal: fps, max: fps } },
+    video: {
+      ...(width ? { width: { ideal: width, max: width } } : {}),
+      ...(height ? { height: { ideal: height, max: height } } : {}),
+      frameRate: { ideal: fps, max: fps },
+    },
     audio: audio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
   };
 }
@@ -42,10 +46,11 @@ export function audioConstraints() {
 import { AUDIO, VIDEO_DELTA, VIDEO_KEYFRAME, encodePacket } from './protocol.js';
 
 export async function createBroadcaster({ ws, profile, audio = false, stream = null, slot = 0, onStatus = () => {}, onEnd = () => {} }) {
-  if (!stream) stream = await navigator.mediaDevices.getDisplayMedia({ ...captureConstraints({ fps: profile.fps, audio }) });
+  if (!stream) stream = await navigator.mediaDevices.getDisplayMedia({ ...captureConstraints({ fps: profile.fps, width: profile.width, height: profile.height, audio }) });
   const track = stream.getVideoTracks()[0];
   if (!track) throw new Error('screen capture returned no video track');
   track.contentHint = 'text';
+  await track.applyConstraints?.({ width: { ideal: profile.width, max: profile.width }, height: { ideal: profile.height, max: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } });
   const settings = track.getSettings();
   const size = fitWithin(settings.width || profile.width, settings.height || profile.height);
   const encoder = new VideoEncoder({
@@ -60,6 +65,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   encoder.configure({ codec: codec.codec, width: size.width, height: size.height, framerate: profile.fps, bitrate: profile.bitrate, latencyMode: 'realtime', avc: codec.avc });
   let stopped = false;
   let forceKeyframe = true;
+  let lastKeyframeAt = 0;
   let reader;
   let audioEncoder;
   let audioReader;
@@ -96,8 +102,11 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
       while (!stopped) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (encoder.encodeQueueSize > 2) { value.close(); continue; }
-        encoder.encode(value, { keyFrame: forceKeyframe || (encoder.encodeQueueSize === 0 && Date.now() % 3000 < 100) });
+        if (encoder.encodeQueueSize > 2 || ws.bufferedAmount > 256 * 1024) { value.close(); continue; }
+        const now = Date.now();
+        const keyFrame = forceKeyframe || now - lastKeyframeAt >= 3000;
+        encoder.encode(value, { keyFrame });
+        if (keyFrame) lastKeyframeAt = now;
         forceKeyframe = false;
         value.close();
       }
