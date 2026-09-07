@@ -135,7 +135,7 @@ function renderCapture() {
 }
 
 async function renderViewer() {
-  root.innerHTML = `<div class="shell"><div class="card"><div class="toolbar compact"><button id="publish" class="primary">Transmitir minha tela</button><span id="status" class="status">Conectando à sala…</span></div><section class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></section><div class="stage"><span class="muted">Selecione uma transmissão para assistir</span></div></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><h1>Transmissões ao vivo</h1><p class="muted">Escolha uma transmissão para entrar.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong></header><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
   const identityPromise = authenticateDiscord();
   document.querySelector('#publish').onclick = async () => {
     try {
@@ -152,6 +152,20 @@ async function renderViewer() {
       document.querySelector('#status').textContent = `Não foi possível abrir o navegador: ${error.message}`;
     }
   };
+  const viewerShell = document.querySelector('.viewer-shell');
+  const browseView = document.querySelector('#browse-view');
+  const watchView = document.querySelector('#watch-view');
+  const watchName = document.querySelector('#watch-name');
+  const watchAvatar = document.querySelector('#watch-avatar');
+  const showWatchView = (stream) => {
+    watchName.textContent = stream?.name || 'Transmissão';
+    watchAvatar.src = stream?.avatar || '';
+    watchAvatar.hidden = !stream?.avatar;
+    browseView.hidden = true;
+    watchView.hidden = false;
+    viewerShell.classList.add('watching');
+  };
+  const showBrowseView = () => { watchView.hidden = true; browseView.hidden = false; viewerShell.classList.remove('watching'); };
   const canvas = document.createElement('canvas');
   document.querySelector('.stage').replaceChildren(canvas);
   const player = createPlayer(canvas);
@@ -184,6 +198,15 @@ async function renderViewer() {
           document.querySelector('#status').textContent = 'P2P interrompido; usando relay.';
         }
       };
+      const stopWatching = (statusText = 'Você parou de assistir.') => {
+        if (selectedSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
+        stopRtc(); selectedSlot = null; player.close();
+        document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
+        document.querySelector('#status').textContent = statusText;
+        showBrowseView();
+        renderStreams();
+      };
+      document.querySelector('#back-to-streams').onclick = () => stopWatching();
       const renderStreams = () => {
         const container = document.querySelector('#streams');
         if (!availableStreams.size) { container.innerHTML = '<div class="stream"><span>Nenhuma transmissão ativa</span></div>'; return; }
@@ -200,13 +223,7 @@ async function renderViewer() {
           const text = document.createElement('div'); const name = document.createElement('strong'); name.textContent = message.name; const meta = document.createElement('small'); meta.textContent = `${message.width}×${message.height} · ${message.fps} FPS${message.audioConfig ? ' · Com áudio' : ' · Sem áudio'}`; text.append(name, meta); identity.append(text);
           const button = document.createElement('button'); button.textContent = selectedSlot === message.slot ? 'Parar de assistir' : 'Assistir';
           button.onclick = () => {
-            if (selectedSlot === message.slot) {
-              socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
-              stopRtc(); selectedSlot = null; player.close();
-              document.querySelector('.stage').innerHTML = '<span class="muted">Selecione uma transmissão para assistir</span>';
-              document.querySelector('#status').textContent = 'Você parou de assistir.';
-              renderStreams(); return;
-            }
+            if (selectedSlot === message.slot) { stopWatching(); return; }
             if (selectedSlot !== null) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
             stopRtc();
             selectedSlot = message.slot;
@@ -220,8 +237,8 @@ async function renderViewer() {
             rtcSlot = message.slot;
             rtcTimer = setTimeout(() => { if (!rtcActive) stopRtc(); }, FALLBACK_MS);
             document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name} ao vivo.`;
+            showWatchView(message);
             renderStreams();
-            if (!inDiscord) stage.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
           };
           details.append(identity, button); item.append(thumbnail, details); return item;
         }));
@@ -238,8 +255,9 @@ async function renderViewer() {
             selectedSlot = null;
             player.close();
             directVideo.removeAttribute('src'); directVideo.load();
-            document.querySelector('.stage').innerHTML = '<span class="muted">Selecione uma transmissão para assistir</span>';
+            document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
             document.querySelector('#status').textContent = 'Transmissão encerrada.';
+            showBrowseView();
           }
         }
         if (message.type === 'start' || message.type === 'stop' || message.type === 'thumbnail') renderStreams();
