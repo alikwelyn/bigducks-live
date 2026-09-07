@@ -9,6 +9,8 @@ const root = document.querySelector('#app');
 const captureMode = new URLSearchParams(location.search).get('capture') === '1';
 
 async function authenticateDiscord() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('external') === '1') return { accessToken: '', user: '', instance: params.get('room') || 'external' };
   const config = await fetch('/api/config').then((response) => response.json());
   if (!config.clientId) return { accessToken: '', user: crypto.randomUUID(), instance: 'demo' };
   const sdk = new DiscordSDK(config.clientId);
@@ -65,7 +67,12 @@ function renderCapture() {
 
 async function renderViewer() {
   root.innerHTML = `<div class="shell"><div class="card"><h1>BIG DUCKS Stream</h1><p class="muted">Transmissão ao vivo dentro do Discord, com fallback automático.</p><div id="status" class="status">Conectando à sala…</div><div class="toolbar"><button id="publish" class="primary">Transmitir minha tela</button><label class="field">Qualidade<select id="quality"><option>Adaptativo</option><option>720p / 60 FPS</option><option>1080p / 30 FPS</option><option>1080p / 60 FPS</option></select></label></div><section class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></section><div class="stage"><span class="muted">Selecione uma transmissão para assistir</span></div></div></div>`;
-  document.querySelector('#publish').onclick = () => { location.href = `${location.pathname}?capture=1`; };
+  document.querySelector('#publish').onclick = () => {
+    const room = new URLSearchParams(location.search).get('room') || '';
+    const redirect = `/share?capture=1&external=1&room=${encodeURIComponent(room)}`;
+    window.open(`/api/discord/authorize?redirect=${encodeURIComponent(redirect)}`, '_blank', 'noopener');
+    document.querySelector('#status').textContent = 'A página de transmissão foi aberta no navegador.';
+  };
   const canvas = document.createElement('canvas');
   document.querySelector('.stage').replaceChildren(canvas);
   const player = createPlayer(canvas);
@@ -83,7 +90,7 @@ async function renderViewer() {
         if (message.type !== 'start') return;
         player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
         const item = document.createElement('div'); item.className = 'stream'; item.innerHTML = `<span>Stream ao vivo · ${message.width}×${message.height} / ${message.fps} FPS</span><button>Assistir</button>`;
-        item.querySelector('button').onclick = () => { socket.send(JSON.stringify({ type: 'watch', slot: message.slot })); socket.send(JSON.stringify({ type: 'rtc-want', slot: message.slot })); document.querySelector('#status').textContent = 'Recebendo transmissão pelo relay/WebRTC…'; };
+        item.querySelector('button').onclick = () => { socket.send(JSON.stringify({ type: 'watch', slot: message.slot })); document.querySelector('#status').textContent = 'Recebendo transmissão pelo relay/WebRTC…'; };
         document.querySelector('#streams').replaceChildren(item);
       };
       socket.addEventListener('message', async (event) => {

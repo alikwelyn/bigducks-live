@@ -19,8 +19,8 @@ export function createRelayServer({ secret, clientId = '', clientSecret = '', al
   const httpServer = http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://relay.local');
     if (request.method === 'GET' && url.pathname === '/healthz') return json(response, 200, { ok: true });
-    if (request.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
-      const relative = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
+    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/share' || url.pathname.startsWith('/assets/'))) {
+      const relative = url.pathname === '/' || url.pathname === '/share' ? 'index.html' : url.pathname.slice(1);
       const file = path.resolve(staticRoot, relative);
       if (file.startsWith(staticRoot) && fs.existsSync(file)) {
         response.writeHead(200, { 'content-type': file.endsWith('.css') ? 'text/css' : file.endsWith('.js') ? 'text/javascript' : 'text/html' });
@@ -28,6 +28,24 @@ export function createRelayServer({ secret, clientId = '', clientSecret = '', al
       }
     }
     if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId });
+    if (request.method === 'GET' && url.pathname === '/api/discord/authorize') {
+      if (!clientId || !clientSecret) return json(response, 503, { error: 'Discord OAuth is not configured' });
+      const redirect = url.searchParams.get('redirect') || '/share';
+      const state = issueToken({ type: 'oauth', redirect: redirect.startsWith('/') ? redirect : '/share' }, secret);
+      const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: `${process.env.PUBLIC_ORIGIN || url.origin}/api/discord/callback`, scope: 'identify', state });
+      response.writeHead(302, { location: `https://discord.com/oauth2/authorize?${params}` }); return response.end();
+    }
+    if (request.method === 'GET' && url.pathname === '/api/discord/callback') {
+      try {
+        const state = verifyToken(url.searchParams.get('state'), secret);
+        if (state.type !== 'oauth') throw new Error('invalid OAuth state');
+        const params = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'authorization_code', code: url.searchParams.get('code') || '', redirect_uri: `${process.env.PUBLIC_ORIGIN || url.origin}/api/discord/callback` });
+        const tokenResponse = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params });
+        const token = await tokenResponse.json();
+        if (!tokenResponse.ok || typeof token.access_token !== 'string') throw new Error('Discord authorization failed');
+        response.writeHead(302, { 'set-cookie': `discord_access_token=${encodeURIComponent(token.access_token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=3600`, location: state.redirect }); return response.end();
+      } catch { return json(response, 400, { error: 'invalid Discord callback' }); }
+    }
     if (request.method === 'GET' && url.pathname === '/api/ice') return json(response, 200, { iceServers });
     if (request.method === 'POST' && url.pathname === '/api/discord/token') {
       if (!clientId || !clientSecret) return json(response, 503, { error: 'Discord OAuth is not configured' });
@@ -51,7 +69,7 @@ export function createRelayServer({ secret, clientId = '', clientSecret = '', al
         if (!['publisher', 'viewer'].includes(input.role) || typeof input.room !== 'string') throw new Error('invalid session');
         let user = input.user;
         if (!allowDevSessions) {
-          const bearer = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
+          const bearer = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1] || request.headers.cookie?.match(/(?:^|; )discord_access_token=([^;]+)/)?.[1];
           if (!bearer) return json(response, 401, { error: 'Discord authentication required' });
           const discordResponse = await fetch('https://discord.com/api/users/@me', { headers: { authorization: `Bearer ${bearer}` } });
           const discordUser = await discordResponse.json();
