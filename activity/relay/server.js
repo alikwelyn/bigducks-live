@@ -115,7 +115,7 @@ export function createRelayServer({ secret, clientId = '', clientSecret = '', al
     rooms,
     httpServer,
     get port() { return httpServer.address()?.port; },
-    listen(port = 0) { return new Promise((resolve) => httpServer.listen(port, '127.0.0.1', resolve)); },
+    listen(port = 0) { return new Promise((resolve) => httpServer.listen(port, '0.0.0.0', resolve)); },
     close() {
       for (const client of websocket.clients) client.terminate();
       return new Promise((resolve, reject) => {
