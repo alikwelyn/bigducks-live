@@ -39,20 +39,19 @@ body{background:radial-gradient(ellipse at top,#142536 0,#090f19 65%)}
 .watch-view:has(.playback-feedback:not([hidden])) .watch-header{opacity:1;pointer-events:auto}
 @media(prefers-reduced-motion:reduce){.loading-spinner{animation:none}.watch-controls{transition:none}}
 
-/* The media occupies one bounded viewport; controls must not create grid rows. */
+/* Controls keep their own space; only the media row consumes remaining height. */
 .discord-mode body,.discord-mode #app{height:100%;min-height:0;min-width:0}
 .discord-mode .shell{padding:0;height:100dvh;min-height:0}
-.watch-view,.discord-mode .watch-view{display:block;width:100%;height:100%;min-height:0;isolation:isolate}
-.watch-view .stage,.discord-mode .watch-view .stage{position:absolute;inset:0;width:100%;height:100%;margin:0;aspect-ratio:auto;border-radius:0;overflow:hidden}
+.watch-view,.discord-mode .watch-view{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);align-items:stretch;justify-items:stretch;width:100%;height:100%;min-height:0;isolation:isolate}
+.watch-view .stage,.discord-mode .watch-view .stage{position:relative;grid-column:1/-1;grid-row:2;inset:auto;width:100%;height:100%;min-height:0;margin:0;aspect-ratio:auto;border-radius:0;overflow:hidden}
 .watch-view .stage video,.watch-view .stage canvas{display:block;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:contain;transform:scale(var(--video-zoom,1));transform-origin:center var(--zoom-origin,50%)}
-.watch-view .watch-header,.watch-view .watch-controls{opacity:0;pointer-events:none;background:#07111fe8;padding:8px max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));gap:8px;transform:none}
-.watch-view.controls-visible .watch-header,.watch-view.controls-visible .watch-controls,.watch-view:focus-within .watch-header,.watch-view:focus-within .watch-controls{opacity:1;pointer-events:auto}
-.watch-view .watch-header{padding-top:max(8px,env(safe-area-inset-top));z-index:4}
-.watch-view .watch-controls{top:60px;bottom:auto;flex-wrap:wrap;justify-content:flex-end}
+.watch-view .watch-header,.watch-view .watch-controls{position:relative;inset:auto;opacity:1;pointer-events:auto;background:#07111f;padding:8px max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));gap:8px;transform:none;min-width:0;transition:none}
+.watch-view .watch-header{grid-column:1;grid-row:1;max-width:50vw;width:auto;flex-wrap:wrap;padding-top:max(8px,env(safe-area-inset-top));z-index:4}
+.watch-view .watch-controls{grid-column:2;grid-row:1;flex-wrap:wrap;align-content:center;justify-content:flex-end}
 .watch-view .player-action,.watch-view .back-button,.audience summary{min-height:44px;min-width:44px;font-size:14px;touch-action:manipulation}
 .watch-view #live-volume{width:clamp(60px,12vw,120px);min-height:44px;flex-shrink:1}
 .watch-view .live-caption{display:none}
-.watch-view #watch-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.watch-view #watch-name{min-width:0;max-width:20vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .watch-view:fullscreen{width:100vw;height:100dvh;background:#000}
 .audience{position:relative;color:var(--text-soft);font-size:14px}
 .audience summary{display:flex;align-items:center;cursor:pointer;padding:8px 12px;border:1px solid var(--border);border-radius:10px;white-space:nowrap}
@@ -64,4 +63,5 @@ body{background:radial-gradient(ellipse at top,#142536 0,#090f19 65%)}
 .capture-card>.audience{margin-top:16px}
 .view-notice:empty{display:none}.view-notice{flex-basis:100%;font-size:13px;color:#eef5ff;text-align:right}
 @media(max-width:640px){.watch-view .watch-live,.watch-view #watch-avatar,.watch-view #watch-name{display:none}.watch-view .watch-controls{gap:8px;justify-content:center}.watch-view .player-action{padding:8px}.discord-mode .viewer-shell:not(.watching){padding:12px}.viewer-heading h1{font-size:24px}.stream-details{min-width:0}.stream-identity{min-width:0}}
-@media(max-height:450px){.watch-view .watch-header,.watch-view .watch-controls{padding-top:4px;padding-bottom:4px}.watch-view .watch-controls{top:52px}.watch-header .audience-list{max-height:50dvh}}
+@media(max-width:900px){.watch-view,.discord-mode .watch-view{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr)}.watch-view .watch-header{max-width:100%;grid-column:1;grid-row:1}.watch-view .watch-controls{grid-column:1;grid-row:2;justify-content:center}.watch-view .stage,.discord-mode .watch-view .stage{grid-row:3}}
+@media(max-height:450px){.watch-view .watch-header,.watch-view .watch-controls{padding-top:4px;padding-bottom:4px}.watch-header .audience-list{max-height:50dvh}}

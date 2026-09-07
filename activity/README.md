@@ -34,6 +34,8 @@ A captura e o player mostram a lista de pessoas que abriram a live, com nome e a
 
 Assistir à própria live mantém o retorno de áudio silenciado. Transmitir simultaneamente não silencia a live de outra pessoa. Respostas atrasadas de uma assinatura SFU substituída não podem limpar o player atual, e mudanças na quantidade de espectadores preservam a adaptação de qualidade enquanto houver público.
 
+Mute, volume, ampliação e tela cheia permanecem visíveis, sem depender de hover, toque ou temporizador. Em telas estreitas os controles quebram linha e ficam em uma faixa própria acima do vídeo, sem cobrir as legendas. O vídeo usa somente a altura restante da Activity.
+
 ## Acesso e proteção dos endpoints
 
 - `/` fora do iframe mostra somente instruções para abrir a Activity; `frame_id` é um indicador de UI, **não autenticação**.

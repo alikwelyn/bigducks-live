@@ -6,7 +6,6 @@ export function createViewControls(view, video) {
   const fullscreen = document.createElement('button'); fullscreen.className = 'player-action'; fullscreen.type = 'button'; fullscreen.textContent = 'Tela cheia';
   const notice = document.createElement('span'); notice.className = 'view-notice'; notice.setAttribute('role', 'status');
   toolbar.append(zoom, fullscreen, notice);
-  let timer;
   let noticeTimer;
   let scale = 1;
   const stage = view.querySelector('.stage');
@@ -24,12 +23,6 @@ export function createViewControls(view, video) {
   video.addEventListener('resize', positionZoom);
   video.addEventListener('loadedmetadata', positionZoom);
   view.addEventListener('media-frame', positionZoom, true);
-  const reveal = () => {
-    clearTimeout(timer); view.classList.add('controls-visible');
-    timer = setTimeout(() => {
-      if (!view.contains(document.activeElement) && !view.querySelector('details[open]')) view.classList.remove('controls-visible');
-    }, 2500);
-  };
   zoom.onclick = () => {
     positionZoom();
     scale = scale === 1 ? 1.25 : scale === 1.25 ? 1.5 : 1;
@@ -37,7 +30,6 @@ export function createViewControls(view, video) {
     view.classList.toggle('video-zoomed', scale > 1);
     zoom.textContent = scale === 1 ? 'Ampliar legendas' : `Zoom ${Math.round(scale * 100)}%`;
     zoom.setAttribute('aria-pressed', String(scale > 1));
-    reveal();
   };
   fullscreen.onclick = async () => {
     try {
@@ -49,15 +41,10 @@ export function createViewControls(view, video) {
       notice.textContent = 'Use a tela cheia do Discord; no celular, gire a tela.';
       clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { notice.textContent = ''; }, 6000);
     }
-    reveal();
   };
-  document.addEventListener('fullscreenchange', () => { fullscreen.textContent = document.fullscreenElement ? 'Sair da tela cheia' : 'Tela cheia'; reveal(); });
-  view.addEventListener('pointermove', reveal);
-  view.addEventListener('pointerdown', reveal);
-  view.addEventListener('focusin', reveal);
-  view.addEventListener('focusout', reveal);
-  return { reveal, reset() {
+  document.addEventListener('fullscreenchange', () => { fullscreen.textContent = document.fullscreenElement ? 'Sair da tela cheia' : 'Tela cheia'; });
+  return { reset() {
     scale = 1; view.style.setProperty('--video-zoom', 1); view.classList.remove('video-zoomed');
-    zoom.textContent = 'Ampliar legendas'; zoom.setAttribute('aria-pressed', 'false'); notice.textContent = ''; reveal();
+    zoom.textContent = 'Ampliar legendas'; zoom.setAttribute('aria-pressed', 'false'); notice.textContent = '';
   } };
 }
