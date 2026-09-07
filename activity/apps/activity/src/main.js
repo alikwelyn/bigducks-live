@@ -5,6 +5,7 @@ import { captureConstraints, createBroadcaster, fitWithin } from '../../../share
 import { createPlayer } from './player.js';
 import { connectRelaySocket } from './relay-socket.js';
 import { createSfuPublisher, createSfuViewer } from './sfu.js';
+import { createPlaybackFeedback } from './playback-feedback.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -40,7 +41,7 @@ function renderCapture() {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Configure a transmissão e mantenha esta aba aberta.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Escolher tela ou janela</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar janela ou tela</button></div><label class="field">Qualidade<select id="quality"><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label title="Compartilha somente o áudio da fonte escolhida para evitar eco."><input id="audio" type="checkbox"> áudio da guia ou janela</label></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Escolha a fonte. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Escolher o que transmitir</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar janela ou tela</button></div><details class="capture-settings"><summary>Qualidade e áudio</summary><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label title="Compartilha somente o áudio da fonte escolhida para evitar eco."><input id="audio" type="checkbox"> áudio da guia ou janela</label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   const startButton = document.querySelector('#start');
   const stopButton = document.querySelector('#stop');
   const switchButton = document.querySelector('#switch-source');
@@ -53,8 +54,10 @@ function renderCapture() {
     switchButton.disabled = true;
     try {
       const quality = document.querySelector('#quality').value;
-      const profile = profileFor(quality === 'adaptive' ? '720p30' : quality);
+      const profile = { ...profileFor(quality === 'adaptive' ? '720p30' : quality), automatic: quality === 'adaptive' };
+      status.textContent = 'Escolha uma guia ou janela no navegador…';
       const stream = await navigator.mediaDevices.getDisplayMedia(captureConstraints({ fps: profile.fps, audio: document.querySelector('#audio').checked }));
+      status.textContent = 'Conectando sua transmissão…';
       const params = new URLSearchParams(location.search);
       let token = params.get('t');
       if (!token) {
@@ -200,7 +203,7 @@ function renderCapture() {
 }
 
 async function renderViewer() {
-  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><h1>Transmissões ao vivo</h1><p class="muted">Escolha uma transmissão para entrar.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button></header><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><span class="eyebrow">BIG DUCKS · SEU CANAL</span><h1>Ao vivo com seus amigos</h1><p class="muted">Escolha uma live e entre. Sem sair do Discord.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span></header><footer class="watch-controls"><span class="live-caption">TRANSMISSÃO AO VIVO</span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button><input id="live-volume" aria-label="Volume da transmissão" type="range" min="0" max="100" value="100"></footer><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
   let viewerUserId = '';
   const identityPromise = authenticateDiscord().then((identity) => { viewerUserId = identity.user; return identity; });
   document.querySelector('#publish').onclick = async () => {
@@ -224,6 +227,7 @@ async function renderViewer() {
   const watchName = document.querySelector('#watch-name');
   const watchAvatar = document.querySelector('#watch-avatar');
   const muteButton = document.querySelector('#mute-live');
+  let retryWatch = () => {};
   let muted = false;
   let playbackLocked = false;
   const showWatchView = (stream) => {
@@ -251,6 +255,13 @@ async function renderViewer() {
   };
   muteButton.onclick = () => { if (!playbackLocked) setPlaybackMuted(!muted, false); };
   document.querySelector('.stage').append(directVideo);
+  const feedback = createPlaybackFeedback(watchView, directVideo, canvas, () => retryWatch());
+  document.querySelector('#live-volume').oninput = (event) => {
+    const volume = Number(event.target.value) / 100;
+    directVideo.volume = volume;
+    player.setVolume?.(volume);
+    if (!playbackLocked) setPlaybackMuted(volume === 0, false);
+  };
   let directPeer;
   let sfuViewer;
   let relayFallbackActive = false;
@@ -286,6 +297,7 @@ async function renderViewer() {
       };
       const stopWatching = (statusText = 'Você parou de assistir.') => {
         if (selectedSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
+        feedback.hide();
         stopRtc(); stopSfu(); selectedSlot = null; player.close();
         document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
         document.querySelector('#status').textContent = statusText;
@@ -307,12 +319,14 @@ async function renderViewer() {
           if (message.avatar) { const avatar = document.createElement('img'); avatar.className = 'avatar'; avatar.src = message.avatar; avatar.alt = ''; identity.append(avatar); }
           else { const avatar = document.createElement('span'); avatar.className = 'avatar fallback'; avatar.textContent = (message.name || '?').slice(0, 1).toUpperCase(); identity.append(avatar); }
           const text = document.createElement('div'); const name = document.createElement('strong'); name.textContent = message.name; const meta = document.createElement('small'); meta.textContent = `${message.width}×${message.height} · ${Math.round(message.fps)} FPS${message.audioConfig ? ' · Com áudio' : ' · Sem áudio'}${message.transport === 'sfu' ? ' · Edge SFU' : ''}`; text.append(name, meta); identity.append(text);
-          const button = document.createElement('span'); button.className = 'stream-action'; button.textContent = selectedSlot === message.slot ? 'Parar de assistir' : 'Assistir';
+          if (message.userId === viewerUserId) name.textContent = `${message.name} · Sua live`;
           const openStream = async () => {
             if (selectedSlot === message.slot) { stopWatching(); return; }
             if (selectedSlot !== null) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
-            stopRtc(); stopSfu();
+            stopRtc(); stopSfu(); player.close();
             selectedSlot = message.slot;
+            retryWatch = () => { stopWatching(); void openStream(); };
+            feedback.show(`Conectando à live de ${message.name}…`, message.thumbnail);
             const stage = document.querySelector('.stage');
             stage.replaceChildren(canvas, directVideo);
             const viewerIsPublishing = [...availableStreams.values()].some((stream) => stream.userId === viewerUserId);
@@ -355,7 +369,7 @@ async function renderViewer() {
           };
           item.onclick = openStream;
           item.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openStream(); } };
-          details.append(identity, button); item.append(thumbnail, details); return item;
+          details.append(identity); item.append(thumbnail, details); return item;
         }));
       };
       socket.onmessage = (event) => {
@@ -382,6 +396,7 @@ async function renderViewer() {
           availableStreams.delete(message.slot);
           if (playbackLocked && ![...availableStreams.values()].some((stream) => stream.userId === viewerUserId)) setPlaybackMuted(true, false);
           if (selectedSlot === message.slot) {
+            feedback.hide();
             stopRtc(); stopSfu();
             selectedSlot = null;
             player.close();

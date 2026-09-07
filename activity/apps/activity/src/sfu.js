@@ -1,3 +1,4 @@
+import { monitorQuality } from './automatic-quality.js';
 const CONNECTION_TIMEOUT_MS = 10_000;
 
 export async function sfuRequest({ apiBase = '', token, operation, body, fetchImpl = globalThis.fetch }) {
@@ -80,6 +81,7 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
     await peer.setRemoteDescription(published.sessionDescription);
     await waitForConnection(peer, timeoutMs);
     const stopMonitoring = monitorConnection(peer, onDisconnect);
+    const stopQuality = profile.automatic ? monitorQuality(peer, profile) : () => {};
     return {
       peer,
       sessionId,
@@ -89,6 +91,7 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
         const mids = transceivers.map(({ mid }) => mid).filter(Boolean);
         void sfuRequest({ apiBase, token, operation: 'close', fetchImpl, body: { sessionId, mids } }).catch(() => {});
         stopMonitoring();
+        stopQuality();
         peer.close();
       },
     };

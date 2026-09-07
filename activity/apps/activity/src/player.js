@@ -10,6 +10,7 @@ export function createPlayer(canvas) {
   let audioContext;
   let audioGain;
   let muted = false;
+  let volume = 1;
   let nextAudioTime = 0;
   const scheduledAudio = new Set();
   let configured = false;
@@ -48,6 +49,7 @@ export function createPlayer(canvas) {
       canvas.style.height = fitHeight ? '100%' : 'auto';
     }
     context.drawImage(frame, 0, 0, canvas.width, canvas.height);
+    canvas.dispatchEvent?.(new Event('media-frame'));
     frame.close();
   };
 
@@ -104,7 +106,7 @@ export function createPlayer(canvas) {
       audioContext?.close();
       audioContext = new AudioContext({ latencyHint: 'interactive', sampleRate: config.sampleRate });
       audioGain = audioContext.createGain();
-      audioGain.gain.value = muted ? 0 : 1;
+      audioGain.gain.value = muted ? 0 : volume;
       audioGain.connect(audioContext.destination);
       audioContext.resume().catch(() => {});
       nextAudioTime = 0;
@@ -121,9 +123,13 @@ export function createPlayer(canvas) {
       audioDecoder.configure({ codec: config.codec || 'opus', sampleRate: config.sampleRate, numberOfChannels: config.numberOfChannels });
       return true;
     },
+    setVolume(value) {
+      volume = Math.max(0, Math.min(1, Number(value) || 0));
+      if (audioGain) audioGain.gain.value = muted ? 0 : volume;
+    },
     setMuted(value) {
       muted = Boolean(value);
-      if (audioGain) audioGain.gain.value = muted ? 0 : 1;
+      if (audioGain) audioGain.gain.value = muted ? 0 : volume;
       return muted;
     },
     push(raw) {
