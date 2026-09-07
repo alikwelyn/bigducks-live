@@ -40,7 +40,7 @@ export class EdgeRoom {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    const member = { role: claims.role, user: claims.user, name: String(claims.name || claims.user).slice(0, 80), slot, watched: null, stream: null };
+    const member = { role: claims.role, user: claims.user, name: String(claims.name || claims.user).slice(0, 80), avatar: typeof claims.avatar === 'string' ? claims.avatar : '', slot, watched: null, stream: null };
     server.serializeAttachment(member);
     this.state.acceptWebSocket(server);
 
@@ -77,9 +77,17 @@ export class EdgeRoom {
     }
 
     if (member.role === 'publisher' && ['start', 'stop'].includes(control.type)) {
-      const outgoing = { ...control, slot: member.slot, name: member.name };
+      const outgoing = { ...control, slot: member.slot, name: member.name, avatar: member.avatar };
       member.stream = control.type === 'start' ? outgoing : null;
       socket.serializeAttachment(member);
+      for (const viewer of this.sockets('viewer')) send(viewer, outgoing);
+      return;
+    }
+
+    if (member.role === 'publisher' && control.type === 'thumbnail') {
+      if (typeof control.data !== 'string' || control.data.length > 60_000 || !control.data.startsWith('data:image/jpeg;base64,')) return;
+      const outgoing = { type: 'thumbnail', slot: member.slot, data: control.data };
+      if (member.stream) { member.stream.thumbnail = control.data; socket.serializeAttachment(member); }
       for (const viewer of this.sockets('viewer')) send(viewer, outgoing);
       return;
     }

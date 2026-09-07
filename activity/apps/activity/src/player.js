@@ -79,20 +79,25 @@ export function createPlayer(canvas) {
       lastTimestamp = -Infinity;
       decoder = new VideoDecoder({ output: scheduleFrame, error() { hasKeyframe = false; } });
       decoder.configure({ codec, optimizeForLatency: true });
-      if (typeof AudioDecoder === 'function') {
-        audioContext = new AudioContext({ latencyHint: 'interactive' });
-        nextAudioTime = 0;
-        audioDecoder = new AudioDecoder({ output(audioData) {
-          const buffer = audioContext.createBuffer(audioData.numberOfChannels, audioData.numberOfFrames, audioData.sampleRate);
-          for (let channel = 0; channel < audioData.numberOfChannels; channel++) audioData.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: 'f32-planar' });
-          const source = audioContext.createBufferSource(); source.buffer = buffer; source.connect(audioContext.destination);
-          const liveEdge = audioContext.currentTime + 0.08;
-          if (nextAudioTime < audioContext.currentTime || nextAudioTime > audioContext.currentTime + 0.32) nextAudioTime = liveEdge;
-          nextAudioTime = Math.max(nextAudioTime, liveEdge); source.start(nextAudioTime); nextAudioTime += buffer.duration; audioData.close();
-        }, error() {} });
-        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
-      }
       configured = true;
+    },
+    configureAudio(config) {
+      if (!config || typeof AudioDecoder !== 'function' || typeof AudioContext !== 'function') return false;
+      if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
+      audioContext?.close();
+      audioContext = new AudioContext({ latencyHint: 'interactive', sampleRate: config.sampleRate });
+      audioContext.resume().catch(() => {});
+      nextAudioTime = 0;
+      audioDecoder = new AudioDecoder({ output(audioData) {
+        const buffer = audioContext.createBuffer(audioData.numberOfChannels, audioData.numberOfFrames, audioData.sampleRate);
+        for (let channel = 0; channel < audioData.numberOfChannels; channel++) audioData.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: 'f32-planar' });
+        const source = audioContext.createBufferSource(); source.buffer = buffer; source.connect(audioContext.destination);
+        const liveEdge = audioContext.currentTime + 0.08;
+        if (nextAudioTime < audioContext.currentTime || nextAudioTime > audioContext.currentTime + 0.32) nextAudioTime = liveEdge;
+        nextAudioTime = Math.max(nextAudioTime, liveEdge); source.start(nextAudioTime); nextAudioTime += buffer.duration; audioData.close();
+      }, error() {} });
+      audioDecoder.configure({ codec: config.codec || 'opus', sampleRate: config.sampleRate, numberOfChannels: config.numberOfChannels });
+      return true;
     },
     push(raw) {
       if (!configured) return;

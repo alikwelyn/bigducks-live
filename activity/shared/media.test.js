@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { codecCandidates, fitWithin, captureConstraints, h264Level } from './media.js';
+import { codecCandidates, fitWithin, captureConstraints, h264Level, selectVideoConfig } from './media.js';
 
 describe('media capture helpers', () => {
   it('fits capture dimensions without cropping', () => {
@@ -16,5 +16,15 @@ describe('media capture helpers', () => {
     expect(h264Level(1920, 1080, 60)).toBe('2a');
     expect(codecCandidates(1920, 1080, 60)[0]).toMatchObject({ codec: 'avc1.64002a' });
     expect(codecCandidates(1920, 1080, 60).at(-1)).toMatchObject({ codec: 'vp8' });
+  });
+
+  it('falls back to the first video configuration supported by the browser', async () => {
+    const checked = [];
+    const config = await selectVideoConfig({ width: 1920, height: 1080, fps: 60, bitrate: 4_000_000 }, async (candidate) => {
+      checked.push(candidate.codec);
+      return { supported: candidate.codec === 'vp8', config: candidate };
+    });
+    expect(config.codec).toBe('vp8');
+    expect(checked).toContain('avc1.64002a');
   });
 });

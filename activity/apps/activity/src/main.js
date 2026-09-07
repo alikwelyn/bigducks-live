@@ -27,13 +27,23 @@ async function authenticateDiscord() {
 }
 
 function renderCapture() {
-  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Configure a transmissão e mantenha esta aba aberta.</p><div class="toolbar"><button class="primary" id="start">Escolher tela ou janela</button><button class="danger" id="stop" hidden>Parar transmissão</button><label class="field">Qualidade<select id="quality"><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label><input id="audio" type="checkbox"> áudio do sistema</label></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  const tabId = crypto.randomUUID();
+  const tabChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('bigducks-stream-capture') : null;
+  let activeStop = null;
+  tabChannel?.addEventListener('message', ({ data }) => {
+    if (data?.type === 'replace' && data.tabId !== tabId) {
+      activeStop?.('Transmissão substituída por outra aba.');
+      setTimeout(() => window.close(), 100);
+    }
+  });
+  tabChannel?.postMessage({ type: 'replace', tabId });
+  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Configure a transmissão e mantenha esta aba aberta.</p><div class="toolbar"><button class="primary" id="start">Escolher tela ou janela</button><button class="danger" id="stop" hidden>Parar transmissão</button><label class="field">Qualidade<select id="quality"><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label><input id="audio" type="checkbox"> áudio do sistema</label></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   document.querySelector('#start').onclick = async () => {
     const status = document.querySelector('#status');
     try {
       const quality = document.querySelector('#quality').value;
       const profile = profileFor(quality === 'adaptive' ? '720p30' : quality);
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { ideal: profile.width, max: profile.width }, height: { ideal: profile.height, max: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { ideal: profile.width }, height: { ideal: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
       const params = new URLSearchParams(location.search);
       let token = params.get('t');
       if (!token) {
@@ -52,6 +62,7 @@ function renderCapture() {
       const { slot } = await joined;
       const peers = new Map();
       let broadcaster;
+      let thumbnailTimer;
       let stopped = false;
       const stopBroadcast = (message = 'Transmissão encerrada.') => {
         if (stopped) return;
@@ -60,6 +71,8 @@ function renderCapture() {
         document.querySelector('#start').hidden = false;
         const preview = document.querySelector('#preview'); preview.srcObject = null; preview.hidden = true;
         status.textContent = message;
+        activeStop = null;
+        clearInterval(thumbnailTimer);
         try { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop', slot })); } catch { /* socket already unavailable */ }
         for (const track of stream.getTracks()) { try { track.enabled = false; track.stop(); } catch { /* track already stopped */ } }
         try { broadcaster?.stop(); } catch { /* encoder already closed */ }
@@ -84,7 +97,8 @@ function renderCapture() {
         offerSent = true;
         for (const candidate of outbound) socket.send(JSON.stringify({ type: 'rtc', viewer: message.viewer, slot, candidate }));
       });
-      broadcaster = await createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, slot, onStatus: ({ codec, width, height, fps }) => { socket.send(JSON.stringify({ type: 'start', slot, codec, width, height, fps })); document.querySelector('#source').textContent = `Fonte: ${width}×${height}`; document.querySelector('#fps').textContent = `Codec: ${codec} / ${fps} FPS`; document.querySelector('#bitrate').textContent = `Bitrate alvo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`; }, onEnd: () => stopBroadcast('Captura encerrada.') });
+      activeStop = stopBroadcast;
+      broadcaster = await createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, slot, onStatus: ({ codec, width, height, fps, audioConfig }) => { socket.send(JSON.stringify({ type: 'start', slot, codec, width, height, fps, audioConfig })); document.querySelector('#audio-state').textContent = audioConfig ? `Áudio: Opus ${audioConfig.numberOfChannels === 1 ? 'mono' : 'estéreo'}` : 'Áudio: não capturado'; document.querySelector('#source').textContent = `Fonte: ${width}×${height}`; document.querySelector('#fps').textContent = `Codec: ${codec} / ${fps} FPS`; document.querySelector('#bitrate').textContent = `Bitrate alvo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`; }, onEnd: () => stopBroadcast('Captura encerrada.') });
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
@@ -101,11 +115,20 @@ function renderCapture() {
         }
       });
       const preview = document.querySelector('#preview'); preview.srcObject = stream; preview.hidden = false;
+      const thumbnailCanvas = document.createElement('canvas'); thumbnailCanvas.width = 320; thumbnailCanvas.height = 180;
+      const sendThumbnail = () => {
+        if (stopped || socket.readyState !== WebSocket.OPEN || preview.readyState < 2) return;
+        const context = thumbnailCanvas.getContext('2d');
+        context.drawImage(preview, 0, 0, thumbnailCanvas.width, thumbnailCanvas.height);
+        socket.send(JSON.stringify({ type: 'thumbnail', slot, data: thumbnailCanvas.toDataURL('image/jpeg', 0.45) }));
+      };
+      preview.addEventListener('loadeddata', sendThumbnail, { once: true });
+      thumbnailTimer = setInterval(sendThumbnail, 3000);
       document.querySelector('#start').hidden = true; document.querySelector('#stop').hidden = false;
       document.querySelector('#stop').onclick = () => stopBroadcast();
       status.textContent = 'Transmitindo. Mantenha esta página aberta.';
       window.addEventListener('beforeunload', () => stopBroadcast(), { once: true });
-    } catch (error) { status.textContent = error?.name === 'NotAllowedError' ? 'Permissão de captura cancelada.' : 'Não foi possível iniciar a captura.'; }
+    } catch (error) { status.textContent = error?.name === 'NotAllowedError' ? 'Permissão de captura cancelada.' : `Não foi possível iniciar: ${error?.message || 'erro desconhecido'}`; }
   };
 }
 
@@ -163,31 +186,48 @@ async function renderViewer() {
         const container = document.querySelector('#streams');
         if (!availableStreams.size) { container.innerHTML = '<div class="stream"><span>Nenhuma transmissão ativa</span></div>'; return; }
         container.replaceChildren(...[...availableStreams.values()].map((message) => {
-          const item = document.createElement('div'); item.className = 'stream';
-          const label = document.createElement('span'); label.textContent = `${message.name} · ${message.width}×${message.height} / ${message.fps} FPS`;
-          const button = document.createElement('button'); button.textContent = selectedSlot === message.slot ? 'Assistindo' : 'Assistir';
+          const item = document.createElement('article'); item.className = `stream-card${selectedSlot === message.slot ? ' active' : ''}`;
+          const thumbnail = document.createElement('div'); thumbnail.className = 'stream-thumb';
+          if (message.thumbnail) { const image = document.createElement('img'); image.src = message.thumbnail; image.alt = `Prévia da transmissão de ${message.name}`; thumbnail.append(image); }
+          else { const empty = document.createElement('span'); empty.textContent = 'Aguardando prévia'; thumbnail.append(empty); }
+          const live = document.createElement('span'); live.className = 'live-badge'; live.textContent = 'AO VIVO'; thumbnail.append(live);
+          const details = document.createElement('div'); details.className = 'stream-details';
+          const identity = document.createElement('div'); identity.className = 'stream-identity';
+          if (message.avatar) { const avatar = document.createElement('img'); avatar.className = 'avatar'; avatar.src = message.avatar; avatar.alt = ''; identity.append(avatar); }
+          else { const avatar = document.createElement('span'); avatar.className = 'avatar fallback'; avatar.textContent = (message.name || '?').slice(0, 1).toUpperCase(); identity.append(avatar); }
+          const text = document.createElement('div'); const name = document.createElement('strong'); name.textContent = message.name; const meta = document.createElement('small'); meta.textContent = `${message.width}×${message.height} · ${message.fps} FPS${message.audioConfig ? ' · Com áudio' : ' · Sem áudio'}`; text.append(name, meta); identity.append(text);
+          const button = document.createElement('button'); button.textContent = selectedSlot === message.slot ? 'Parar de assistir' : 'Assistir';
           button.onclick = () => {
-            if (selectedSlot !== null && selectedSlot !== message.slot) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
+            if (selectedSlot === message.slot) {
+              socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
+              stopRtc(); selectedSlot = null; player.close();
+              document.querySelector('.stage').innerHTML = '<span class="muted">Selecione uma transmissão para assistir</span>';
+              document.querySelector('#status').textContent = 'Você parou de assistir.';
+              renderStreams(); return;
+            }
+            if (selectedSlot !== null) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
             stopRtc();
             selectedSlot = message.slot;
             const stage = document.querySelector('.stage');
             stage.replaceChildren(canvas, directVideo);
             canvas.style.display = 'block'; directVideo.style.display = 'none';
             player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
+            player.configureAudio(message.audioConfig);
             socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
             socket.send(JSON.stringify({ type: 'rtc-want', slot: message.slot }));
             rtcSlot = message.slot;
             rtcTimer = setTimeout(() => { if (!rtcActive) stopRtc(); }, FALLBACK_MS);
-            document.querySelector('#status').textContent = `Assistindo ${message.name} pelo relay enquanto o P2P conecta…`;
+            document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name} ao vivo.`;
             renderStreams();
           };
-          item.append(label, button); return item;
+          details.append(identity, button); item.append(thumbnail, details); return item;
         }));
       };
       socket.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type === 'start') availableStreams.set(message.slot, message);
+        if (message.type === 'thumbnail' && availableStreams.has(message.slot)) availableStreams.get(message.slot).thumbnail = message.data;
         if (message.type === 'stop') {
           availableStreams.delete(message.slot);
           if (selectedSlot === message.slot) {
@@ -199,7 +239,7 @@ async function renderViewer() {
             document.querySelector('#status').textContent = 'Transmissão encerrada.';
           }
         }
-        if (message.type === 'start' || message.type === 'stop') renderStreams();
+        if (message.type === 'start' || message.type === 'stop' || message.type === 'thumbnail') renderStreams();
       };
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') { if (!rtcActive) player.push(event.data); return; }

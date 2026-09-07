@@ -8,8 +8,8 @@ export const MAX_HEIGHT = 1080;
 
 const even = (value) => Math.max(2, value - (value % 2));
 
-export function fitWithin(width, height) {
-  const scale = Math.min(1, MAX_WIDTH / width, MAX_HEIGHT / height);
+export function fitWithin(width, height, maxWidth = MAX_WIDTH, maxHeight = MAX_HEIGHT) {
+  const scale = Math.min(1, maxWidth / width, maxHeight / height);
   return { width: even(Math.round(width * scale)), height: even(Math.round(height * scale)) };
 }
 
@@ -39,6 +39,17 @@ export function codecCandidates(width, height, fps) {
   return [...h264, { codec: 'vp8' }];
 }
 
+export async function selectVideoConfig({ width, height, fps, bitrate }, support = (config) => VideoEncoder.isConfigSupported(config)) {
+  for (const candidate of codecCandidates(width, height, fps)) {
+    const config = { ...candidate, width, height, framerate: fps, bitrate, latencyMode: 'realtime' };
+    try {
+      const result = await support(config);
+      if (result?.supported) return result.config || config;
+    } catch { /* try the next codec */ }
+  }
+  throw new Error('no supported realtime video codec');
+}
+
 export function audioConstraints() {
   return { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
 }
@@ -50,9 +61,11 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   const track = stream.getVideoTracks()[0];
   if (!track) throw new Error('screen capture returned no video track');
   track.contentHint = 'text';
-  await track.applyConstraints?.({ width: { ideal: profile.width, max: profile.width }, height: { ideal: profile.height, max: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } });
+  try {
+    await track.applyConstraints?.({ width: { ideal: profile.width }, height: { ideal: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } });
+  } catch { /* tabs and some window sources reject resize constraints */ }
   const settings = track.getSettings();
-  const size = fitWithin(settings.width || profile.width, settings.height || profile.height);
+  const size = fitWithin(settings.width || profile.width, settings.height || profile.height, profile.width, profile.height);
   const encoder = new VideoEncoder({
     output: (chunk) => {
       const payload = new Uint8Array(chunk.byteLength);
@@ -61,8 +74,8 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
     },
     error: (error) => onEnd(error),
   });
-  const codec = codecCandidates(size.width, size.height, profile.fps)[0];
-  encoder.configure({ codec: codec.codec, width: size.width, height: size.height, framerate: profile.fps, bitrate: profile.bitrate, latencyMode: 'realtime', avc: codec.avc });
+  const codec = await selectVideoConfig({ width: size.width, height: size.height, fps: profile.fps, bitrate: profile.bitrate });
+  encoder.configure(codec);
   let stopped = false;
   let forceKeyframe = true;
   let lastKeyframeAt = 0;
@@ -70,7 +83,10 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   let audioEncoder;
   let audioReader;
   const audioTrack = stream.getAudioTracks()[0];
+  let audioConfig = null;
   if (audio && audioTrack && typeof AudioEncoder === 'function' && typeof MediaStreamTrackProcessor === 'function') {
+    const audioSettings = audioTrack.getSettings();
+    audioConfig = { codec: 'opus', sampleRate: audioSettings.sampleRate || 48_000, numberOfChannels: Math.max(1, Math.min(2, audioSettings.channelCount || 2)), bitrate: 96_000 };
     audioEncoder = new AudioEncoder({
       output: (chunk) => {
         const payload = new Uint8Array(chunk.byteLength);
@@ -79,7 +95,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
       },
       error: (error) => onEnd(error),
     });
-    audioEncoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2, bitrate: 96_000 });
+    audioEncoder.configure(audioConfig);
     const audioProcessor = new MediaStreamTrackProcessor({ track: audioTrack });
     audioReader = audioProcessor.readable.getReader();
     void (async () => {
@@ -113,7 +129,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
     } catch (error) { if (!stopped) onEnd(error); }
   };
   track.addEventListener('ended', () => { if (!stopped) onEnd(new Error('capture ended')); });
-  onStatus({ codec: codec.codec, ...size, fps: profile.fps });
+  onStatus({ codec: codec.codec, ...size, fps: profile.fps, audioConfig });
   void pump();
   return { stream, encoder, audioEncoder, requestKeyframe() { forceKeyframe = true; }, stop() { stopped = true; reader?.cancel(); audioReader?.cancel(); encoder.close(); audioEncoder?.close(); stream.getTracks().forEach((item) => item.stop()); } };
 }

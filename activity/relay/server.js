@@ -97,6 +97,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         if (!['publisher', 'viewer'].includes(input.role) || typeof input.room !== 'string') throw new Error('invalid session');
         let user = input.user;
         let name = input.name || input.user;
+        let avatar = '';
         if (!allowDevSessions) {
           const bearer = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1] || request.headers.cookie?.match(/(?:^|; )discord_access_token=([^;]+)/)?.[1];
           if (!bearer) return json(response, 401, { error: 'Discord authentication required' });
@@ -105,9 +106,10 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           if (!discordResponse.ok || typeof discordUser.id !== 'string') return json(response, 401, { error: 'Discord authentication failed' });
           user = discordUser.id;
           name = discordUser.global_name || discordUser.username || discordUser.id;
+          if (discordUser.avatar) avatar = `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`;
         }
         if (typeof user !== 'string' || !user) throw new Error('invalid user');
-        const token = issueToken({ room: input.room, role: input.role, user, name: String(name || user).slice(0, 80) }, secret);
+        const token = issueToken({ room: input.room, role: input.role, user, name: String(name || user).slice(0, 80), avatar }, secret);
         return json(response, 200, { token, room: input.room, role: input.role });
       } catch (error) { return json(response, 400, { error: error.message }); }
     }
@@ -127,7 +129,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
   });
   websocket.on('connection', (client, _request, claims) => {
     let member;
-    try { member = rooms.join(claims.room, claims.role, claims.user, client, claims.name); } catch { client.close(1008, 'room unavailable'); return; }
+    try { member = rooms.join(claims.room, claims.role, claims.user, client, claims.name); member.avatar = claims.avatar || ''; } catch { client.close(1008, 'room unavailable'); return; }
     if (claims.role === 'publisher') client.send(stringifyControl({ type: 'joined', slot: member.slot, name: member.name }));
     if (claims.role === 'viewer') {
       for (const publisher of rooms.get(claims.room)?.publishers.values() ?? []) {
@@ -154,8 +156,15 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           return;
         }
         if (claims.role === 'publisher' && ['start', 'stop'].includes(message.type)) {
-          const outgoing = { ...message, slot: member.slot, name: member.name };
+          const outgoing = { ...message, slot: member.slot, name: member.name, avatar: member.avatar };
           member.stream = message.type === 'start' ? outgoing : null;
+          for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stringifyControl(outgoing));
+          return;
+        }
+        if (claims.role === 'publisher' && message.type === 'thumbnail') {
+          if (typeof message.data !== 'string' || message.data.length > 60_000 || !message.data.startsWith('data:image/jpeg;base64,')) return;
+          const outgoing = { type: 'thumbnail', slot: member.slot, data: message.data };
+          if (member.stream) member.stream.thumbnail = message.data;
           for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stringifyControl(outgoing));
           return;
         }
