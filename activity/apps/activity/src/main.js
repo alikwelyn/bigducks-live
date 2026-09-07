@@ -137,6 +137,9 @@ async function renderViewer() {
           button.onclick = () => {
             if (selectedSlot !== null && selectedSlot !== message.slot) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
             selectedSlot = message.slot;
+            const stage = document.querySelector('.stage');
+            stage.replaceChildren(canvas, directVideo);
+            canvas.style.display = 'block'; directVideo.style.display = 'none';
             player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
             socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
             document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name}.`;
@@ -154,7 +157,9 @@ async function renderViewer() {
           if (selectedSlot === message.slot) {
             selectedSlot = null;
             player.close();
-            directVideo.srcObject = null; directVideo.style.display = 'none'; canvas.style.display = 'block';
+            directPeer?.close(); directPeer = null;
+            directVideo.pause(); directVideo.srcObject = null; directVideo.removeAttribute('src'); directVideo.load();
+            document.querySelector('.stage').innerHTML = '<span class="muted">Selecione uma transmissão para assistir</span>';
             document.querySelector('#status').textContent = 'Transmissão encerrada.';
           }
         }
