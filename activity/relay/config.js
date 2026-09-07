@@ -12,6 +12,8 @@ export function loadConfig(env = process.env) {
     clientSecret: env.DISCORD_CLIENT_SECRET || '',
     allowDevSessions: env.ALLOW_DEV_SESSIONS === 'true' && env.NODE_ENV !== 'production',
     maxViewers: Number(env.MAX_VIEWERS || 25),
+    turnKeyId: env.CLOUDFLARE_TURN_KEY_ID || '',
+    turnKeySecret: env.CLOUDFLARE_TURN_KEY_SECRET || '',
     iceServers: env.TURN_URL ? [{ urls: env.TURN_URL, username: env.TURN_USER, credential: env.TURN_PASS }] : [],
   };
 }

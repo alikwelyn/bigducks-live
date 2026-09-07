@@ -73,7 +73,7 @@ function renderCapture() {
         peers.get(message.viewer)?.peer.close();
         const outbound = [];
         let offerSent = false;
-        const peer = createPeer({ iceServers: await fetchIceServers(), onIce: (candidate) => { if (offerSent) socket.send(JSON.stringify({ type: 'rtc', viewer: message.viewer, slot, candidate })); else outbound.push(candidate); }, onState: (state) => { if (['failed', 'closed', 'disconnected'].includes(state)) { peer.close(); peers.delete(message.viewer); } } });
+        const peer = createPeer({ iceServers: await fetchIceServers('', token), onIce: (candidate) => { if (offerSent) socket.send(JSON.stringify({ type: 'rtc', viewer: message.viewer, slot, candidate })); else outbound.push(candidate); }, onState: (state) => { if (['failed', 'closed', 'disconnected'].includes(state)) { peer.close(); peers.delete(message.viewer); } } });
         const entry = { peer, pendingCandidates: [] };
         peers.set(message.viewer, entry);
         for (const track of stream.getTracks()) peer.addTrack(track, stream);
@@ -209,7 +209,7 @@ async function renderViewer() {
           if (!directPeer) {
             const outbound = [];
             let answerSent = false;
-            directPeer = createPeer({ iceServers: await fetchIceServers(apiBase), onIce: (candidate) => { if (answerSent) socket.send(JSON.stringify({ type: 'rtc', slot: selectedSlot, candidate })); else outbound.push(candidate); }, onTrack: ({ streams }) => {
+            directPeer = createPeer({ iceServers: await fetchIceServers(apiBase, token), onIce: (candidate) => { if (answerSent) socket.send(JSON.stringify({ type: 'rtc', slot: selectedSlot, candidate })); else outbound.push(candidate); }, onTrack: ({ streams }) => {
               if (!streams[0]) return;
               directVideo.srcObject = streams[0];
               const activate = () => {

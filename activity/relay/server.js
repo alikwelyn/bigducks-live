@@ -12,9 +12,29 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, iceServers = [] } = {}) {
+export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [] } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers, maxPublishers });
+  let turnCache = null;
+  const resolveIceServers = async () => {
+    if (!turnKeyId || !turnKeySecret) return iceServers;
+    if (turnCache?.expiresAt > Date.now()) return turnCache.iceServers;
+    const turnResponse = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(turnKeyId)}/credentials/generate`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${turnKeySecret}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ ttl: 3600 }),
+    });
+    if (!turnResponse.ok) throw new Error(`TURN credentials failed: ${turnResponse.status}`);
+    const body = await turnResponse.json();
+    const urls = Array.isArray(body?.iceServers?.urls) ? body.iceServers.urls.filter((url) => !url.includes(':53')) : [];
+    if (!urls.length || !body.iceServers.username || !body.iceServers.credential) throw new Error('invalid TURN credentials');
+    const resolved = [
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls, username: body.iceServers.username, credential: body.iceServers.credential },
+    ];
+    turnCache = { iceServers: resolved, expiresAt: Date.now() + 50 * 60 * 1000 };
+    return resolved;
+  };
   const staticRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/activity');
   const httpServer = http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://relay.local');
@@ -46,7 +66,15 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         response.writeHead(302, { 'set-cookie': `discord_access_token=${encodeURIComponent(token.access_token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=3600`, location: state.redirect }); return response.end();
       } catch { return json(response, 400, { error: 'invalid Discord callback' }); }
     }
-    if (request.method === 'GET' && url.pathname === '/api/ice') return json(response, 200, { iceServers });
+    if (request.method === 'GET' && url.pathname === '/api/ice') {
+      try {
+        const claims = verifyToken(url.searchParams.get('token'), secret);
+        if (!['publisher', 'viewer'].includes(claims.role)) throw new Error('invalid ICE session');
+        return json(response, 200, { iceServers: await resolveIceServers() });
+      } catch (error) {
+        return json(response, error.message.startsWith('TURN credentials') ? 502 : 401, { error: 'ICE configuration unavailable' });
+      }
+    }
     if (request.method === 'POST' && url.pathname === '/api/discord/token') {
       if (!clientId || !clientSecret) return json(response, 503, { error: 'Discord OAuth is not configured' });
       let body = '';

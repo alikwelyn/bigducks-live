@@ -21,7 +21,12 @@ describe('relay server', () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
     const response = await fetch(`${base}/api/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: 'a', user: 'u', role: 'viewer' }) });
     expect(response.status).toBe(200);
-    expect((await response.json()).token).toEqual(expect.any(String));
+    const { token } = await response.json();
+    expect(token).toEqual(expect.any(String));
+    expect((await fetch(`${base}/api/ice`)).status).toBe(401);
+    const iceResponse = await fetch(`${base}/api/ice?token=${encodeURIComponent(token)}`);
+    expect(iceResponse.status).toBe(200);
+    expect(await iceResponse.json()).toEqual({ iceServers: [] });
   });
 
   it('relays watched binary media between publisher and viewer', async () => {

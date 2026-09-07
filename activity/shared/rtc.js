@@ -5,9 +5,10 @@ export function shouldFallback({ state, gotFrame, elapsed }) {
   return !gotFrame && (['failed', 'closed', 'disconnected'].includes(state) || elapsed >= FALLBACK_MS);
 }
 
-export async function fetchIceServers(base = '') {
+export async function fetchIceServers(base = '', token = '') {
   try {
-    const response = await fetch(`${base}/api/ice`);
+    const query = token ? `?token=${encodeURIComponent(token)}` : '';
+    const response = await fetch(`${base}/api/ice${query}`);
     const body = response.ok ? await response.json() : null;
     return Array.isArray(body?.iceServers) && body.iceServers.length ? body.iceServers : ICE_DEFAULT;
   } catch {
