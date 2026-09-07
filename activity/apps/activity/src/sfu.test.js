@@ -48,12 +48,38 @@ describe('SFU browser transport', () => {
       await vi.advanceTimersByTimeAsync(5_000);
       expect(published.peer.getStats).toHaveBeenCalledOnce();
       expect(published.peer.getSenders()[0].setParameters).toHaveBeenLastCalledWith({ encodings: [{ maxBitrate: 1_500_000, maxFramerate: 25, scaleResolutionDownBy: 1.5 }] });
+      const adjustments = published.peer.getSenders()[0].setParameters.mock.calls.length;
+      await published.setAudience(2);
+      await published.setAudience(1);
+      expect(published.peer.getSenders()[0].setParameters).toHaveBeenCalledTimes(adjustments);
     } finally { published?.close(); vi.useRealTimers(); }
   });
   it('sends the room token only to the authenticated origin proxy', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({ sessionId: 'session' }));
     expect(await sfuRequest({ apiBase: '/.proxy', token: 'room-token', operation: 'session', fetchImpl })).toEqual({ sessionId: 'session' });
     expect(fetchImpl).toHaveBeenCalledWith('/.proxy/api/sfu/session', expect.objectContaining({ headers: expect.objectContaining({ authorization: 'Bearer room-token' }) }));
+  });
+
+  it('does not attach an obsolete subscription after a delayed session response', async () => {
+    const currentMedia = { id: 'new-live' };
+    const video = { srcObject: currentMedia };
+    const fetchImpl = vi.fn().mockResolvedValue(json({ sessionId: 'late-session' }));
+    await expect(createSfuViewer({ video, fetchImpl, RTCPeerConnectionClass: FakePeerConnection, MediaStreamClass: FakeMediaStream, isCurrent: () => false })).rejects.toThrow('Subscription replaced');
+    expect(video.srcObject).toBe(currentMedia);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('does not clear a newer live when an older subscription fails', async () => {
+    let rejectSubscribe;
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ sessionId: 'session' })).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSubscribe = reject; }));
+    const video = { srcObject: null };
+    const pending = createSfuViewer({ video, fetchImpl, RTCPeerConnectionClass: FakePeerConnection, MediaStreamClass: FakeMediaStream });
+    const rejected = expect(pending).rejects.toThrow('old request failed');
+    await vi.waitFor(() => expect(rejectSubscribe).toBeTypeOf('function'));
+    const newMedia = { id: 'new-live' }; video.srcObject = newMedia;
+    rejectSubscribe(new Error('old request failed'));
+    await rejected;
+    expect(video.srcObject).toBe(newMedia);
   });
 
   it('publishes native display tracks and returns a signed media capability', async () => {

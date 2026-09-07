@@ -271,7 +271,7 @@ async function renderViewer() {
     player.setMuted(muted);
     directVideo.muted = muted;
     muteButton.disabled = playbackLocked;
-    muteButton.textContent = playbackLocked ? '🔇 Silenciado durante sua transmissão' : muted ? '🔇 Ativar áudio' : '🔊 Áudio';
+    muteButton.textContent = playbackLocked ? '🔇 Sua live sem retorno' : muted ? '🔇 Ativar áudio' : '🔊 Áudio';
     muteButton.title = playbackLocked ? 'Evita que o áudio reproduzido seja recapturado e gere eco.' : '';
   };
   muteButton.onclick = () => { if (!playbackLocked) setPlaybackMuted(!muted, false); };
@@ -299,7 +299,9 @@ async function renderViewer() {
       const availableStreams = new Map();
       const audiences = new Map();
       let selectedSlot = null;
+      let watchRevision = 0;
       const stopSfu = () => {
+        watchRevision++;
         const active = sfuViewer; sfuViewer = null;
         try { active?.close(); } catch { /* already closed */ }
         relayFallbackActive = false;
@@ -356,17 +358,19 @@ async function renderViewer() {
             feedback.show(`Conectando à live de ${message.name}…`, message.thumbnail);
             const stage = document.querySelector('.stage');
             stage.replaceChildren(canvas, directVideo);
-            const viewerIsPublishing = [...availableStreams.values()].some((stream) => stream.userId === viewerUserId);
-            setPlaybackMuted(viewerIsPublishing, viewerIsPublishing);
+            const watchingOwnStream = Boolean(viewerUserId) && message.userId === viewerUserId;
+            setPlaybackMuted(watchingOwnStream, watchingOwnStream);
             showWatchView(message);
             renderStreams();
             if (message.transport === 'sfu' && message.mediaToken) {
+              const revision = watchRevision;
+              const isCurrent = () => revision === watchRevision && selectedSlot === message.slot;
               socket.send(JSON.stringify({ type: 'sfu-watch', slot: message.slot }));
               canvas.style.display = 'none'; directVideo.style.display = 'block';
               document.querySelector('#status').textContent = `Conectando à transmissão de ${message.name} pela Cloudflare…`;
               let fallbackRequested = false;
               const requestFallback = () => {
-                if (fallbackRequested || selectedSlot !== message.slot) return;
+                if (fallbackRequested || !isCurrent()) return;
                 fallbackRequested = true;
                 stopSfu();
                 directVideo.style.display = 'none'; canvas.style.display = 'block';
@@ -375,8 +379,9 @@ async function renderViewer() {
               };
               try {
                 const iceServers = await fetchIceServers(apiBase, token).catch(() => [{ urls: 'stun:stun.cloudflare.com:3478' }]);
-                const viewed = await createSfuViewer({ mediaToken: message.mediaToken, video: directVideo, token, apiBase, iceServers, onDisconnect: requestFallback });
-                if (selectedSlot !== message.slot) { viewed.close(); return; }
+                if (!isCurrent()) return;
+                const viewed = await createSfuViewer({ mediaToken: message.mediaToken, video: directVideo, token, apiBase, iceServers, onDisconnect: requestFallback, isCurrent });
+                if (!isCurrent()) { viewed.close(); return; }
                 sfuViewer = viewed;
                 document.querySelector('#status').textContent = `Assistindo ${message.name} pela Cloudflare SFU.`;
                 return;
@@ -405,7 +410,7 @@ async function renderViewer() {
         const message = JSON.parse(event.data);
         if (message.type === 'start') {
           availableStreams.set(message.slot, message);
-          if (selectedSlot !== null && message.userId === viewerUserId) setPlaybackMuted(true, true);
+          if (selectedSlot === message.slot && viewerUserId && message.userId === viewerUserId) setPlaybackMuted(true, true);
         }
         if (message.type === 'thumbnail' && availableStreams.has(message.slot)) availableStreams.get(message.slot).thumbnail = message.data;
         if (message.type === 'audience') {

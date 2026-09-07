@@ -85,15 +85,20 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
     let stopQuality = profile.automatic ? monitorQuality(peer, profile) : () => {};
     let closed = false;
     let audienceRevision = 0;
+    let audienceMode;
+    let audiencePending;
     return {
       peer,
       sessionId,
       mediaToken: published.mediaToken,
       tracks: published.tracks,
       async setAudience(count) {
+        const active = count > 0;
+        if (audienceMode === active) return audiencePending;
+        audienceMode = active;
         const revision = ++audienceRevision;
         stopQuality();
-        await Promise.all(transceivers.map(({ sender }) => updateSender(sender, (parameters) => {
+        audiencePending = Promise.all(transceivers.map(({ sender }) => updateSender(sender, (parameters) => {
           if (closed || revision !== audienceRevision) return false;
           if (!parameters.encodings?.length) throw new Error('Sender encodings unavailable');
           const idle = count === 0;
@@ -103,8 +108,13 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
                 ? { width: 320, height: 180, bitrate: 40_000, fps: 1 } : profile));
             } else encoding.maxBitrate = idle ? 6_000 : 96_000;
           }
-        })));
-        if (!closed && revision === audienceRevision && count > 0 && profile.automatic) stopQuality = monitorQuality(peer, profile);
+        }))).then(() => {
+          if (!closed && revision === audienceRevision && active && profile.automatic) stopQuality = monitorQuality(peer, profile);
+        }).catch((error) => {
+          if (revision === audienceRevision) audienceMode = undefined;
+          throw error;
+        });
+        return audiencePending;
       },
       close() {
         closed = true;
@@ -121,17 +131,21 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
   }
 }
 
-export async function createSfuViewer({ mediaToken, video, token, apiBase = '', iceServers = [], fetchImpl = globalThis.fetch, RTCPeerConnectionClass = RTCPeerConnection, MediaStreamClass = MediaStream, timeoutMs, onDisconnect } = {}) {
+export async function createSfuViewer({ mediaToken, video, token, apiBase = '', iceServers = [], fetchImpl = globalThis.fetch, RTCPeerConnectionClass = RTCPeerConnection, MediaStreamClass = MediaStream, timeoutMs, onDisconnect, isCurrent = () => true } = {}) {
+  const checkCurrent = () => { if (!isCurrent()) throw new Error('Subscription replaced'); };
   const { sessionId } = await sfuRequest({ apiBase, token, operation: 'session', fetchImpl });
+  checkCurrent();
   const peer = createPeer(RTCPeerConnectionClass, iceServers);
   const media = new MediaStreamClass();
   const receivedMids = [];
   let resolveVideoTrack;
   let rejectVideoTrack;
   const videoTrackReceived = new Promise((resolve, reject) => { resolveVideoTrack = resolve; rejectVideoTrack = reject; });
+  void videoTrackReceived.catch(() => {});
   let videoTrackTimeout;
   video.srcObject = media;
   peer.addEventListener('track', ({ transceiver, track }) => {
+    if (!isCurrent()) { track.stop?.(); return; }
     if (transceiver?.mid) receivedMids.push(transceiver.mid);
     media.addTrack(track);
     if (track.kind === 'video') { clearTimeout(videoTrackTimeout); resolveVideoTrack(track); }
@@ -139,9 +153,11 @@ export async function createSfuViewer({ mediaToken, video, token, apiBase = '', 
   });
   try {
     const pulled = await sfuRequest({ apiBase, token, operation: 'subscribe', fetchImpl, body: { sessionId, mediaToken } });
+    checkCurrent();
     if (!pulled.sessionDescription) throw new Error('Cloudflare SFU returned no subscription offer');
     videoTrackTimeout = setTimeout(() => rejectVideoTrack(new Error('Cloudflare SFU video timeout')), timeoutMs || CONNECTION_TIMEOUT_MS);
     await peer.setRemoteDescription(pulled.sessionDescription);
+    checkCurrent();
     if (pulled.requiresImmediateRenegotiation) {
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
@@ -149,6 +165,7 @@ export async function createSfuViewer({ mediaToken, video, token, apiBase = '', 
     }
     await waitForConnection(peer, timeoutMs);
     await videoTrackReceived;
+    checkCurrent();
     await video.play?.().catch(() => {});
     const stopMonitoring = monitorConnection(peer, onDisconnect);
     return {
@@ -161,14 +178,14 @@ export async function createSfuViewer({ mediaToken, video, token, apiBase = '', 
         stopMonitoring();
         peer.close();
         for (const track of media.getTracks()) track.stop?.();
-        video.pause?.();
-        video.srcObject = null;
+        if (video.srcObject === media) { video.pause?.(); video.srcObject = null; }
       },
     };
   } catch (error) {
     clearTimeout(videoTrackTimeout);
     peer.close();
-    video.srcObject = null;
+    for (const track of media.getTracks()) track.stop?.();
+    if (video.srcObject === media) video.srcObject = null;
     throw error;
   }
 }

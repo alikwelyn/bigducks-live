@@ -32,6 +32,8 @@ O player ocupa a área disponível da Activity em desktop, retrato e paisagem, p
 
 A captura e o player mostram a lista de pessoas que abriram a live, com nome e avatar autenticados; os cards mostram a quantidade. A lista acompanha SFU, relay e P2P, mudanças de live, saída e desconexão, e não inclui pessoas que apenas estão na sala. Indica intenção de assistir, não confirmação de reprodução de cada frame. A mesma identidade é exibida uma vez, mesmo com mais de uma conexão.
 
+Assistir à própria live mantém o retorno de áudio silenciado. Transmitir simultaneamente não silencia a live de outra pessoa. Respostas atrasadas de uma assinatura SFU substituída não podem limpar o player atual, e mudanças na quantidade de espectadores preservam a adaptação de qualidade enquanto houver público.
+
 ## Acesso e proteção dos endpoints
 
 - `/` fora do iframe mostra somente instruções para abrir a Activity; `frame_id` é um indicador de UI, **não autenticação**.
