@@ -104,6 +104,18 @@ export class EdgeRoom {
       socket.serializeAttachment(member);
       return;
     }
+    if (member.role === 'viewer' && control.type === 'fallback-want') {
+      member.watched = selectWatchedSlot(control.slot);
+      socket.serializeAttachment(member);
+      const publisher = this.publisher(member.watched);
+      if (publisher) send(publisher, { type: 'fallback-want', slot: member.watched, viewer: member.user });
+      return;
+    }
+    if (member.role === 'publisher' && ['fallback-ready', 'fallback-failed'].includes(control.type)) {
+      const target = this.sockets('viewer').find((viewer) => attachment(viewer)?.user === control.viewer);
+      if (target) send(target, { ...control, slot: member.slot, viewer: control.viewer });
+      return;
+    }
     if (member.role === 'viewer' && control.type === 'rtc-active') {
       member.watched = null;
       socket.serializeAttachment(member);

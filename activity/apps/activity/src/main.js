@@ -1,9 +1,10 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { profileFor } from '../../../shared/adaptation.js';
 import { createPeer, FALLBACK_MS, fetchIceServers, tuneSenders } from '../../../shared/rtc.js';
-import { createBroadcaster } from '../../../shared/media.js';
+import { createBroadcaster, fitWithin } from '../../../shared/media.js';
 import { createPlayer } from './player.js';
 import { connectRelaySocket } from './relay-socket.js';
+import { createSfuPublisher, createSfuViewer } from './sfu.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -62,6 +63,9 @@ function renderCapture() {
         if (!sessionResponse.ok) throw new Error('relay session unavailable');
         ({ token } = await sessionResponse.json());
       }
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) videoTrack.contentHint = 'detail';
+      const runtimeConfig = await fetch(apiUrl('/api/config')).then((response) => response.json()).catch(() => ({}));
       const socket = await connectRelaySocket({ apiBase, token });
       const joined = new Promise((resolve) => socket.addEventListener('message', (event) => {
         if (typeof event.data !== 'string') return;
@@ -72,6 +76,9 @@ function renderCapture() {
       const { slot } = await joined;
       const peers = new Map();
       let broadcaster;
+      let relayStarting;
+      let relayMedia;
+      let sfuPublisher;
       let thumbnailTimer;
       let stopped = false;
       const stopBroadcast = (message = 'Transmissão encerrada.') => {
@@ -87,13 +94,33 @@ function renderCapture() {
         try { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop', slot })); } catch { /* socket already unavailable */ }
         for (const track of stream.getTracks()) { try { track.enabled = false; track.stop(); } catch { /* track already stopped */ } }
         try { broadcaster?.stop(); } catch { /* encoder already closed */ }
+        try { sfuPublisher?.close(); } catch { /* SFU already closed */ }
         for (const { peer } of peers.values()) { try { peer.close(); } catch { /* peer already closed */ } }
         try { socket.close(); } catch { /* socket already closed */ }
+      };
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => stopBroadcast('Captura encerrada pelo navegador.'), { once: true });
+      const ensureRelay = () => {
+        if (broadcaster) return Promise.resolve(relayMedia);
+        if (relayStarting) return relayStarting;
+        relayStarting = new Promise((resolve, reject) => {
+          createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, slot, onStatus: (media) => { relayMedia = media; resolve(media); }, onEnd: (error) => { if (!sfuPublisher) stopBroadcast(error?.message || 'Captura encerrada.'); } })
+            .then((value) => { broadcaster = value; })
+            .catch(reject);
+        });
+        return relayStarting;
       };
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type === 'need-keyframe') { broadcaster?.requestKeyframe(); return; }
+        if (message.type === 'fallback-want') {
+          try {
+            await ensureRelay();
+            broadcaster?.requestKeyframe();
+            socket.send(JSON.stringify({ type: 'fallback-ready', slot, viewer: message.viewer, ...relayMedia }));
+          } catch { socket.send(JSON.stringify({ type: 'fallback-failed', slot, viewer: message.viewer })); }
+          return;
+        }
         if (message.type !== 'rtc-want') return;
         peers.get(message.viewer)?.peer.close();
         const outbound = [];
@@ -109,7 +136,23 @@ function renderCapture() {
         for (const candidate of outbound) socket.send(JSON.stringify({ type: 'rtc', viewer: message.viewer, slot, candidate }));
       });
       activeStop = stopBroadcast;
-      broadcaster = await createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, slot, onStatus: ({ codec, width, height, fps, audioConfig }) => { socket.send(JSON.stringify({ type: 'start', slot, codec, width, height, fps, audioConfig })); document.querySelector('#audio-state').textContent = audioConfig ? `Áudio: Opus ${audioConfig.numberOfChannels === 1 ? 'mono' : 'estéreo'}` : 'Áudio: não capturado'; document.querySelector('#source').textContent = `Fonte: ${width}×${height}`; document.querySelector('#fps').textContent = `Codec: ${codec} / ${fps} FPS`; document.querySelector('#bitrate').textContent = `Bitrate alvo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`; }, onEnd: () => stopBroadcast('Captura encerrada.') });
+      if (runtimeConfig.sfuEnabled) {
+        try {
+          const iceServers = await fetchIceServers('', token).catch(() => [{ urls: 'stun:stun.cloudflare.com:3478' }]);
+          sfuPublisher = await createSfuPublisher({ stream, profile, token, iceServers });
+        } catch { sfuPublisher = null; }
+      }
+      if (!sfuPublisher) await ensureRelay();
+      const videoSettings = stream.getVideoTracks()[0]?.getSettings?.() || {};
+      const audioSettings = stream.getAudioTracks()[0]?.getSettings?.();
+      const audioConfig = audioSettings ? { codec: 'opus', sampleRate: audioSettings.sampleRate || 48_000, numberOfChannels: Math.max(1, Math.min(2, audioSettings.channelCount || 2)) } : null;
+      const sfuSize = fitWithin(videoSettings.width || profile.width, videoSettings.height || profile.height, profile.width, profile.height);
+      const media = sfuPublisher ? { codec: 'webrtc', ...sfuSize, fps: Math.min(videoSettings.frameRate || profile.fps, profile.fps), audioConfig } : relayMedia;
+      socket.send(JSON.stringify({ type: 'start', slot, transport: sfuPublisher ? 'sfu' : 'relay', mediaToken: sfuPublisher?.mediaToken, ...media }));
+      document.querySelector('#audio-state').textContent = media.audioConfig ? `Áudio: Opus ${media.audioConfig.numberOfChannels === 1 ? 'mono' : 'estéreo'}` : 'Áudio: não capturado';
+      document.querySelector('#source').textContent = `Fonte: ${media.width}×${media.height}`;
+      document.querySelector('#fps').textContent = `${sfuPublisher ? 'Cloudflare SFU' : `Codec: ${media.codec}`} / ${Math.round(media.fps)} FPS`;
+      document.querySelector('#bitrate').textContent = `Bitrate máximo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`;
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
@@ -196,7 +239,7 @@ async function renderViewer() {
   document.querySelector('.stage').replaceChildren(canvas);
   const player = createPlayer(canvas);
   const directVideo = document.createElement('video');
-  directVideo.autoplay = true; directVideo.playsInline = true; directVideo.controls = true; directVideo.style.display = 'none'; directVideo.style.width = '100%'; directVideo.style.height = '100%'; directVideo.style.objectFit = 'contain';
+  directVideo.autoplay = true; directVideo.playsInline = true; directVideo.controls = false; directVideo.style.display = 'none'; directVideo.style.width = '100%'; directVideo.style.height = '100%'; directVideo.style.objectFit = 'contain';
   const setPlaybackMuted = (value, locked = playbackLocked) => {
     muted = Boolean(value);
     playbackLocked = locked;
@@ -209,6 +252,8 @@ async function renderViewer() {
   muteButton.onclick = () => { if (!playbackLocked) setPlaybackMuted(!muted, false); };
   document.querySelector('.stage').append(directVideo);
   let directPeer;
+  let sfuViewer;
+  let relayFallbackActive = false;
   let directPending = [];
   let rtcSlot = null;
   let rtcActive = false;
@@ -220,6 +265,11 @@ async function renderViewer() {
       const socket = await connectRelaySocket({ apiBase, token });
       const availableStreams = new Map();
       let selectedSlot = null;
+      const stopSfu = () => {
+        const active = sfuViewer; sfuViewer = null;
+        try { active?.close(); } catch { /* already closed */ }
+        relayFallbackActive = false;
+      };
       const stopRtc = ({ resumeRelay = false } = {}) => {
         clearTimeout(rtcTimer);
         if (rtcSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'rtc-bye', slot: rtcSlot }));
@@ -236,7 +286,7 @@ async function renderViewer() {
       };
       const stopWatching = (statusText = 'Você parou de assistir.') => {
         if (selectedSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
-        stopRtc(); selectedSlot = null; player.close();
+        stopRtc(); stopSfu(); selectedSlot = null; player.close();
         document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
         document.querySelector('#status').textContent = statusText;
         showBrowseView();
@@ -256,27 +306,52 @@ async function renderViewer() {
           const identity = document.createElement('div'); identity.className = 'stream-identity';
           if (message.avatar) { const avatar = document.createElement('img'); avatar.className = 'avatar'; avatar.src = message.avatar; avatar.alt = ''; identity.append(avatar); }
           else { const avatar = document.createElement('span'); avatar.className = 'avatar fallback'; avatar.textContent = (message.name || '?').slice(0, 1).toUpperCase(); identity.append(avatar); }
-          const text = document.createElement('div'); const name = document.createElement('strong'); name.textContent = message.name; const meta = document.createElement('small'); meta.textContent = `${message.width}×${message.height} · ${message.fps} FPS${message.audioConfig ? ' · Com áudio' : ' · Sem áudio'}`; text.append(name, meta); identity.append(text);
+          const text = document.createElement('div'); const name = document.createElement('strong'); name.textContent = message.name; const meta = document.createElement('small'); meta.textContent = `${message.width}×${message.height} · ${Math.round(message.fps)} FPS${message.audioConfig ? ' · Com áudio' : ' · Sem áudio'}${message.transport === 'sfu' ? ' · Edge SFU' : ''}`; text.append(name, meta); identity.append(text);
           const button = document.createElement('span'); button.className = 'stream-action'; button.textContent = selectedSlot === message.slot ? 'Parar de assistir' : 'Assistir';
-          const openStream = () => {
+          const openStream = async () => {
             if (selectedSlot === message.slot) { stopWatching(); return; }
             if (selectedSlot !== null) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
-            stopRtc();
+            stopRtc(); stopSfu();
             selectedSlot = message.slot;
             const stage = document.querySelector('.stage');
             stage.replaceChildren(canvas, directVideo);
+            const viewerIsPublishing = [...availableStreams.values()].some((stream) => stream.userId === viewerUserId);
+            setPlaybackMuted(viewerIsPublishing, viewerIsPublishing);
+            showWatchView(message);
+            renderStreams();
+            if (message.transport === 'sfu' && message.mediaToken) {
+              canvas.style.display = 'none'; directVideo.style.display = 'block';
+              document.querySelector('#status').textContent = `Conectando à transmissão de ${message.name} pela Cloudflare…`;
+              let fallbackRequested = false;
+              const requestFallback = () => {
+                if (fallbackRequested || selectedSlot !== message.slot) return;
+                fallbackRequested = true;
+                stopSfu();
+                directVideo.style.display = 'none'; canvas.style.display = 'block';
+                socket.send(JSON.stringify({ type: 'fallback-want', slot: message.slot }));
+                document.querySelector('#status').textContent = 'Ativando relay de compatibilidade…';
+              };
+              try {
+                const iceServers = await fetchIceServers(apiBase, token).catch(() => [{ urls: 'stun:stun.cloudflare.com:3478' }]);
+                const viewed = await createSfuViewer({ mediaToken: message.mediaToken, video: directVideo, token, apiBase, iceServers, onDisconnect: requestFallback });
+                if (selectedSlot !== message.slot) { viewed.close(); return; }
+                sfuViewer = viewed;
+                document.querySelector('#status').textContent = `Assistindo ${message.name} pela Cloudflare SFU.`;
+                return;
+              } catch {
+                requestFallback();
+                return;
+              }
+            }
             canvas.style.display = 'block'; directVideo.style.display = 'none';
             player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
             player.configureAudio(message.audioConfig);
-            const viewerIsPublishing = [...availableStreams.values()].some((stream) => stream.userId === viewerUserId);
-            setPlaybackMuted(viewerIsPublishing, viewerIsPublishing);
+            relayFallbackActive = true;
             socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
             socket.send(JSON.stringify({ type: 'rtc-want', slot: message.slot }));
             rtcSlot = message.slot;
             rtcTimer = setTimeout(() => { if (!rtcActive) stopRtc(); }, FALLBACK_MS);
-            document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name} ao vivo.`;
-            showWatchView(message);
-            renderStreams();
+            document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name} pelo relay.`;
           };
           item.onclick = openStream;
           item.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openStream(); } };
@@ -291,11 +366,23 @@ async function renderViewer() {
           if (selectedSlot !== null && message.userId === viewerUserId) setPlaybackMuted(true, true);
         }
         if (message.type === 'thumbnail' && availableStreams.has(message.slot)) availableStreams.get(message.slot).thumbnail = message.data;
+        if (message.type === 'fallback-ready' && selectedSlot === message.slot) {
+          stopSfu();
+          const stage = document.querySelector('.stage');
+          stage.replaceChildren(canvas, directVideo);
+          directVideo.style.display = 'none'; canvas.style.display = 'block';
+          player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
+          player.configureAudio(message.audioConfig);
+          relayFallbackActive = true;
+          socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
+          document.querySelector('#status').textContent = 'Assistindo pelo relay de compatibilidade.';
+        }
+        if (message.type === 'fallback-failed' && selectedSlot === message.slot) stopWatching('Não foi possível reproduzir esta transmissão.');
         if (message.type === 'stop') {
           availableStreams.delete(message.slot);
           if (playbackLocked && ![...availableStreams.values()].some((stream) => stream.userId === viewerUserId)) setPlaybackMuted(true, false);
           if (selectedSlot === message.slot) {
-            stopRtc();
+            stopRtc(); stopSfu();
             selectedSlot = null;
             player.close();
             directVideo.removeAttribute('src'); directVideo.load();
@@ -307,7 +394,7 @@ async function renderViewer() {
         if (message.type === 'start' || message.type === 'stop' || message.type === 'thumbnail') renderStreams();
       };
       socket.addEventListener('message', async (event) => {
-        if (typeof event.data !== 'string') { if (!rtcActive) player.push(event.data); return; }
+        if (typeof event.data !== 'string') { if (relayFallbackActive && !rtcActive) player.push(event.data); return; }
         const message = JSON.parse(event.data);
         if (message.type !== 'rtc' || message.slot !== selectedSlot) return;
         try {

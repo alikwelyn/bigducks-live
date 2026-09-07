@@ -8,6 +8,9 @@ await server.listen(0);
 try {
   const base = `http://127.0.0.1:${server.port}`;
   assert.equal((await fetch(`${base}/healthz`)).status, 200);
+  const config = await (await fetch(`${base}/api/config`)).json();
+  assert.equal(config.sfuEnabled, false);
+  assert.equal((await fetch(`${base}/api/sfu/session`, { method: 'POST' })).status, 401);
   const response = await fetch(`${base}/api/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: 'smoke', user: 'publisher', role: 'publisher' }) });
   assert.equal(response.status, 200);
   const { token } = await response.json();

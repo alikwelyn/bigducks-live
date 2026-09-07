@@ -6,15 +6,17 @@ import { WebSocketServer } from 'ws';
 import { decodePacket, parseControl, stringifyControl } from '../shared/protocol.js';
 import { RoomRegistry } from './rooms.js';
 import { issueToken, verifyToken } from './tokens.js';
+import { createSfuGateway } from './sfu.js';
 
 function json(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
 }
 
-export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [] } = {}) {
+export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [], sfuAppId = '', sfuAppSecret = '', sfuFetch = globalThis.fetch } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers, maxPublishers });
+  const sfu = createSfuGateway({ appId: sfuAppId, appSecret: sfuAppSecret, secret, fetchImpl: sfuFetch });
   let turnCache = null;
   const resolveIceServers = async () => {
     if (!turnKeyId || !turnKeySecret) return iceServers;
@@ -47,7 +49,35 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         return fs.createReadStream(file).pipe(response);
       }
     }
-    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId, publicOrigin: origin });
+    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId, publicOrigin: origin, sfuEnabled: sfu.enabled });
+    if (request.method === 'POST' && url.pathname.startsWith('/api/sfu/')) {
+      const bearer = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
+      if (!bearer) return json(response, 401, { error: 'SFU session authentication required' });
+      let claims;
+      try { claims = verifyToken(bearer, secret); } catch { return json(response, 401, { error: 'invalid SFU session' }); }
+      let body = {};
+      try {
+        let raw = '';
+        for await (const chunk of request) {
+          raw += chunk;
+          if (raw.length > 1_200_000) throw new Error('SFU request too large');
+        }
+        if (raw) body = JSON.parse(raw);
+        const operation = url.pathname.slice('/api/sfu/'.length);
+        const result = operation === 'session' ? await sfu.createSession(claims)
+          : operation === 'publish' ? await sfu.publish(claims, body)
+            : operation === 'subscribe' ? await sfu.subscribe(claims, body)
+              : operation === 'renegotiate' ? await sfu.renegotiate(claims, body)
+                : operation === 'close' ? await sfu.closeTracks(claims, body)
+                  : null;
+        if (!result) return json(response, 404, { error: 'unknown SFU operation' });
+        return json(response, 200, result);
+      } catch (error) {
+        const message = String(error?.message || 'SFU operation failed');
+        const status = message.includes('not configured') ? 503 : message.includes('rate limit') ? 429 : /role|required|owner|room/.test(message) ? 403 : message.startsWith('Cloudflare Realtime') || message.includes('publication failed') ? 502 : 400;
+        return json(response, status, { error: message });
+      }
+    }
     if (request.method === 'GET' && url.pathname === '/api/discord/authorize') {
       if (!clientId || !clientSecret) return json(response, 503, { error: 'Discord OAuth is not configured' });
       const redirect = url.searchParams.get('redirect') || '/share';
@@ -109,7 +139,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           if (discordUser.avatar) avatar = `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`;
         }
         if (typeof user !== 'string' || !user) throw new Error('invalid user');
-        const token = issueToken({ room: input.room, role: input.role, user, name: String(name || user).slice(0, 80), avatar }, secret);
+        const token = issueToken({ room: input.room, role: input.role, user, name: String(name || user).slice(0, 80), avatar }, secret, 6 * 60 * 60);
         return json(response, 200, { token, room: input.room, role: input.role });
       } catch (error) { return json(response, 400, { error: error.message }); }
     }
@@ -174,6 +204,16 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           return;
         }
         if (claims.role === 'viewer' && message.type === 'unwatch') return rooms.unwatch(claims.room, claims.user, message.slot);
+        if (claims.role === 'viewer' && message.type === 'fallback-want') {
+          rooms.watch(claims.room, claims.user, message.slot);
+          rooms.publisherForSlot(claims.room, message.slot)?.socket?.send(stringifyControl({ type: 'fallback-want', slot: message.slot, viewer: claims.user }));
+          return;
+        }
+        if (claims.role === 'publisher' && ['fallback-ready', 'fallback-failed'].includes(message.type)) {
+          const target = rooms.get(claims.room)?.viewers.get(message.viewer)?.socket;
+          if (target?.readyState === 1) target.send(stringifyControl({ ...message, slot: member.slot, viewer: message.viewer }));
+          return;
+        }
         if (claims.role === 'viewer' && message.type === 'rtc-active') rooms.unwatch(claims.room, claims.user, message.slot);
         if (['rtc-want', 'rtc', 'rtc-active', 'rtc-bye'].includes(message.type)) {
           const watchedSlot = rooms.viewersFor(claims.room).find((viewer) => viewer.id === claims.user)?.slot;

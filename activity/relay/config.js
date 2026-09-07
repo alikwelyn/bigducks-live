@@ -4,6 +4,7 @@ export function loadConfig(env = process.env) {
   const secret = env.SESSION_SECRET;
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   if (env.NODE_ENV === 'production' && env.ALLOW_DEV_SESSIONS === 'true') throw new Error('ALLOW_DEV_SESSIONS cannot be enabled in production');
+  if (Boolean(env.CLOUDFLARE_SFU_APP_ID) !== Boolean(env.CLOUDFLARE_SFU_APP_SECRET)) throw new Error('CLOUDFLARE_SFU_APP_ID and CLOUDFLARE_SFU_APP_SECRET must be configured together');
   return {
     secret,
     port: Number(env.PORT || 3001),
@@ -14,6 +15,8 @@ export function loadConfig(env = process.env) {
     maxViewers: Number(env.MAX_VIEWERS || 25),
     turnKeyId: env.CLOUDFLARE_TURN_KEY_ID || '',
     turnKeySecret: env.CLOUDFLARE_TURN_KEY_SECRET || '',
+    sfuAppId: env.CLOUDFLARE_SFU_APP_ID || '',
+    sfuAppSecret: env.CLOUDFLARE_SFU_APP_SECRET || '',
     iceServers: env.TURN_URL ? [{ urls: env.TURN_URL, username: env.TURN_USER, credential: env.TURN_PASS }] : [],
   };
 }

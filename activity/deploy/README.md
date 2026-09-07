@@ -1,10 +1,48 @@
-# Deploy VPS
+# Deploy da Discord Activity
 
-1. Instale Docker e Caddy.
-2. Copie `.env.example` para `.env` e gere `SESSION_SECRET` com `openssl rand -hex 32`.
-3. Defina `PUBLIC_ORIGIN` com o domínio HTTPS da Activity.
-4. Crie o app no Discord Developer Portal e configure o URL Mapping para `/`.
-5. Suba: `docker build -t bigducks-activity ./activity && docker run --env-file activity/.env --restart unless-stopped -p 127.0.0.1:3001:3001 bigducks-activity`.
-6. Rode Caddy com `PUBLIC_ORIGIN=activity.seudominio.com caddy run --config activity/infra/Caddyfile`.
+A produção atual usa Dokploy/Traefik para site, OAuth e proxy autenticado do Cloudflare Realtime; o Worker/Durable Object fornece presença e controle na borda.
 
-O modo de sessão de desenvolvimento deve permanecer desligado em produção. Antes de uso público, configure a verificação de contexto do Embedded App SDK no endpoint `/api/session`.
+## Variáveis do serviço Dokploy
+
+```env
+NODE_ENV=production
+PORT=3001
+PUBLIC_ORIGIN=https://stream.skillup.com.br
+DISCORD_CLIENT_ID=<client-id público>
+DISCORD_CLIENT_SECRET=<segredo>
+SESSION_SECRET=<mínimo 32 bytes aleatórios>
+CLOUDFLARE_SFU_APP_ID=<Realtime SFU App ID>
+CLOUDFLARE_SFU_APP_SECRET=<Realtime SFU App Secret>
+CLOUDFLARE_TURN_KEY_ID=<TURN key id opcional>
+CLOUDFLARE_TURN_KEY_SECRET=<TURN key secret opcional>
+MAX_VIEWERS=25
+```
+
+Segredos devem existir somente no ambiente do serviço. Não grave valores no Dockerfile, frontend, GitHub ou configuração pública do Worker.
+
+## Publicação
+
+1. Crie um Realtime SFU App no painel Cloudflare e copie App ID/Secret para o ambiente Dokploy.
+2. Faça build/deploy do serviço usando `activity/Dockerfile`.
+3. Publique o relay de controle:
+
+```sh
+cd activity
+npm ci
+npm run edge:deploy
+```
+
+4. Confirme:
+
+```sh
+curl https://stream.skillup.com.br/healthz
+curl https://stream.skillup.com.br/edge/healthz
+curl https://relay.skillup.com.br/healthz
+```
+
+## Comportamento de segurança
+
+- `/api/sfu/*` exige o token temporário de sala.
+- O backend assina os identificadores publicados em uma capacidade de mídia vinculada à sala.
+- Um viewer não consegue puxar tracks de outra sala.
+- Sem credenciais SFU, o sistema seleciona explicitamente o relay WebCodecs existente.
