@@ -1,5 +1,6 @@
 import { allocatePublisherSlot, MAX_BUFFERED_BYTES, MAX_VIEWERS, selectWatchedSlot } from './room-state.js';
 import { verifyEdgeToken } from './token.js';
+import { updateAudience, audienceFor, clearAudience } from '../shared/sfu-audience.js';
 
 const INTERNAL_CLAIMS = 'x-bigducks-edge-claims';
 
@@ -22,6 +23,25 @@ export class EdgeRoom {
 
   publisher(slot) {
     return this.sockets('publisher').find((socket) => attachment(socket)?.slot === slot);
+  }
+
+  notifyAudience(exclude = null) {
+    const viewers = this.sockets('viewer').filter((socket) => socket !== exclude).map(attachment);
+    for (const publisher of this.sockets('publisher')) {
+      const member = attachment(publisher);
+      send(publisher, { type: 'sfu-audience', slot: member.slot, count: viewers.filter((viewer) => viewer.sfuSlot === member.slot).length });
+      const message = { type: 'audience', slot: member.slot, viewers: audienceFor(viewers, member.slot) };
+      send(publisher, message);
+      for (const viewer of this.sockets('viewer')) if (viewer !== exclude) send(viewer, message);
+    }
+  }
+
+  clearAudience(slot) {
+    for (const viewer of this.sockets('viewer')) {
+      const member = attachment(viewer);
+      clearAudience(member, slot);
+      viewer.serializeAttachment(member);
+    }
   }
 
   async fetch(request) {
@@ -64,6 +84,10 @@ export class EdgeRoom {
     let control;
     try { control = JSON.parse(message); } catch { return socket.close(1003, 'invalid control'); }
     if (!control || typeof control.type !== 'string') return socket.close(1003, 'invalid control');
+    if (updateAudience(member, control)) {
+      socket.serializeAttachment(member);
+      this.notifyAudience();
+    }
 
     if (control.type === 'hello') {
       if (member.role === 'publisher') send(socket, { type: 'joined', slot: member.slot, name: member.name, edge: true });
@@ -72,6 +96,7 @@ export class EdgeRoom {
           const publisherState = attachment(publisher);
           if (publisherState?.stream) send(socket, publisherState.stream);
         }
+        this.notifyAudience();
       }
       return;
     }
@@ -79,8 +104,10 @@ export class EdgeRoom {
     if (member.role === 'publisher' && ['start', 'stop'].includes(control.type)) {
       const outgoing = { ...control, slot: member.slot, name: member.name, avatar: member.avatar, userId: member.user };
       member.stream = control.type === 'start' ? outgoing : null;
+      if (control.type === 'stop') this.clearAudience(member.slot);
       socket.serializeAttachment(member);
       for (const viewer of this.sockets('viewer')) send(viewer, outgoing);
+      this.notifyAudience();
       return;
     }
 
@@ -134,12 +161,15 @@ export class EdgeRoom {
 
   async webSocketClose(socket) {
     const member = attachment(socket);
+    if (member?.role === 'viewer') this.notifyAudience(socket);
     if (member?.role === 'publisher') {
+      this.clearAudience(member.slot);
       for (const viewer of this.sockets('viewer')) send(viewer, { type: 'stop', slot: member.slot, name: member.name });
     }
   }
 
   async webSocketError(socket) {
+    await this.webSocketClose(socket);
     try { socket.close(1011, 'edge relay error'); } catch { /* already closed */ }
   }
 }

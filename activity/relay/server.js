@@ -8,6 +8,7 @@ import { decodePacket, parseControl, stringifyControl } from '../shared/protocol
 import { RoomRegistry } from './rooms.js';
 import { issueToken, verifyToken } from './tokens.js';
 import { createSfuGateway } from './sfu.js';
+import { updateAudience, audienceFor, clearAudience } from '../shared/sfu-audience.js';
 import { allowedOrigin, createLimiter, readJsonBody, safeRedirect, validRoomClaims } from './security.js';
 
 function json(response, status, body) {
@@ -202,6 +203,16 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
     }
   });
   websocket.on('connection', (client, _request, claims) => {
+    const notifyAudience = () => {
+      const room = rooms.get(claims.room);
+      for (const publisher of room?.publishers.values() ?? []) {
+        if (publisher.socket?.readyState === 1) publisher.socket.send(stringifyControl({ type: 'sfu-audience', slot: publisher.slot,
+          count: [...room.viewers.values()].filter((viewer) => viewer.sfuSlot === publisher.slot && viewer.socket?.readyState === 1).length }));
+        const outgoing = stringifyControl({ type: 'audience', slot: publisher.slot, viewers: audienceFor([...room.viewers.values()].filter((viewer) => viewer.socket?.readyState === 1), publisher.slot) });
+        if (publisher.socket?.readyState === 1) publisher.socket.send(outgoing);
+        for (const viewer of room.viewers.values()) if (viewer.socket?.readyState === 1) viewer.socket.send(outgoing);
+      }
+    };
     let member;
     try { member = rooms.join(claims.room, claims.role, claims.user, client, claims.name); member.avatar = claims.avatar || ''; } catch { client.close(1008, 'room unavailable'); return; }
     if (claims.role === 'publisher') client.send(stringifyControl({ type: 'joined', slot: member.slot, name: member.name }));
@@ -222,16 +233,20 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           return;
         }
         const message = parseControl(data);
+        if (updateAudience(member, message)) notifyAudience();
         if (message.type === 'hello') {
           if (claims.role === 'publisher') client.send(stringifyControl({ type: 'joined', slot: member.slot, name: member.name }));
           else {
             for (const publisher of rooms.get(claims.room)?.publishers.values() ?? []) if (publisher.stream) client.send(stringifyControl({ ...publisher.stream, slot: publisher.slot, name: publisher.name }));
+            notifyAudience();
           }
           return;
         }
         if (claims.role === 'publisher' && ['start', 'stop'].includes(message.type)) {
           const outgoing = { ...message, slot: member.slot, name: member.name, avatar: member.avatar, userId: claims.user };
           member.stream = message.type === 'start' ? outgoing : null;
+          if (message.type === 'stop') for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) clearAudience(viewer, member.slot);
+          notifyAudience();
           for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stringifyControl(outgoing));
           return;
         }
@@ -270,10 +285,12 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
     });
     client.on('close', () => {
       if (member.role === 'publisher') {
+        for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) clearAudience(viewer, member.slot);
         const stopped = stringifyControl({ type: 'stop', slot: member.slot, name: member.name });
         for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stopped);
       }
       rooms.leave(member);
+      notifyAudience();
     });
   });
   return {

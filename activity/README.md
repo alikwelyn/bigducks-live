@@ -24,6 +24,14 @@ CLOUDFLARE_TURN_KEY_SECRET=
 
 TURN e SFU compartilham a franquia Realtime da conta. O padrão `720p/30 FPS` limita a utilização; `1080p/60 FPS` utiliza significativamente mais tráfego.
 
+Sem espectadores SFU, o publicador reduz o vídeo para até 320×180, 1 FPS e 40 kbps, e o áudio para 6 kbps. Ao abrir a live, a qualidade escolhida volta automaticamente. São limites de mídia, não uma garantia de tráfego total: protocolos, miniaturas e relay de compatibilidade consomem banda adicional. As trilhas permanecem ativas porque o SFU expira mídia inativa após 30 segundos. O modo automático não aumenta a qualidade durante a economia. A prévia local mantém a captura original.
+
+O áudio da fonte vem marcado por padrão; a autorização no seletor do navegador continua necessária. A prévia local permanece silenciada para evitar eco. Publique frontend, origin e Worker juntos e recarregue as Activities e páginas de captura para atualizar o protocolo de presença SFU. Valide em duas sessões reais: sem espectador, assistindo, voltando à lista e fechando a Activity. O fallback WebCodecs mantém seu comportamento anterior e não recebe esses limites SFU.
+
+O player ocupa a área disponível da Activity em desktop, retrato e paisagem, preservando a proporção original. “Ampliar legendas” alterna 100%, 125% e 150%, mantendo a parte inferior da imagem como referência; a ampliação pode cortar as laterais. Legendas embutidas continuam sendo pixels do vídeo. “Tela cheia” usa o suporte do navegador; se o Discord bloquear a API no iframe, o player orienta usar o controle de tela cheia do próprio Discord. Os controles ficam no topo para não cobrir as legendas.
+
+A captura e o player mostram a lista de pessoas que abriram a live, com nome e avatar autenticados; os cards mostram a quantidade. A lista acompanha SFU, relay e P2P, mudanças de live, saída e desconexão, e não inclui pessoas que apenas estão na sala. Indica intenção de assistir, não confirmação de reprodução de cada frame. A mesma identidade é exibida uma vez, mesmo com mais de uma conexão.
+
 ## Acesso e proteção dos endpoints
 
 - `/` fora do iframe mostra somente instruções para abrir a Activity; `frame_id` é um indicador de UI, **não autenticação**.

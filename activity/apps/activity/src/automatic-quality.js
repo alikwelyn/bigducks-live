@@ -1,3 +1,5 @@
+import { updateSender } from './sender-parameters.js';
+
 export function nextQuality(state, congested) {
   if (congested) return { level: Math.max(0, state.level - 1), healthy: 0 };
   const healthy = state.healthy + 1;
@@ -18,15 +20,15 @@ export function monitorQuality(peer, profile) {
         if (next.level !== state.level) {
           for (const sender of peer.getSenders()) {
             if (sender.track?.kind !== 'video' || stopped) continue;
-            const p = sender.getParameters();
-            if (!p.encodings?.length) continue;
-            const settings = sender.track.getSettings();
-            const base = Math.max(1, (settings.width || profile.width) / profile.width, (settings.height || profile.height) / profile.height);
-            const factor = [2, 1.5, 1][next.level];
-            p.encodings[0].scaleResolutionDownBy = base * factor;
-            p.encodings[0].maxBitrate = Math.round(profile.bitrate * [0.3, 0.6, 1][next.level]);
-            p.encodings[0].maxFramerate = Math.min(profile.fps, [20, 25, 30][next.level]);
-            await sender.setParameters(p);
+            await updateSender(sender, (p) => {
+              if (stopped || !p.encodings?.length) return false;
+              const settings = sender.track.getSettings();
+              const base = Math.max(1, (settings.width || profile.width) / profile.width, (settings.height || profile.height) / profile.height);
+              const factor = [2, 1.5, 1][next.level];
+              p.encodings[0].scaleResolutionDownBy = base * factor;
+              p.encodings[0].maxBitrate = Math.round(profile.bitrate * [0.3, 0.6, 1][next.level]);
+              p.encodings[0].maxFramerate = Math.min(profile.fps, [20, 25, 30][next.level]);
+            });
           }
         }
         state = next;

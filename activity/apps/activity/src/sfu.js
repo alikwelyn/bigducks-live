@@ -1,4 +1,5 @@
 import { monitorQuality } from './automatic-quality.js';
+import { updateSender } from './sender-parameters.js';
 const CONNECTION_TIMEOUT_MS = 10_000;
 
 export async function sfuRequest({ apiBase = '', token, operation, body, fetchImpl = globalThis.fetch }) {
@@ -81,13 +82,32 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
     await peer.setRemoteDescription(published.sessionDescription);
     await waitForConnection(peer, timeoutMs);
     const stopMonitoring = monitorConnection(peer, onDisconnect);
-    const stopQuality = profile.automatic ? monitorQuality(peer, profile) : () => {};
+    let stopQuality = profile.automatic ? monitorQuality(peer, profile) : () => {};
+    let closed = false;
+    let audienceRevision = 0;
     return {
       peer,
       sessionId,
       mediaToken: published.mediaToken,
       tracks: published.tracks,
+      async setAudience(count) {
+        const revision = ++audienceRevision;
+        stopQuality();
+        await Promise.all(transceivers.map(({ sender }) => updateSender(sender, (parameters) => {
+          if (closed || revision !== audienceRevision) return false;
+          if (!parameters.encodings?.length) throw new Error('Sender encodings unavailable');
+          const idle = count === 0;
+          for (const encoding of parameters.encodings) {
+            if (sender.track.kind === 'video') {
+              Object.assign(encoding, videoEncoding(sender.track, idle
+                ? { width: 320, height: 180, bitrate: 40_000, fps: 1 } : profile));
+            } else encoding.maxBitrate = idle ? 6_000 : 96_000;
+          }
+        })));
+        if (!closed && revision === audienceRevision && count > 0 && profile.automatic) stopQuality = monitorQuality(peer, profile);
+      },
       close() {
+        closed = true;
         const mids = transceivers.map(({ mid }) => mid).filter(Boolean);
         void sfuRequest({ apiBase, token, operation: 'close', fetchImpl, body: { sessionId, mids } }).catch(() => {});
         stopMonitoring();

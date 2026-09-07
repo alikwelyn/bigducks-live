@@ -25,7 +25,7 @@ export class RoomRegistry {
       return publisher;
     }
     if (room.viewers.size >= this.maxViewers && !room.viewers.has(id)) throw new Error('viewer limit reached');
-    const viewer = room.viewers.get(id) ?? { id, role, socket, watched: new Set() };
+    const viewer = room.viewers.get(id) ?? { id, role, name: name || id, socket, watched: new Set() };
     viewer.socket = socket;
     room.viewers.set(id, viewer);
     return viewer;

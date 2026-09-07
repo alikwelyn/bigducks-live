@@ -16,6 +16,32 @@ async function start(options = {}) {
 }
 
 describe('relay server', () => {
+  it('reports named viewers and returns SFU demand to zero on departure', async () => {
+    const server = await start();
+    const connect = (role, user, name) => {
+      const token = issueToken({ room: 'audience-room', role, user, name }, secret);
+      return new WebSocket(`ws://127.0.0.1:${server.port}/ws?token=${token}`);
+    };
+    const publisher = connect('publisher', 'pub', 'Publisher');
+    const viewer = connect('viewer', 'view', 'Amigo');
+    const messages = [];
+    publisher.on('message', (data) => messages.push(JSON.parse(data.toString())));
+    await Promise.all([publisher, viewer].map((socket) => new Promise((resolve) => socket.once('open', resolve))));
+    viewer.send(JSON.stringify({ type: 'sfu-watch', slot: 0 }));
+    await vi.waitFor(() => expect(messages.findLast((m) => m.type === 'sfu-audience')?.count).toBe(1));
+    expect(messages.findLast((m) => m.type === 'audience').viewers).toEqual([{ id: 'view', name: 'Amigo', avatar: '' }]);
+    expect(server.rooms.viewersFor('audience-room', 0)).toEqual([]);
+    viewer.send(JSON.stringify({ type: 'unwatch', slot: 0 }));
+    await vi.waitFor(() => expect(messages.findLast((m) => m.type === 'audience').viewers).toEqual([]));
+    viewer.send(JSON.stringify({ type: 'watch', slot: 0 }));
+    await vi.waitFor(() => expect(messages.findLast((m) => m.type === 'audience').viewers).toHaveLength(1));
+    expect(messages.findLast((m) => m.type === 'sfu-audience').count).toBe(0);
+    viewer.send(JSON.stringify({ type: 'sfu-watch', slot: 0 }));
+    await vi.waitFor(() => expect(messages.findLast((m) => m.type === 'sfu-audience').count).toBe(1));
+    viewer.close();
+    await vi.waitFor(() => expect(messages.findLast((m) => m.type === 'sfu-audience').count).toBe(0));
+    expect(messages.findLast((m) => m.type === 'audience').viewers).toEqual([]);
+  });
   it('validates capture access and redeems short-lived invitations only once', async () => {
     const server = await start();
     const base = `http://127.0.0.1:${server.port}`;
@@ -156,9 +182,22 @@ describe('relay server', () => {
     const publisher = new WebSocket(`ws://127.0.0.1:${server.port}/ws?token=${publisherToken}`);
     const viewer = new WebSocket(`ws://127.0.0.1:${server.port}/ws?token=${viewerToken}`);
     await Promise.all([new Promise((resolve) => publisher.once('open', resolve)), new Promise((resolve) => viewer.once('open', resolve))]);
+    const subscribed = new Promise((resolve) => {
+      const onMessage = (data) => {
+        if (JSON.parse(data.toString()).type !== 'need-keyframe') return;
+        publisher.off('message', onMessage); resolve();
+      };
+      publisher.on('message', onMessage);
+    });
+    const received = new Promise((resolve) => {
+      const onMessage = (data, binary) => {
+        if (!binary) return;
+        viewer.off('message', onMessage); resolve({ data, binary });
+      };
+      viewer.on('message', onMessage);
+    });
     viewer.send(JSON.stringify({ type: 'watch', slot: 0 }));
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    const received = new Promise((resolve) => viewer.once('message', (data, binary) => resolve({ data, binary })));
+    await subscribed;
     publisher.send(Buffer.from([0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 9, 8]));
     const result = await received;
     expect(result.binary).toBe(true);

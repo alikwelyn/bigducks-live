@@ -6,6 +6,8 @@ import { createPlayer } from './player.js';
 import { connectRelaySocket } from './relay-socket.js';
 import { createSfuPublisher, createSfuViewer } from './sfu.js';
 import { createPlaybackFeedback } from './playback-feedback.js';
+import { createAudience } from './audience.js';
+import { createViewControls } from './view-controls.js';
 import { pageMode, captureSession, createShareLink } from './access.js';
 import './styles.css';
 
@@ -41,11 +43,12 @@ function renderCapture(token) {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Escolha a fonte. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Escolher o que transmitir</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar janela ou tela</button></div><details class="capture-settings"><summary>Qualidade e áudio</summary><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label title="Compartilha somente o áudio da fonte escolhida para evitar eco."><input id="audio" type="checkbox"> áudio da guia ou janela</label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Escolha a fonte. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Escolher o que transmitir</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar janela ou tela</button></div><details class="capture-settings"><summary>Qualidade e áudio</summary><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label title="Compartilha somente o áudio da fonte escolhida para evitar eco."><input id="audio" type="checkbox" checked> áudio da guia ou janela</label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   const startButton = document.querySelector('#start');
   const stopButton = document.querySelector('#stop');
   const switchButton = document.querySelector('#switch-source');
   const status = document.querySelector('#status');
+  const captureAudience = createAudience(document.querySelector('.capture-card'));
   let starting = false;
   const startCapture = async () => {
     if (starting) return;
@@ -74,16 +77,31 @@ function renderCapture(token) {
       let relayStarting;
       let relayMedia;
       let sfuPublisher;
+      let sfuAudience = null;
+      const updateAudience = async () => {
+        if (!sfuPublisher || sfuAudience === null || stopped) return;
+        const count = sfuAudience;
+        try {
+          await sfuPublisher.setAudience(count);
+          if (stopped || count !== sfuAudience) return;
+          status.textContent = count === 0 ? 'Economia de banda ativa. Mantenha esta página aberta.' : 'Transmitindo. Mantenha esta página aberta.';
+          document.querySelector('#bitrate').textContent = count === 0 ? 'Economia: vídeo até 40 kbps / 1 FPS' : `Bitrate máximo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`;
+        } catch {
+          if (!stopped) status.textContent = 'Transmitindo; não foi possível ajustar a economia de banda neste navegador.';
+        }
+      };
       let thumbnailTimer;
       let stopped = false;
       const stopBroadcast = (message = 'Transmissão encerrada.') => {
         if (stopped) return;
         stopped = true;
+        starting = false;
         stopButton.disabled = true; stopButton.hidden = true;
         switchButton.disabled = true; switchButton.hidden = true;
         startButton.disabled = false; startButton.hidden = false;
         const preview = document.querySelector('#preview'); preview.srcObject = null; preview.hidden = true;
         status.textContent = message;
+        captureAudience.update([]);
         activeStop = null;
         clearInterval(thumbnailTimer);
         try { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop', slot })); } catch { /* socket already unavailable */ }
@@ -94,6 +112,7 @@ function renderCapture(token) {
         try { socket.close(); } catch { /* socket already closed */ }
       };
       stream.getVideoTracks()[0]?.addEventListener('ended', () => stopBroadcast('Captura encerrada pelo navegador.'), { once: true });
+      socket.addEventListener('close', () => stopBroadcast('Conexão com a sala encerrada. Inicie a transmissão novamente.'));
       const ensureRelay = () => {
         if (broadcaster) return Promise.resolve(relayMedia);
         if (relayStarting) return relayStarting;
@@ -107,6 +126,12 @@ function renderCapture(token) {
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
+        if (message.type === 'audience' && message.slot === slot) { captureAudience.update(message.viewers); return; }
+        if (message.type === 'sfu-audience' && message.slot === slot && Number.isInteger(message.count) && message.count >= 0) {
+          sfuAudience = message.count;
+          await updateAudience();
+          return;
+        }
         if (message.type === 'need-keyframe') { broadcaster?.requestKeyframe(); return; }
         if (message.type === 'fallback-want') {
           try {
@@ -135,6 +160,7 @@ function renderCapture(token) {
         try {
           const iceServers = await fetchIceServers('', token).catch(() => [{ urls: 'stun:stun.cloudflare.com:3478' }]);
           sfuPublisher = await createSfuPublisher({ stream, profile, token, iceServers });
+          if (stopped) { sfuPublisher.close(); return; }
         } catch { sfuPublisher = null; }
       }
       if (!sfuPublisher) await ensureRelay();
@@ -178,6 +204,7 @@ function renderCapture(token) {
       switchButton.hidden = false; switchButton.disabled = false;
       starting = false;
       status.textContent = 'Transmitindo. Mantenha esta página aberta.';
+      void updateAudience();
       window.addEventListener('beforeunload', () => stopBroadcast(), { once: true });
     } catch (error) {
       starting = false;
@@ -218,6 +245,7 @@ async function renderViewer() {
   const watchView = document.querySelector('#watch-view');
   const watchName = document.querySelector('#watch-name');
   const watchAvatar = document.querySelector('#watch-avatar');
+  const watchAudience = createAudience(document.querySelector('.watch-header'));
   const muteButton = document.querySelector('#mute-live');
   let retryWatch = () => {};
   let muted = false;
@@ -229,8 +257,9 @@ async function renderViewer() {
     browseView.hidden = true;
     watchView.hidden = false;
     viewerShell.classList.add('watching');
+    viewControls.reset();
   };
-  const showBrowseView = () => { watchView.hidden = true; browseView.hidden = false; viewerShell.classList.remove('watching'); };
+  const showBrowseView = () => { watchView.hidden = true; browseView.hidden = false; viewerShell.classList.remove('watching'); watchAudience.close(); };
   const canvas = document.createElement('canvas');
   document.querySelector('.stage').replaceChildren(canvas);
   const player = createPlayer(canvas);
@@ -247,6 +276,7 @@ async function renderViewer() {
   };
   muteButton.onclick = () => { if (!playbackLocked) setPlaybackMuted(!muted, false); };
   document.querySelector('.stage').append(directVideo);
+  const viewControls = createViewControls(watchView, directVideo);
   const feedback = createPlaybackFeedback(watchView, directVideo, canvas, () => retryWatch());
   document.querySelector('#live-volume').oninput = (event) => {
     const volume = Number(event.target.value) / 100;
@@ -267,6 +297,7 @@ async function renderViewer() {
   }).then(async ({ token }) => {
       const socket = await connectRelaySocket({ apiBase, token });
       const availableStreams = new Map();
+      const audiences = new Map();
       let selectedSlot = null;
       const stopSfu = () => {
         const active = sfuViewer; sfuViewer = null;
@@ -297,6 +328,8 @@ async function renderViewer() {
         renderStreams();
       };
       document.querySelector('#back-to-streams').onclick = () => stopWatching();
+      socket.addEventListener('close', () => stopWatching('Conexão com a sala encerrada. Reabra a Activity para continuar.'));
+      window.addEventListener('beforeunload', () => { stopWatching(); socket.close(); }, { once: true });
       const renderStreams = () => {
         const container = document.querySelector('#streams');
         if (!availableStreams.size) { container.innerHTML = '<div class="stream"><span>Nenhuma transmissão ativa</span></div>'; return; }
@@ -312,11 +345,13 @@ async function renderViewer() {
           else { const avatar = document.createElement('span'); avatar.className = 'avatar fallback'; avatar.textContent = (message.name || '?').slice(0, 1).toUpperCase(); identity.append(avatar); }
           const text = document.createElement('div'); const name = document.createElement('strong'); name.textContent = message.name; const meta = document.createElement('small'); meta.textContent = `${message.width}×${message.height} · ${Math.round(message.fps)} FPS${message.audioConfig ? ' · Com áudio' : ' · Sem áudio'}${message.transport === 'sfu' ? ' · Edge SFU' : ''}`; text.append(name, meta); identity.append(text);
           if (message.userId === viewerUserId) name.textContent = `${message.name} · Sua live`;
+          const count = document.createElement('small'); count.textContent = `${(audiences.get(message.slot) || []).length} assistindo`; text.append(count);
           const openStream = async () => {
             if (selectedSlot === message.slot) { stopWatching(); return; }
             if (selectedSlot !== null) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
             stopRtc(); stopSfu(); player.close();
             selectedSlot = message.slot;
+            watchAudience.update(audiences.get(message.slot));
             retryWatch = () => { stopWatching(); void openStream(); };
             feedback.show(`Conectando à live de ${message.name}…`, message.thumbnail);
             const stage = document.querySelector('.stage');
@@ -326,6 +361,7 @@ async function renderViewer() {
             showWatchView(message);
             renderStreams();
             if (message.transport === 'sfu' && message.mediaToken) {
+              socket.send(JSON.stringify({ type: 'sfu-watch', slot: message.slot }));
               canvas.style.display = 'none'; directVideo.style.display = 'block';
               document.querySelector('#status').textContent = `Conectando à transmissão de ${message.name} pela Cloudflare…`;
               let fallbackRequested = false;
@@ -372,6 +408,11 @@ async function renderViewer() {
           if (selectedSlot !== null && message.userId === viewerUserId) setPlaybackMuted(true, true);
         }
         if (message.type === 'thumbnail' && availableStreams.has(message.slot)) availableStreams.get(message.slot).thumbnail = message.data;
+        if (message.type === 'audience') {
+          audiences.set(message.slot, message.viewers || []);
+          if (selectedSlot === message.slot) watchAudience.update(message.viewers);
+          renderStreams();
+        }
         if (message.type === 'fallback-ready' && selectedSlot === message.slot) {
           stopSfu();
           const stage = document.querySelector('.stage');
@@ -386,6 +427,7 @@ async function renderViewer() {
         if (message.type === 'fallback-failed' && selectedSlot === message.slot) stopWatching('Não foi possível reproduzir esta transmissão.');
         if (message.type === 'stop') {
           availableStreams.delete(message.slot);
+          audiences.delete(message.slot);
           if (playbackLocked && ![...availableStreams.values()].some((stream) => stream.userId === viewerUserId)) setPlaybackMuted(true, false);
           if (selectedSlot === message.slot) {
             feedback.hide();
