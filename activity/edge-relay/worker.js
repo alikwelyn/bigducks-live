@@ -1,5 +1,6 @@
 import { allocatePublisherSlot, MAX_BUFFERED_BYTES, MAX_VIEWERS, selectWatchedSlot } from './room-state.js';
 import { verifyEdgeToken } from './token.js';
+import { updateStreamSource } from '../shared/source-update.js';
 import { updateAudience, audienceFor, clearAudience } from '../shared/sfu-audience.js';
 
 const INTERNAL_CLAIMS = 'x-bigducks-edge-claims';
@@ -109,6 +110,15 @@ export class EdgeRoom {
       socket.serializeAttachment(member);
       for (const viewer of this.sockets('viewer')) send(viewer, outgoing);
       this.notifyAudience();
+      return;
+    }
+
+    if (control.type === 'source-update') {
+      const outgoing = updateStreamSource(member, control);
+      if (outgoing) {
+        socket.serializeAttachment(member);
+        for (const viewer of this.sockets('viewer')) send(viewer, outgoing);
+      }
       return;
     }
 

@@ -92,6 +92,18 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
       sessionId,
       mediaToken: published.mediaToken,
       tracks: published.tracks,
+      async replaceVideoTrack(track) {
+        if (closed) throw new Error('Publisher closed');
+        const sender = transceivers.find(({ sender }) => sender.track?.kind === 'video')?.sender;
+        if (!sender) throw new Error('Video sender unavailable');
+        stopQuality();
+        await sender.replaceTrack(track);
+        const active = audienceMode;
+        audienceMode = undefined;
+        // The source is already replaced: a rejected browser bitrate hint must
+        // not make the caller stop the track that is now being transmitted.
+        await this.setAudience(active === false ? 0 : 1).catch(() => {});
+      },
       async setAudience(count) {
         const active = count > 0;
         if (audienceMode === active) return audiencePending;

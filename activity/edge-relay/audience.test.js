@@ -5,6 +5,24 @@ function socket(member) {
   return { messages: [], deserializeAttachment: () => member, serializeAttachment: (value) => { member = value; }, send(value) { this.messages.push(JSON.parse(value)); } };
 }
 
+it('keeps viewers and publication credentials when a window closes and the next source resumes', async () => {
+  const publisher = socket({ role: 'publisher', slot: 0, user: 'owner' });
+  const viewer = socket({ role: 'viewer', user: 'friend' });
+  const room = new EdgeRoom({ getWebSockets: () => [publisher, viewer] });
+  const send = (client, control) => room.webSocketMessage(client, JSON.stringify(control));
+  await send(publisher, { type: 'start', transport: 'sfu', mediaToken: 'original', width: 1280, height: 720 });
+  await send(viewer, { type: 'sfu-watch', slot: 0 });
+  await send(publisher, { type: 'source-update', slot: 2, mediaToken: 'tampered', transport: 'relay', waiting: true, width: 1280, height: 720, fps: 1 });
+  expect(viewer.messages.at(-1)).toMatchObject({ type: 'source-update', slot: 0, waiting: true });
+  expect(viewer.deserializeAttachment().sfuSlot).toBe(0);
+  await send(publisher, { type: 'source-update', waiting: false, width: 1920, height: 1080, fps: 30 });
+  viewer.messages.length = 0;
+  await send(viewer, { type: 'hello' });
+  expect(viewer.messages[0]).toMatchObject({ type: 'start', transport: 'sfu', mediaToken: 'original', waiting: false, width: 1920 });
+  await send(viewer, { type: 'source-update', width: 1 });
+  expect(publisher.deserializeAttachment().stream.width).toBe(1920);
+});
+
 it('counts SFU demand across switching, unwatching, fallback and disconnect without subscribing to relay media', async () => {
   const first = socket({ role: 'publisher', slot: 0 });
   const second = socket({ role: 'publisher', slot: 1 });

@@ -2,6 +2,10 @@
 
 Activity independente do núcleo Go do BIG DUCKS LIVE. A captura de tela ou janela acontece em uma página externa compatível com `getDisplayMedia`; espectadores assistem dentro do Discord.
 
+Para acompanhar a passagem entre cliente e partida do LoL, abra **Fonte, qualidade e áudio → Tela inteira** e selecione o monitor do jogo no seletor do navegador. Isso compartilha todo aquele monitor, incluindo outras janelas; se autorizado, o som pode incluir outros aplicativos. O navegador não permite selecionar automaticamente outra janela de aplicativo como o capturador nativo do Discord.
+
+Ao compartilhar somente uma janela, seu encerramento mantém a live aberta com uma tela de espera. Use **Selecionar janela da partida** para continuar na mesma live, sem reconectar os espectadores. **Trocar janela ou tela** também preserva a sessão e o áudio negociado; cancelar o seletor mantém a fonte anterior. **Parar transmissão** encerra a live de fato.
+
 ## Transporte de mídia
 
 Novas transmissões preferem trilhas WebRTC nativas publicadas uma vez no **Cloudflare Realtime SFU**. O Durable Object mantém presença, slots, cards, miniaturas e sinalização. Se o SFU não estiver configurado ou um espectador não conseguir conectá-lo, a Activity ativa automaticamente o relay WebCodecs compatível apenas para aquele fluxo.

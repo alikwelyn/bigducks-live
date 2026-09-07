@@ -26,6 +26,15 @@ export function createPlayer(canvas) {
     nextAudioTime = 0;
   };
 
+  const closeAudio = () => {
+    if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
+    audioDecoder = null;
+    clearAudioSchedule();
+    const previous = audioContext;
+    audioContext = null; audioGain = null;
+    if (previous && previous.state !== 'closed') void previous.close().catch(() => {});
+  };
+
   const clearFrames = () => {
     while (frames.length) frames.shift().frame.close();
     if (animationFrame !== null) cancelAnimationFrame(animationFrame);
@@ -89,9 +98,7 @@ export function createPlayer(canvas) {
       clearFrames();
       clearCanvas();
       if (decoder && decoder.state !== 'closed') decoder.close();
-      if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
-      clearAudioSchedule();
-      audioContext?.close();
+      closeAudio();
       hasKeyframe = false;
       videoBase = null;
       lastTimestamp = -Infinity;
@@ -100,10 +107,8 @@ export function createPlayer(canvas) {
       configured = true;
     },
     configureAudio(config) {
+      closeAudio();
       if (!config || typeof AudioDecoder !== 'function' || typeof AudioContext !== 'function') return false;
-      if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
-      clearAudioSchedule();
-      audioContext?.close();
       audioContext = new AudioContext({ latencyHint: 'interactive', sampleRate: config.sampleRate });
       audioGain = audioContext.createGain();
       audioGain.gain.value = muted ? 0 : volume;
@@ -149,9 +154,7 @@ export function createPlayer(canvas) {
       clearFrames();
       clearCanvas();
       if (decoder && decoder.state !== 'closed') decoder.close();
-      if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
-      clearAudioSchedule();
-      audioContext?.close();
+      closeAudio();
       configured = false;
     },
   };

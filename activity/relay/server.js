@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { decodePacket, parseControl, stringifyControl } from '../shared/protocol.js';
 import { RoomRegistry } from './rooms.js';
+import { updateStreamSource } from '../shared/source-update.js';
 import { issueToken, verifyToken } from './tokens.js';
 import { createSfuGateway } from './sfu.js';
 import { updateAudience, audienceFor, clearAudience } from '../shared/sfu-audience.js';
@@ -249,6 +250,11 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           if (message.type === 'stop') for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) clearAudience(viewer, member.slot);
           notifyAudience();
           for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stringifyControl(outgoing));
+          return;
+        }
+        if (message.type === 'source-update') {
+          const outgoing = updateStreamSource(member, message);
+          if (outgoing) for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stringifyControl(outgoing));
           return;
         }
         if (claims.role === 'publisher' && message.type === 'thumbnail') {

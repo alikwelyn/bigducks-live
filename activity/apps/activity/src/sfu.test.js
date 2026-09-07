@@ -11,6 +11,7 @@ class FakePeerConnection {
   constructor() { this.transceivers = []; this.connectionState = 'connected'; this.iceConnectionState = 'connected'; this.listeners = new Map(); }
   addTransceiver(track, init) {
     const sender = { track, getParameters: () => ({ encodings: [{}] }), setParameters: vi.fn().mockResolvedValue() };
+    sender.replaceTrack = vi.fn(async (next) => { sender.track = next; });
     const value = { mid: String(this.transceivers.length), sender, init };
     this.transceivers.push(value); return value;
   }
@@ -34,6 +35,21 @@ class FakePeerConnection {
 function json(body, status = 200) { return new Response(JSON.stringify(body), { status }); }
 
 describe('SFU browser transport', () => {
+  it('replaces a game window without republishing and preserves idle bandwidth limits', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ sessionId: 'session' }))
+      .mockResolvedValueOnce(json({ sessionDescription: { type: 'answer', sdp: 'answer' }, mediaToken: 'media' })).mockResolvedValue(json({}));
+    const published = await createSfuPublisher({ stream: new FakeMediaStream([{ id: 'client', kind: 'video' }]), profile: { width: 1280, height: 720, bitrate: 2500000, fps: 30 }, fetchImpl, RTCPeerConnectionClass: FakePeerConnection });
+    await published.setAudience(0);
+    const game = { id: 'game', kind: 'video', getSettings: () => ({ width: 1920, height: 1080 }) };
+    await published.replaceVideoTrack(game);
+    expect(published.peer.getSenders()[0].track).toBe(game);
+    expect(published.mediaToken).toBe('media');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(published.peer.getSenders()[0].setParameters).toHaveBeenLastCalledWith({ encodings: [{ maxBitrate: 40000, maxFramerate: 1, scaleResolutionDownBy: 6 }] });
+    await published.setAudience(1);
+    expect(published.peer.getSenders()[0].setParameters).toHaveBeenLastCalledWith({ encodings: [{ maxBitrate: 2500000, maxFramerate: 30, scaleResolutionDownBy: 1.5 }] });
+    published.close();
+  });
   it('keeps automatic quality idle and resumes adaptation when an audience returns', async () => {
     vi.useFakeTimers();
     let published;

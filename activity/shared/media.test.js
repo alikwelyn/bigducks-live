@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { codecCandidates, fitWithin, frameDisplaySize, captureConstraints, h264Level, selectVideoConfig } from './media.js';
 
 describe('media capture helpers', () => {
+  it('offers entire-monitor continuity only when explicitly selected', () => {
+    expect(captureConstraints({ audio: true }).video.displaySurface).toBeUndefined();
+    expect(captureConstraints({ audio: true, mode: 'monitor' })).toMatchObject({ video: { displaySurface: 'monitor' }, systemAudio: 'include' });
+    expect(captureConstraints({ audio: false, mode: 'monitor' })).toMatchObject({ audio: false, systemAudio: 'exclude' });
+  });
   it('fits capture dimensions without cropping', () => {
     expect(fitWithin(2560, 1440)).toEqual({ width: 1920, height: 1080 });
     expect(fitWithin(1280, 720)).toEqual({ width: 1280, height: 720 });
