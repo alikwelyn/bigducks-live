@@ -56,14 +56,15 @@ function renderCapture() {
       const stopBroadcast = (message = 'Transmissão encerrada.') => {
         if (stopped) return;
         stopped = true;
-        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop', slot }));
-        broadcaster?.stop();
-        for (const { peer } of peers.values()) peer.close();
-        socket.close();
-        stream.getTracks().forEach((track) => track.stop());
+        const stopButton = document.querySelector('#stop'); stopButton.disabled = true; stopButton.hidden = true;
+        document.querySelector('#start').hidden = false;
         const preview = document.querySelector('#preview'); preview.srcObject = null; preview.hidden = true;
-        document.querySelector('#start').hidden = false; document.querySelector('#stop').hidden = true;
         status.textContent = message;
+        try { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop', slot })); } catch { /* socket already unavailable */ }
+        for (const track of stream.getTracks()) { try { track.enabled = false; track.stop(); } catch { /* track already stopped */ } }
+        try { broadcaster?.stop(); } catch { /* encoder already closed */ }
+        for (const { peer } of peers.values()) { try { peer.close(); } catch { /* peer already closed */ } }
+        try { socket.close(); } catch { /* socket already closed */ }
       };
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
