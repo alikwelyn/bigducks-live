@@ -39,7 +39,7 @@ export function audioConstraints() {
   return { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
 }
 
-import { VIDEO_DELTA, VIDEO_KEYFRAME, encodePacket } from './protocol.js';
+import { AUDIO, VIDEO_DELTA, VIDEO_KEYFRAME, encodePacket } from './protocol.js';
 
 export async function createBroadcaster({ ws, profile, audio = false, stream = null, slot = 0, onStatus = () => {}, onEnd = () => {} }) {
   if (!stream) stream = await navigator.mediaDevices.getDisplayMedia({ ...captureConstraints({ fps: profile.fps, audio }) });
@@ -60,6 +60,33 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   encoder.configure({ codec: codec.codec, width: size.width, height: size.height, framerate: profile.fps, bitrate: profile.bitrate, latencyMode: 'realtime', avc: codec.avc });
   let stopped = false;
   let reader;
+  let audioEncoder;
+  let audioReader;
+  const audioTrack = stream.getAudioTracks()[0];
+  if (audio && audioTrack && typeof AudioEncoder === 'function' && typeof MediaStreamTrackProcessor === 'function') {
+    audioEncoder = new AudioEncoder({
+      output: (chunk) => {
+        const payload = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(payload);
+        ws.send(encodePacket({ slot, type: AUDIO, sentAt: Date.now(), clock: performance.now(), payload }));
+      },
+      error: (error) => onEnd(error),
+    });
+    audioEncoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2, bitrate: 96_000 });
+    const audioProcessor = new MediaStreamTrackProcessor({ track: audioTrack });
+    audioReader = audioProcessor.readable.getReader();
+    void (async () => {
+      try {
+        while (!stopped) {
+          const { done, value } = await audioReader.read();
+          if (done) break;
+          if (audioEncoder.encodeQueueSize < 4) audioEncoder.encode(value);
+          value.close();
+        }
+      } catch (error) { if (!stopped) onEnd(error); }
+    })();
+  }
+
   const processor = typeof MediaStreamTrackProcessor === 'function' ? new MediaStreamTrackProcessor({ track }) : null;
   const pump = async () => {
     if (!processor) return;
@@ -77,5 +104,5 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   track.addEventListener('ended', () => { if (!stopped) onEnd(new Error('capture ended')); });
   onStatus({ codec: codec.codec, ...size, fps: profile.fps });
   void pump();
-  return { stream, encoder, stop() { stopped = true; reader?.cancel(); encoder.close(); stream.getTracks().forEach((item) => item.stop()); } };
+  return { stream, encoder, audioEncoder, stop() { stopped = true; reader?.cancel(); audioReader?.cancel(); encoder.close(); audioEncoder?.close(); stream.getTracks().forEach((item) => item.stop()); } };
 }
