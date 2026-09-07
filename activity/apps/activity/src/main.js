@@ -219,6 +219,7 @@ async function renderViewer() {
             rtcTimer = setTimeout(() => { if (!rtcActive) stopRtc(); }, FALLBACK_MS);
             document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name} ao vivo.`;
             renderStreams();
+            stage.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
           };
           details.append(identity, button); item.append(thumbnail, details); return item;
         }));
