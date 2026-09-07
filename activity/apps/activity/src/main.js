@@ -12,6 +12,8 @@ const inDiscord = pageParams.has('frame_id');
 const apiBase = inDiscord ? '/.proxy' : '';
 const apiUrl = (path) => `${apiBase}${path}`;
 const captureMode = pageParams.get('capture') === '1';
+document.documentElement.classList.toggle('discord-mode', inDiscord);
+document.body.classList.toggle('discord-mode', inDiscord);
 
 async function authenticateDiscord() {
   const params = new URLSearchParams(location.search);
@@ -219,7 +221,7 @@ async function renderViewer() {
             rtcTimer = setTimeout(() => { if (!rtcActive) stopRtc(); }, FALLBACK_MS);
             document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name} ao vivo.`;
             renderStreams();
-            stage.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
+            if (!inDiscord) stage.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
           };
           details.append(identity, button); item.append(thumbnail, details); return item;
         }));
