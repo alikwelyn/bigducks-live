@@ -127,8 +127,9 @@ export class EdgeRoom {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/edge/healthz') return Response.json({ ok: true, relay: 'cloudflare-edge' });
-    if (url.pathname !== '/edge/ws' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('Not found', { status: 404 });
+    const pathname = url.pathname.replace(/^\/\.proxy(?=\/)/, '');
+    if (pathname === '/edge/healthz' || pathname === '/healthz') return Response.json({ ok: true, relay: 'cloudflare-edge' });
+    if (!['/edge/ws', '/ws'].includes(pathname) || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('Not found', { status: 404 });
     try {
       const claims = await verifyEdgeToken(url.searchParams.get('token'), env.SESSION_SECRET);
       const id = env.ROOMS.idFromName(claims.room);

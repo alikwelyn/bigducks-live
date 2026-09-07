@@ -5,7 +5,9 @@
   "compatibility_date": "2026-09-07",
   "account_id": "dbc978e2d15a3bb6fb40a4513e9cb70e",
   "routes": [
-    { "pattern": "stream.skillup.com.br/edge/*", "zone_name": "skillup.com.br" }
+    { "pattern": "stream.skillup.com.br/edge/*", "zone_name": "skillup.com.br" },
+    { "pattern": "stream.skillup.com.br/.proxy/edge/*", "zone_name": "skillup.com.br" },
+    { "pattern": "relay.skillup.com.br", "custom_domain": true }
   ],
   "durable_objects": {
     "bindings": [
