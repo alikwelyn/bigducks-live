@@ -20,20 +20,29 @@ export function frameDisplaySize(frame, fallback = {}) {
   };
 }
 
-export function captureConstraints({ fps = 30, width, height, audio = false, mode = 'window' } = {}) {
+export function captureConstraints({ fps = 30, width, height, audio = false } = {}) {
   return {
     video: {
-      ...(mode === 'monitor' ? { displaySurface: 'monitor' } : {}),
+      displaySurface: 'monitor',
       ...(width ? { width: { ideal: width } } : {}),
       ...(height ? { height: { ideal: height } } : {}),
       frameRate: { ideal: fps, max: fps },
     },
     audio: audio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true } : false,
-    systemAudio: mode === 'monitor' && audio ? 'include' : 'exclude',
-    windowAudio: audio ? 'window' : 'exclude',
+    systemAudio: audio ? 'include' : 'exclude',
+    windowAudio: 'exclude',
     selfBrowserSurface: 'exclude',
-    surfaceSwitching: 'include',
+    surfaceSwitching: 'exclude',
   };
+}
+
+export async function captureMonitor(options, devices = navigator.mediaDevices) {
+  const stream = await devices.getDisplayMedia(captureConstraints(options));
+  if (stream.getVideoTracks()[0]?.getSettings?.().displaySurface !== 'monitor') {
+    stream.getTracks().forEach(track => track.stop());
+    throw new Error('Selecione Tela inteira e escolha um monitor. Janelas e guias não são aceitas para manter a transmissão ao entrar no jogo.');
+  }
+  return stream;
 }
 
 export function h264Level(width, height, fps) {
@@ -69,7 +78,7 @@ export function audioConstraints() {
 import { AUDIO, VIDEO_DELTA, VIDEO_KEYFRAME, encodePacket } from './protocol.js';
 
 export async function createBroadcaster({ ws, profile, audio = false, stream = null, slot = 0, stopTracks = true, onStatus = () => {}, onEnd = () => {} }) {
-  if (!stream) stream = await navigator.mediaDevices.getDisplayMedia({ ...captureConstraints({ fps: profile.fps, width: profile.width, height: profile.height, audio }) });
+  if (!stream) stream = await captureMonitor({ fps: profile.fps, width: profile.width, height: profile.height, audio });
   const track = stream.getVideoTracks()[0];
   if (!track) throw new Error('screen capture returned no video track');
   track.contentHint = 'text';

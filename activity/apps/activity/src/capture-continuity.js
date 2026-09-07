@@ -25,7 +25,7 @@ export function createCaptureContinuity(initial, { onReplace, onWaiting, onChang
       context.fillStyle = '#65dfae'; context.font = 'bold 36px sans-serif'; context.textAlign = 'center';
       context.fillText('A transmissão continua', 640, 330);
       context.fillStyle = '#c3d2e3'; context.font = '24px sans-serif';
-      context.fillText('Aguardando o streamer selecionar a nova janela…', 640, 390);
+      context.fillText('Aguardando o streamer compartilhar o monitor…', 640, 390);
     };
     draw(); placeholder = canvas.captureStream(1); placeholderTimer = setInterval(draw, 1000);
     return placeholder;
@@ -45,7 +45,7 @@ export function createCaptureContinuity(initial, { onReplace, onWaiting, onChang
     const operation = pending.catch(() => {}).then(async () => {
       if (closed || nextRevision !== revision) { stopTracks(next); return false; }
       const track = next.getVideoTracks()[0];
-      if (!track || track.readyState === 'ended') { stopTracks(next); throw new Error('A nova fonte foi encerrada. Selecione outra janela.'); }
+      if (!track || track.readyState === 'ended') { stopTracks(next); throw new Error('A nova fonte foi encerrada. Selecione o monitor novamente.'); }
       track.contentHint = 'detail';
       try { await onReplace?.(track); } catch (error) { stopTracks(next); throw error; }
       if (closed) { stopTracks(next); return false; }

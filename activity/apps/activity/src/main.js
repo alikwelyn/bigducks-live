@@ -1,7 +1,7 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { profileFor } from '../../../shared/adaptation.js';
 import { createPeer, FALLBACK_MS, fetchIceServers, tuneSenders } from '../../../shared/rtc.js';
-import { captureConstraints, createBroadcaster, fitWithin } from '../../../shared/media.js';
+import { captureMonitor, createBroadcaster, fitWithin } from '../../../shared/media.js';
 import { createPlayer } from './player.js';
 import { connectRelaySocket } from './relay-socket.js';
 import { createSfuPublisher, createSfuViewer } from './sfu.js';
@@ -46,7 +46,7 @@ function renderCapture(token) {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Escolha a fonte. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Escolher o que transmitir</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar janela ou tela</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><label class="field">O que compartilhar<select id="capture-mode"><option value="window">Uma janela ou guia</option><option value="monitor">Tela inteira — cliente e partida do LoL</option></select></label><small>Para acompanhar o LoL automaticamente, escolha Tela inteira no seletor. Ela mostra todo o monitor, inclusive outras janelas; o áudio pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label title="Compartilha somente o áudio da fonte escolhida para evitar eco."><input id="audio" type="checkbox" checked> áudio da guia ou janela</label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label title="Autorize o áudio do sistema no seletor do navegador. Outros aplicativos também podem ser ouvidos."><input id="audio" type="checkbox" checked> compartilhar áudio do sistema</label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   const startButton = document.querySelector('#start');
   const stopButton = document.querySelector('#stop');
   const switchButton = document.querySelector('#switch-source');
@@ -62,8 +62,8 @@ function renderCapture(token) {
     try {
       const quality = document.querySelector('#quality').value;
       const profile = { ...profileFor(quality === 'adaptive' ? '720p30' : quality), automatic: quality === 'adaptive' };
-      status.textContent = document.querySelector('#capture-mode').value === 'monitor' ? 'Selecione o monitor do jogo no navegador…' : 'Escolha uma guia ou janela no navegador…';
-      let stream = await navigator.mediaDevices.getDisplayMedia(captureConstraints({ fps: profile.fps, audio: document.querySelector('#audio').checked, mode: document.querySelector('#capture-mode').value }));
+      status.textContent = 'Selecione Tela inteira, escolha o monitor do jogo e autorize o áudio…';
+      let stream = await captureMonitor({ fps: profile.fps, audio: document.querySelector('#audio').checked });
       captured = stream;
       status.textContent = 'Conectando sua transmissão…';
       const videoTrack = stream.getVideoTracks()[0];
@@ -169,8 +169,8 @@ function renderCapture(token) {
           }
         },
         onWaiting: () => {
-          status.textContent = 'A janela foi encerrada. Sua live continua: selecione a janela da partida ou a tela inteira.';
-          switchButton.textContent = 'Selecionar janela da partida';
+          status.textContent = 'O compartilhamento foi interrompido. Sua live continua: selecione o monitor novamente.';
+          switchButton.textContent = 'Selecionar monitor';
           switchButton.hidden = false; switchButton.disabled = starting;
         },
         onChanged: async ({ source, waiting }) => {
@@ -187,18 +187,18 @@ function renderCapture(token) {
           socket.send(JSON.stringify({ type: 'source-update', slot, ...size, fps: waiting ? 1 : profile.fps, waiting, relayMedia,
             audioConfig: hasAudio ? { codec: 'opus', sampleRate: 48_000, numberOfChannels: 2 } : null }));
           document.querySelector('#preview').srcObject = stream;
-          document.querySelector('#source').textContent = waiting ? 'Fonte: aguardando nova janela' : `Fonte: ${size.width}×${size.height}`;
-          document.querySelector('#audio-state').textContent = hasAudio ? 'Áudio da nova fonte: ativado' : 'Áudio da fonte: indisponível ou desativado';
-          if (!waiting) { status.textContent = 'Fonte atualizada. Seus amigos continuam na mesma live.'; switchButton.textContent = 'Trocar janela ou tela'; }
+          document.querySelector('#source').textContent = waiting ? 'Fonte: aguardando monitor' : `Fonte: ${size.width}×${size.height}`;
+          document.querySelector('#audio-state').textContent = hasAudio ? 'Áudio do sistema: ativado' : 'Sem áudio do sistema. Para ativar, troque o monitor e autorize o áudio no seletor.';
+          if (!waiting) { status.textContent = 'Fonte atualizada. Seus amigos continuam na mesma live.'; switchButton.textContent = 'Trocar monitor'; }
         },
-        onError: () => { status.textContent = 'Não foi possível atualizar a fonte. Selecione a janela novamente.'; },
+        onError: () => { status.textContent = 'Não foi possível atualizar a fonte. Selecione o monitor novamente.'; },
       });
       stream = continuity.stream;
       activeSwitch = async () => {
         if (switchButton.disabled || stopped) return;
         switchButton.disabled = true;
         try {
-          const next = await navigator.mediaDevices.getDisplayMedia(captureConstraints({ fps: profile.fps, audio: document.querySelector('#audio').checked, mode: document.querySelector('#capture-mode').value }));
+          const next = await captureMonitor({ fps: profile.fps, audio: document.querySelector('#audio').checked });
           await continuity.replace(next);
         } catch (error) {
           if (!stopped) status.textContent = error?.name === 'NotAllowedError'
@@ -222,7 +222,7 @@ function renderCapture(token) {
       const sfuSize = fitWithin(videoSettings.width || profile.width, videoSettings.height || profile.height, profile.width, profile.height);
       const media = sfuPublisher ? { codec: 'webrtc', ...sfuSize, fps: Math.min(videoSettings.frameRate || profile.fps, profile.fps), audioConfig } : relayMedia;
       socket.send(JSON.stringify({ type: 'start', slot, transport: sfuPublisher ? 'sfu' : 'relay', mediaToken: sfuPublisher?.mediaToken, ...media, waiting: continuity.waiting }));
-      document.querySelector('#audio-state').textContent = media.audioConfig ? `Áudio da fonte: Opus ${media.audioConfig.numberOfChannels === 1 ? 'mono' : 'estéreo'}` : document.querySelector('#audio').checked ? 'Áudio indisponível: compartilhe uma guia ou janela' : 'Áudio: desativado';
+      document.querySelector('#audio-state').textContent = media.audioConfig ? `Áudio da fonte: Opus ${media.audioConfig.numberOfChannels === 1 ? 'mono' : 'estéreo'}` : document.querySelector('#audio').checked ? 'Sem áudio: clique em Trocar monitor e autorize o áudio do sistema no seletor. O suporte depende do navegador.' : 'Áudio: desativado';
       document.querySelector('#source').textContent = `Fonte: ${media.width}×${media.height}`;
       document.querySelector('#fps').textContent = `${sfuPublisher ? 'Cloudflare SFU' : `Codec: ${media.codec}`} / ${Math.round(media.fps)} FPS`;
       document.querySelector('#bitrate').textContent = `Bitrate máximo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`;
@@ -255,7 +255,7 @@ function renderCapture(token) {
       stopButton.hidden = false; stopButton.disabled = false;
       switchButton.hidden = false; switchButton.disabled = false;
       starting = false;
-      status.textContent = continuity.waiting ? 'A janela foi encerrada. Selecione a janela da partida ou a tela inteira.' : 'Transmitindo. Mantenha esta página aberta.';
+      status.textContent = continuity.waiting ? 'O compartilhamento foi interrompido. Selecione o monitor novamente.' : 'Transmitindo. Mantenha esta página aberta.';
       void updateAudience();
       window.addEventListener('beforeunload', () => stopBroadcast(), { once: true });
     } catch (error) {
@@ -477,7 +477,7 @@ async function renderViewer() {
               player.configureAudio(message.relayMedia.audioConfig);
               socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
             }
-            document.querySelector('#status').textContent = message.waiting ? 'A live continua. Aguardando a nova janela do streamer…' : 'Fonte atualizada. A transmissão continua.';
+            document.querySelector('#status').textContent = message.waiting ? 'A live continua. Aguardando o streamer compartilhar o monitor…' : 'Fonte atualizada. A transmissão continua.';
           }
           renderStreams();
           return;

@@ -2,9 +2,9 @@
 
 Activity independente do núcleo Go do BIG DUCKS LIVE. A captura de tela ou janela acontece em uma página externa compatível com `getDisplayMedia`; espectadores assistem dentro do Discord.
 
-Para acompanhar a passagem entre cliente e partida do LoL, abra **Fonte, qualidade e áudio → Tela inteira** e selecione o monitor do jogo no seletor do navegador. Isso compartilha todo aquele monitor, incluindo outras janelas; se autorizado, o som pode incluir outros aplicativos. O navegador não permite selecionar automaticamente outra janela de aplicativo como o capturador nativo do Discord.
+A captura aceita somente **Tela inteira**. No seletor do navegador, escolha o monitor do jogo e autorize o áudio do sistema. A transmissão acompanha a passagem entre cliente e partida do LoL naquele monitor. Janelas, guias e fontes cujo tipo não pode ser confirmado são recusadas, e suas trilhas são interrompidas imediatamente. O navegador pode continuar exibindo essas opções no seletor; a validação ocorre após a escolha.
 
-Ao compartilhar somente uma janela, seu encerramento mantém a live aberta com uma tela de espera. Use **Selecionar janela da partida** para continuar na mesma live, sem reconectar os espectadores. **Trocar janela ou tela** também preserva a sessão e o áudio negociado; cancelar o seletor mantém a fonte anterior. **Parar transmissão** encerra a live de fato.
+Todo o monitor fica visível e o áudio pode incluir outros aplicativos, inclusive o Discord. A opção de áudio vem marcada, mas sua disponibilidade depende do navegador e da autorização no seletor; a página avisa quando não há trilha de áudio. Interromper o compartilhamento mantém a live numa tela de espera. **Selecionar monitor** e **Trocar monitor** preservam a mesma sessão; cancelar o seletor mantém a fonte anterior. **Parar transmissão** encerra a live.
 
 ## Transporte de mídia
 

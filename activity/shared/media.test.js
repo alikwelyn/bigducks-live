@@ -1,11 +1,22 @@
-import { describe, expect, it } from 'vitest';
-import { codecCandidates, fitWithin, frameDisplaySize, captureConstraints, h264Level, selectVideoConfig } from './media.js';
+import { describe, expect, it, vi } from 'vitest';
+import { codecCandidates, fitWithin, frameDisplaySize, captureConstraints, captureMonitor, h264Level, selectVideoConfig } from './media.js';
 
 describe('media capture helpers', () => {
-  it('offers entire-monitor continuity only when explicitly selected', () => {
-    expect(captureConstraints({ audio: true }).video.displaySurface).toBeUndefined();
-    expect(captureConstraints({ audio: true, mode: 'monitor' })).toMatchObject({ video: { displaySurface: 'monitor' }, systemAudio: 'include' });
-    expect(captureConstraints({ audio: false, mode: 'monitor' })).toMatchObject({ audio: false, systemAudio: 'exclude' });
+  it('requests monitor capture and optional system audio', () => {
+    expect(captureConstraints({ audio: true })).toMatchObject({ video: { displaySurface: 'monitor' }, systemAudio: 'include', surfaceSwitching: 'exclude' });
+    expect(captureConstraints({ audio: false })).toMatchObject({ audio: false, systemAudio: 'exclude' });
+  });
+  it('rejects windows, tabs and unverifiable surfaces and releases all captured tracks', async () => {
+    for (const displaySurface of ['window', 'browser', undefined]) {
+      const video = { getSettings: () => ({ displaySurface }), stop: vi.fn() }; const audio = { stop: vi.fn() };
+      const devices = { getDisplayMedia: vi.fn().mockResolvedValue({ getVideoTracks: () => [video], getTracks: () => [video, audio] }) };
+      await expect(captureMonitor({ audio: true }, devices)).rejects.toThrow('Selecione Tela inteira');
+      expect(video.stop).toHaveBeenCalledOnce(); expect(audio.stop).toHaveBeenCalledOnce();
+    }
+  });
+  it('accepts a monitor even when the browser does not supply system audio', async () => {
+    const stream = { getVideoTracks: () => [{ getSettings: () => ({ displaySurface: 'monitor' }) }] };
+    expect(await captureMonitor({ audio: true }, { getDisplayMedia: async () => stream })).toBe(stream);
   });
   it('fits capture dimensions without cropping', () => {
     expect(fitWithin(2560, 1440)).toEqual({ width: 1920, height: 1080 });
@@ -17,12 +28,12 @@ describe('media capture helpers', () => {
     expect(captureConstraints({ fps: 30, audio: true }).audio).toMatchObject({ echoCancellation: false, noiseSuppression: false });
   });
 
-  it('captures audio only from the selected tab or window to prevent duplicated system feedback', () => {
+  it('requests system sound and excludes capture of its own browser surface', () => {
     const constraints = captureConstraints({ fps: 30, audio: true });
     expect(constraints).toMatchObject({
       audio: { restrictOwnAudio: true },
-      systemAudio: 'exclude',
-      windowAudio: 'window',
+      systemAudio: 'include',
+      windowAudio: 'exclude',
       selfBrowserSurface: 'exclude',
     });
   });
