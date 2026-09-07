@@ -130,6 +130,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           return;
         }
         if (claims.role === 'viewer' && message.type === 'unwatch') return rooms.unwatch(claims.room, claims.user, message.slot);
+        if (claims.role === 'viewer' && message.type === 'rtc-active') rooms.unwatch(claims.room, claims.user, message.slot);
         if (['rtc-want', 'rtc', 'rtc-active', 'rtc-bye'].includes(message.type)) {
           const watchedSlot = rooms.viewersFor(claims.room).find((viewer) => viewer.id === claims.user)?.slot;
           const target = claims.role === 'viewer'
