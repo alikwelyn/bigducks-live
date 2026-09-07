@@ -6,14 +6,14 @@ import { createPlayer } from './player.js';
 import { connectRelaySocket } from './relay-socket.js';
 import { createSfuPublisher, createSfuViewer } from './sfu.js';
 import { createPlaybackFeedback } from './playback-feedback.js';
+import { pageMode, captureSession, createShareLink } from './access.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
-const pageParams = new URLSearchParams(location.search);
-const inDiscord = pageParams.has('frame_id');
+const mode = pageMode(new URL(location.href), window.self !== window.top);
+const inDiscord = mode === 'viewer';
 const apiBase = inDiscord ? '/.proxy' : '';
 const apiUrl = (path) => `${apiBase}${path}`;
-const captureMode = pageParams.get('capture') === '1';
 document.documentElement.classList.toggle('discord-mode', inDiscord);
 document.body.classList.toggle('discord-mode', inDiscord);
 
@@ -30,7 +30,7 @@ async function authenticateDiscord() {
   return { accessToken, user: auth.user.id, instance: sdk.instanceId || 'activity', sdk, publicOrigin: config.publicOrigin || location.origin };
 }
 
-function renderCapture() {
+function renderCapture(token) {
   const tabId = crypto.randomUUID();
   const tabChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('bigducks-stream-capture') : null;
   let activeStop = null;
@@ -58,14 +58,6 @@ function renderCapture() {
       status.textContent = 'Escolha uma guia ou janela no navegador…';
       const stream = await navigator.mediaDevices.getDisplayMedia(captureConstraints({ fps: profile.fps, audio: document.querySelector('#audio').checked }));
       status.textContent = 'Conectando sua transmissão…';
-      const params = new URLSearchParams(location.search);
-      let token = params.get('t');
-      if (!token) {
-        const identity = await authenticateDiscord();
-        const sessionResponse = await fetch(apiUrl('/api/session'), { method: 'POST', headers: { 'content-type': 'application/json', ...(identity.accessToken ? { authorization: `Bearer ${identity.accessToken}` } : {}) }, body: JSON.stringify({ room: params.get('room') || identity.instance, user: identity.user, role: 'publisher' }) });
-        if (!sessionResponse.ok) throw new Error('relay session unavailable');
-        ({ token } = await sessionResponse.json());
-      }
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) videoTrack.contentHint = 'detail';
       const runtimeConfig = await fetch(apiUrl('/api/config')).then((response) => response.json()).catch(() => ({}));
@@ -212,7 +204,7 @@ async function renderViewer() {
       const response = await fetch(apiUrl('/api/session'), { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${identity.accessToken}` }, body: JSON.stringify({ room: identity.instance, user: identity.user, role: 'publisher' }) });
       if (!response.ok) throw new Error('Não foi possível criar a transmissão');
       const { token } = await response.json();
-      const url = `${identity.publicOrigin}/share?capture=1&external=1&t=${encodeURIComponent(token)}`;
+      const url = await createShareLink({ publicOrigin: identity.publicOrigin, apiBase, token });
       const result = await identity.sdk?.commands.openExternalLink({ url });
       if (!identity.sdk) window.open(url, '_blank', 'noopener');
       if (result?.opened === false) throw new Error('Abertura recusada');
@@ -452,4 +444,26 @@ async function renderViewer() {
     }).catch((error) => { document.querySelector('#status').textContent = `Não foi possível conectar à sala: ${error.message}`; });
 }
 
-(captureMode ? renderCapture : renderViewer)();
+function renderAccessMessage(title, message) {
+  root.innerHTML = '<main class="shell capture-shell"><section class="card capture-card"><span class="eyebrow">BIG DUCKS · DISCORD ACTIVITY</span><h1></h1><p class="muted" role="status"></p></section></main>';
+  root.querySelector('h1').textContent = title;
+  root.querySelector('p').textContent = message;
+}
+
+async function boot() {
+  if (mode === 'viewer') return renderViewer();
+  if (mode !== 'capture') {
+    renderAccessMessage('Abra pelo Discord', 'Entre no canal de voz do seu servidor e abra a Activity BIG DUCKS. As transmissões não são listadas neste endereço público.');
+    return;
+  }
+  renderAccessMessage('Verificando seu convite…', 'A captura só será liberada após a validação do acesso.');
+  try {
+    let storage;
+    try { storage = window.sessionStorage; } catch { /* use in-memory session only */ }
+    const token = await captureSession({ url: new URL(location.href), storage, replaceUrl: (url) => history.replaceState(null, '', url) });
+    renderCapture(token);
+  } catch {
+    renderAccessMessage('Convite ausente ou expirado', 'Abra a Activity no Discord e clique em Transmitir minha tela para gerar um novo link. Se acabou de abrir um convite, confira sua conexão e tente novamente pelo Discord.');
+  }
+}
+void boot();

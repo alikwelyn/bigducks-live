@@ -1,7 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { ICE_DEFAULT, FALLBACK_MS, shouldFallback } from './rtc.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ICE_DEFAULT, FALLBACK_MS, shouldFallback, fetchIceServers } from './rtc.js';
+afterEach(() => vi.unstubAllGlobals());
 
 describe('direct RTC transport', () => {
+  it('keeps ICE credentials out of URLs by using the Authorization header', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ iceServers: [{ urls: 'stun:example.test' }] })));
+    vi.stubGlobal('fetch', fetchImpl);
+    await fetchIceServers('/.proxy', 'private-room-token');
+    expect(fetchImpl).toHaveBeenCalledWith('/.proxy/api/ice', { headers: { authorization: 'Bearer private-room-token' } });
+  });
   it('has a public STUN fallback and bounded activation deadline', () => {
     expect(ICE_DEFAULT[0].urls).toMatch(/^stun:/);
     expect(FALLBACK_MS).toBe(8000);

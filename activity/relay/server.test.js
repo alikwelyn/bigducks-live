@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { createRelayServer } from './server.js';
+import { issueToken } from './tokens.js';
 
 const secret = 'test-secret-012345678901234567890123';
 const servers = [];
@@ -15,6 +16,78 @@ async function start(options = {}) {
 }
 
 describe('relay server', () => {
+  it('validates capture access and redeems short-lived invitations only once', async () => {
+    const server = await start();
+    const base = `http://127.0.0.1:${server.port}`;
+    const publisher = issueToken({ room: 'room', user: 'pub', role: 'publisher' }, secret);
+    const viewer = issueToken({ room: 'room', user: 'view', role: 'viewer' }, secret);
+    const expired = issueToken({ room: 'room', user: 'pub', role: 'publisher' }, secret, -1);
+    const call = (path, token, body) => fetch(base + path, { method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+    for (const token of ['', viewer, expired, 'invalid']) expect((await call('/api/capture-session', token)).status).toBe(401);
+    expect((await call('/api/capture-session', publisher)).status).toBe(200);
+    const inviteResponse = await call('/api/share-link', publisher);
+    expect(inviteResponse.status).toBe(200);
+    const { code } = await inviteResponse.json();
+    expect(code).toMatch(/^[a-f0-9]{64}$/);
+    expect(code).not.toContain(publisher);
+    const redeemed = await call('/api/share-redeem', '', { code });
+    expect(redeemed.status).toBe(200);
+    expect((await redeemed.json()).token).toBe(publisher);
+    expect((await call('/api/share-redeem', '', { code })).status).toBe(401);
+    expect((await call('/api/share-link', viewer)).status).toBe(401);
+  });
+
+  it('expires unredeemed invitations without revoking the publisher session', async () => {
+    const server = await start(); const base = `http://127.0.0.1:${server.port}`;
+    const token = issueToken({ room: 'room', user: 'pub', role: 'publisher' }, secret, 21600);
+    const invite = await (await fetch(base + '/api/share-link', { method: 'POST', headers: { authorization: `Bearer ${token}` } })).json();
+    const now = Date.now(); const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 121000);
+    try {
+      expect((await fetch(base + '/api/share-redeem', { method: 'POST', body: JSON.stringify({ code: invite.code }) })).status).toBe(401);
+      expect((await fetch(base + '/api/capture-session', { method: 'POST', headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('limits requests and bodies without exposing credentials or blocking Discord origins', async () => {
+    const server = await start({ origin: 'https://stream.skillup.com.br', clientId: '123', apiRateLimit: 5 });
+    const base = `http://127.0.0.1:${server.port}`;
+    const health = await fetch(base + '/healthz');
+    expect(health.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(health.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(health.headers.get('x-robots-tag')).toContain('noindex');
+    expect((await fetch(base + '/api/session', { method: 'POST', headers: { origin: 'https://evil.test' }, body: '{}' })).status).toBe(403);
+    expect((await fetch(base + '/api/session', { method: 'POST', body: JSON.stringify({ padding: 'x'.repeat(17000) }) })).status).toBe(413);
+    const session = { room: 'r', user: 'u', role: 'viewer' };
+    expect((await fetch(base + '/api/session', { method: 'POST', headers: { origin: 'https://123.discordsays.com' }, body: JSON.stringify(session) })).status).toBe(200);
+    for (let i = 0; i < 5; i++) await fetch(base + '/api/session', { method: 'POST', body: '{}' });
+    const limited = await fetch(base + '/api/session', { method: 'POST', body: '{}' });
+    expect(limited.status).toBe(429); expect(limited.headers.get('retry-after')).toBe('60');
+    expect((await fetch(base + '/healthz')).status).toBe(200);
+  });
+
+  it('does not issue production sessions based on a caller-supplied Discord identity', async () => {
+    const server = await start({ allowDevSessions: false });
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/session`, { method: 'POST', body: JSON.stringify({ room: 'private', role: 'publisher', user: 'pretend-discord-user' }) });
+    expect(response.status).toBe(401);
+    expect(await response.json()).not.toHaveProperty('token');
+  });
+
+  it('rejects other signed capability types for SFU and ICE', async () => {
+    const server = await start();
+    const base = `http://127.0.0.1:${server.port}`;
+    const token = issueToken({ type: 'oauth', role: 'viewer', room: 'r', user: 'u' }, secret);
+    expect((await fetch(base + '/api/sfu/session', { method: 'POST', headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
+    expect((await fetch(base + '/api/ice', { headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
+  });
+
+  it('binds OAuth callback to browser state and prevents external redirects', async () => {
+    const server = await start({ clientId: '123', clientSecret: 'secret', origin: 'https://stream.skillup.com.br' });
+    const base = `http://127.0.0.1:${server.port}`;
+    const response = await fetch(base + '/api/discord/authorize?redirect=//evil.test', { redirect: 'manual' });
+    const state = new URL(response.headers.get('location')).searchParams.get('state');
+    expect(response.headers.get('set-cookie')).toMatch(/oauth_state=.*HttpOnly.*Secure.*SameSite=Lax/);
+    expect((await fetch(base + '/api/discord/callback?state=' + encodeURIComponent(state) + '&code=fake', { redirect: 'manual' })).status).toBe(400);
+  });
   it('provides health and session tokens', async () => {
     const server = await start();
     const base = `http://127.0.0.1:${server.port}`;
@@ -27,6 +100,7 @@ describe('relay server', () => {
     const iceResponse = await fetch(`${base}/api/ice?token=${encodeURIComponent(token)}`);
     expect(iceResponse.status).toBe(200);
     expect(await iceResponse.json()).toEqual({ iceServers: [] });
+    expect((await fetch(`${base}/api/ice`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
   });
 
   it('proxies authenticated SFU operations without exposing credentials', async () => {

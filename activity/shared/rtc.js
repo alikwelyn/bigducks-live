@@ -7,8 +7,7 @@ export function shouldFallback({ state, gotFrame, elapsed }) {
 
 export async function fetchIceServers(base = '', token = '') {
   try {
-    const query = token ? `?token=${encodeURIComponent(token)}` : '';
-    const response = await fetch(`${base}/api/ice${query}`);
+    const response = await fetch(`${base}/api/ice`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
     const body = response.ok ? await response.json() : null;
     return Array.isArray(body?.iceServers) && body.iceServers.length ? body.iceServers : ICE_DEFAULT;
   } catch {

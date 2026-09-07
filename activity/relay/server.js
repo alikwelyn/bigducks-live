@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,16 +8,25 @@ import { decodePacket, parseControl, stringifyControl } from '../shared/protocol
 import { RoomRegistry } from './rooms.js';
 import { issueToken, verifyToken } from './tokens.js';
 import { createSfuGateway } from './sfu.js';
+import { allowedOrigin, createLimiter, readJsonBody, safeRedirect, validRoomClaims } from './security.js';
 
 function json(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
 }
 
-export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [], sfuAppId = '', sfuAppSecret = '', sfuFetch = globalThis.fetch } = {}) {
+export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [], sfuAppId = '', sfuAppSecret = '', sfuFetch = globalThis.fetch, apiRateLimit = 600 } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers, maxPublishers });
   const sfu = createSfuGateway({ appId: sfuAppId, appSecret: sfuAppSecret, secret, fetchImpl: sfuFetch });
+  const apiAllowed = createLimiter({ limit: apiRateLimit });
+  const shareAllowed = createLimiter({ limit: 10 });
+  const invitations = new Map();
+  const roomClaims = (token, role) => {
+    const claims = verifyToken(token, secret);
+    if (!validRoomClaims(claims) || (role && claims.role !== role)) throw new Error('invalid room session');
+    return claims;
+  };
   let turnCache = null;
   const resolveIceServers = async () => {
     if (!turnKeyId || !turnKeySecret) return iceServers;
@@ -39,30 +49,58 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
   };
   const staticRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/activity');
   const httpServer = http.createServer(async (request, response) => {
+    response.setHeader('referrer-policy', 'no-referrer');
+    response.setHeader('x-content-type-options', 'nosniff');
+    response.setHeader('x-robots-tag', 'noindex, nofollow, noarchive');
+    response.setHeader('cache-control', 'no-store');
+    try {
     const url = new URL(request.url, 'http://relay.local');
+    let inputBody = {};
+    if (url.pathname.startsWith('/api/') && (request.method === 'POST' || url.pathname.startsWith('/api/discord/'))) {
+      if (!allowedOrigin(request.headers.origin, { origin, clientId, allowDevSessions })) { request.resume(); return json(response, 403, { error: 'request origin not allowed' }); }
+      // Do not trust client-controlled forwarding headers. Behind Traefik this is an aggregate guard.
+      if (!apiAllowed(request.socket.remoteAddress || 'unknown')) { request.resume(); response.setHeader('retry-after', '60'); return json(response, 429, { error: 'too many requests' }); }
+      if (request.method === 'POST') inputBody = await readJsonBody(request, url.pathname.startsWith('/api/sfu/') ? 1_200_000 : 16_384);
+    }
     if (request.method === 'GET' && url.pathname === '/healthz') return json(response, 200, { ok: true });
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/share' || url.pathname.startsWith('/assets/'))) {
       const relative = url.pathname === '/' || url.pathname === '/share' ? 'index.html' : url.pathname.slice(1);
       const file = path.resolve(staticRoot, relative);
-      if (file.startsWith(staticRoot) && fs.existsSync(file)) {
+      if (file.startsWith(staticRoot + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile()) {
         response.writeHead(200, { 'content-type': file.endsWith('.css') ? 'text/css' : file.endsWith('.js') ? 'text/javascript' : 'text/html' });
         return fs.createReadStream(file).pipe(response);
       }
     }
     if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId, publicOrigin: origin, sfuEnabled: sfu.enabled });
+    if (request.method === 'POST' && ['/api/capture-session', '/api/share-link'].includes(url.pathname)) {
+      const token = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
+      let claims;
+      try { claims = roomClaims(token, 'publisher'); } catch { return json(response, 401, { error: 'valid publisher invitation required' }); }
+      if (url.pathname === '/api/capture-session') return json(response, 200, { ok: true });
+      if (!shareAllowed(claims.user)) { response.setHeader('retry-after', '60'); return json(response, 429, { error: 'too many invitations' }); }
+      const now = Date.now();
+      for (const [code, invite] of invitations) if (invite.expires <= now) invitations.delete(code);
+      if (invitations.size >= 1000) return json(response, 503, { error: 'invitation capacity reached' });
+      const code = crypto.randomBytes(32).toString('hex');
+      invitations.set(code, { token, expires: Math.min(now + 120_000, claims.exp * 1000) });
+      return json(response, 200, { code, expiresIn: 120 });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/share-redeem') {
+      const code = inputBody.code;
+      if (typeof code !== 'string' || !/^[a-f0-9]{64}$/.test(code)) return json(response, 401, { error: 'invalid or expired invitation' });
+      const invite = invitations.get(code);
+      invitations.delete(code);
+      if (!invite || invite.expires <= Date.now()) return json(response, 401, { error: 'invalid or expired invitation' });
+      try { roomClaims(invite.token, 'publisher'); } catch { return json(response, 401, { error: 'invalid or expired invitation' }); }
+      return json(response, 200, { token: invite.token });
+    }
     if (request.method === 'POST' && url.pathname.startsWith('/api/sfu/')) {
       const bearer = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
       if (!bearer) return json(response, 401, { error: 'SFU session authentication required' });
       let claims;
-      try { claims = verifyToken(bearer, secret); } catch { return json(response, 401, { error: 'invalid SFU session' }); }
-      let body = {};
+      try { claims = roomClaims(bearer); } catch { return json(response, 401, { error: 'invalid SFU session' }); }
+      const body = inputBody;
       try {
-        let raw = '';
-        for await (const chunk of request) {
-          raw += chunk;
-          if (raw.length > 1_200_000) throw new Error('SFU request too large');
-        }
-        if (raw) body = JSON.parse(raw);
         const operation = url.pathname.slice('/api/sfu/'.length);
         const result = operation === 'session' ? await sfu.createSession(claims)
           : operation === 'publish' ? await sfu.publish(claims, body)
@@ -80,26 +118,29 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
     }
     if (request.method === 'GET' && url.pathname === '/api/discord/authorize') {
       if (!clientId || !clientSecret) return json(response, 503, { error: 'Discord OAuth is not configured' });
-      const redirect = url.searchParams.get('redirect') || '/share';
-      const state = issueToken({ type: 'oauth', redirect: redirect.startsWith('/') ? redirect : '/share' }, secret);
+      const redirect = safeRedirect(url.searchParams.get('redirect'));
+      const nonce = crypto.randomBytes(32).toString('hex');
+      const state = issueToken({ type: 'oauth', redirect, nonce }, secret);
+      response.setHeader('set-cookie', `oauth_state=${nonce}; HttpOnly; Secure; SameSite=Lax; Path=/api/discord; Max-Age=300`);
       const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: `${origin || url.origin}/api/discord/callback`, scope: 'identify', state });
       response.writeHead(302, { location: `https://discord.com/oauth2/authorize?${params}` }); return response.end();
     }
     if (request.method === 'GET' && url.pathname === '/api/discord/callback') {
       try {
         const state = verifyToken(url.searchParams.get('state'), secret);
-        if (state.type !== 'oauth') throw new Error('invalid OAuth state');
+        const nonce = request.headers.cookie?.match(/(?:^|;\s*)oauth_state=([^;]+)/)?.[1];
+        if (state.type !== 'oauth' || !nonce || state.nonce !== nonce) throw new Error('invalid OAuth state');
+        response.setHeader('set-cookie', 'oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/api/discord; Max-Age=0');
         const params = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'authorization_code', code: url.searchParams.get('code') || '', redirect_uri: `${origin || url.origin}/api/discord/callback` });
         const tokenResponse = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params });
         const token = await tokenResponse.json();
         if (!tokenResponse.ok || typeof token.access_token !== 'string') throw new Error('Discord authorization failed');
-        response.writeHead(302, { 'set-cookie': `discord_access_token=${encodeURIComponent(token.access_token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=3600`, location: state.redirect }); return response.end();
+        response.writeHead(302, { 'set-cookie': [`discord_access_token=${encodeURIComponent(token.access_token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=3600`, 'oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/api/discord; Max-Age=0'], location: safeRedirect(state.redirect) }); return response.end();
       } catch { return json(response, 400, { error: 'invalid Discord callback' }); }
     }
     if (request.method === 'GET' && url.pathname === '/api/ice') {
       try {
-        const claims = verifyToken(url.searchParams.get('token'), secret);
-        if (!['publisher', 'viewer'].includes(claims.role)) throw new Error('invalid ICE session');
+        roomClaims(request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1] || url.searchParams.get('token'));
         return json(response, 200, { iceServers: await resolveIceServers() });
       } catch (error) {
         return json(response, error.message.startsWith('TURN credentials') ? 502 : 401, { error: 'ICE configuration unavailable' });
@@ -107,10 +148,8 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
     }
     if (request.method === 'POST' && url.pathname === '/api/discord/token') {
       if (!clientId || !clientSecret) return json(response, 503, { error: 'Discord OAuth is not configured' });
-      let body = '';
-      for await (const chunk of request) body += chunk;
       try {
-        const input = JSON.parse(body);
+        const input = inputBody;
         if (typeof input.code !== 'string' || input.code.length < 8) throw new Error('invalid authorization code');
         const params = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'authorization_code', code: input.code });
         const tokenResponse = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params });
@@ -120,11 +159,9 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
       } catch (error) { return json(response, 400, { error: error.message }); }
     }
     if (request.method === 'POST' && url.pathname === '/api/session') {
-      let body = '';
-      for await (const chunk of request) body += chunk;
       try {
-        const input = JSON.parse(body);
-        if (!['publisher', 'viewer'].includes(input.role) || typeof input.room !== 'string') throw new Error('invalid session');
+        const input = inputBody;
+        if (!validRoomClaims({ room: input.room, user: 'pending-auth', role: input.role })) throw new Error('invalid session');
         let user = input.user;
         let name = input.name || input.user;
         let avatar = '';
@@ -138,18 +175,25 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           name = discordUser.global_name || discordUser.username || discordUser.id;
           if (discordUser.avatar) avatar = `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`;
         }
-        if (typeof user !== 'string' || !user) throw new Error('invalid user');
+        if (!validRoomClaims({ room: input.room, role: input.role, user })) throw new Error('invalid user');
         const token = issueToken({ room: input.room, role: input.role, user, name: String(name || user).slice(0, 80), avatar }, secret, 6 * 60 * 60);
         return json(response, 200, { token, room: input.room, role: input.role });
       } catch (error) { return json(response, 400, { error: error.message }); }
     }
     json(response, 404, { error: 'not found' });
+    } catch (error) {
+      if (!response.headersSent) json(response, error.status || 400, { error: error.status ? error.message : 'invalid request' });
+      else response.end();
+    }
   });
+  httpServer.requestTimeout = 30_000;
+  httpServer.headersTimeout = 15_000;
   const websocket = new WebSocketServer({ noServer: true });
   httpServer.on('upgrade', (request, socket, head) => {
     try {
-      const token = new URL(request.url, 'http://relay.local').searchParams.get('token');
-      const claims = verifyToken(token, secret);
+      const url = new URL(request.url, 'http://relay.local');
+      if (url.pathname !== '/ws') throw new Error('invalid websocket path');
+      const claims = roomClaims(url.searchParams.get('token'));
       websocket.handleUpgrade(request, socket, head, (client) => {
         websocket.emit('connection', client, request, claims);
       });
