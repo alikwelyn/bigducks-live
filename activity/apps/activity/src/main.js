@@ -39,9 +39,17 @@ function renderCapture() {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Configure a transmissão e mantenha esta aba aberta.</p><div class="toolbar"><button class="primary" id="start">Escolher tela ou janela</button><button class="danger" id="stop" hidden>Parar transmissão</button><label class="field">Qualidade<select id="quality"><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label><input id="audio" type="checkbox"> áudio do sistema</label></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
-  document.querySelector('#start').onclick = async () => {
-    const status = document.querySelector('#status');
+  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Configure a transmissão e mantenha esta aba aberta.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Escolher tela ou janela</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar janela ou tela</button></div><label class="field">Qualidade<select id="quality"><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label><input id="audio" type="checkbox"> áudio do sistema</label></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  const startButton = document.querySelector('#start');
+  const stopButton = document.querySelector('#stop');
+  const switchButton = document.querySelector('#switch-source');
+  const status = document.querySelector('#status');
+  let starting = false;
+  const startCapture = async () => {
+    if (starting) return;
+    starting = true;
+    startButton.disabled = true;
+    switchButton.disabled = true;
     try {
       const quality = document.querySelector('#quality').value;
       const profile = profileFor(quality === 'adaptive' ? '720p30' : quality);
@@ -69,8 +77,9 @@ function renderCapture() {
       const stopBroadcast = (message = 'Transmissão encerrada.') => {
         if (stopped) return;
         stopped = true;
-        const stopButton = document.querySelector('#stop'); stopButton.disabled = true; stopButton.hidden = true;
-        document.querySelector('#start').hidden = false;
+        stopButton.disabled = true; stopButton.hidden = true;
+        switchButton.disabled = true; switchButton.hidden = true;
+        startButton.disabled = false; startButton.hidden = false;
         const preview = document.querySelector('#preview'); preview.srcObject = null; preview.hidden = true;
         status.textContent = message;
         activeStop = null;
@@ -126,11 +135,24 @@ function renderCapture() {
       };
       preview.addEventListener('loadeddata', sendThumbnail, { once: true });
       thumbnailTimer = setInterval(sendThumbnail, 3000);
-      document.querySelector('#start').hidden = true; document.querySelector('#stop').hidden = false;
-      document.querySelector('#stop').onclick = () => stopBroadcast();
+      startButton.hidden = true; startButton.disabled = false;
+      stopButton.hidden = false; stopButton.disabled = false;
+      switchButton.hidden = false; switchButton.disabled = false;
+      starting = false;
       status.textContent = 'Transmitindo. Mantenha esta página aberta.';
       window.addEventListener('beforeunload', () => stopBroadcast(), { once: true });
-    } catch (error) { status.textContent = error?.name === 'NotAllowedError' ? 'Permissão de captura cancelada.' : `Não foi possível iniciar: ${error?.message || 'erro desconhecido'}`; }
+    } catch (error) {
+      starting = false;
+      startButton.disabled = false;
+      switchButton.disabled = false;
+      status.textContent = error?.name === 'NotAllowedError' ? 'Permissão de captura cancelada.' : `Não foi possível iniciar: ${error?.message || 'erro desconhecido'}`;
+    }
+  };
+  startButton.onclick = () => startCapture();
+  stopButton.onclick = () => activeStop?.();
+  switchButton.onclick = () => {
+    activeStop?.('Escolha a nova janela ou tela.');
+    void startCapture();
   };
 }
 
@@ -225,7 +247,7 @@ async function renderViewer() {
         const container = document.querySelector('#streams');
         if (!availableStreams.size) { container.innerHTML = '<div class="stream"><span>Nenhuma transmissão ativa</span></div>'; return; }
         container.replaceChildren(...[...availableStreams.values()].map((message) => {
-          const item = document.createElement('article'); item.className = `stream-card${selectedSlot === message.slot ? ' active' : ''}`;
+          const item = document.createElement('article'); item.className = `stream-card${selectedSlot === message.slot ? ' active' : ''}`; item.tabIndex = 0; item.role = 'button'; item.ariaLabel = `Assistir à transmissão de ${message.name}`;
           const thumbnail = document.createElement('div'); thumbnail.className = 'stream-thumb';
           if (message.thumbnail) { const image = document.createElement('img'); image.src = message.thumbnail; image.alt = `Prévia da transmissão de ${message.name}`; thumbnail.append(image); }
           else { const empty = document.createElement('span'); empty.textContent = 'Aguardando prévia'; thumbnail.append(empty); }
@@ -235,8 +257,8 @@ async function renderViewer() {
           if (message.avatar) { const avatar = document.createElement('img'); avatar.className = 'avatar'; avatar.src = message.avatar; avatar.alt = ''; identity.append(avatar); }
           else { const avatar = document.createElement('span'); avatar.className = 'avatar fallback'; avatar.textContent = (message.name || '?').slice(0, 1).toUpperCase(); identity.append(avatar); }
           const text = document.createElement('div'); const name = document.createElement('strong'); name.textContent = message.name; const meta = document.createElement('small'); meta.textContent = `${message.width}×${message.height} · ${message.fps} FPS${message.audioConfig ? ' · Com áudio' : ' · Sem áudio'}`; text.append(name, meta); identity.append(text);
-          const button = document.createElement('button'); button.textContent = selectedSlot === message.slot ? 'Parar de assistir' : 'Assistir';
-          button.onclick = () => {
+          const button = document.createElement('span'); button.className = 'stream-action'; button.textContent = selectedSlot === message.slot ? 'Parar de assistir' : 'Assistir';
+          const openStream = () => {
             if (selectedSlot === message.slot) { stopWatching(); return; }
             if (selectedSlot !== null) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
             stopRtc();
@@ -256,6 +278,8 @@ async function renderViewer() {
             showWatchView(message);
             renderStreams();
           };
+          item.onclick = openStream;
+          item.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openStream(); } };
           details.append(identity, button); item.append(thumbnail, details); return item;
         }));
       };
