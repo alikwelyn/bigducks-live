@@ -9,6 +9,7 @@ export function loadConfig(env = process.env) {
     port: Number(env.PORT || 3001),
     origin: env.PUBLIC_ORIGIN || '',
     clientId: env.DISCORD_CLIENT_ID || '',
+    clientSecret: env.DISCORD_CLIENT_SECRET || '',
     allowDevSessions: env.ALLOW_DEV_SESSIONS === 'true' && env.NODE_ENV !== 'production',
     maxViewers: Number(env.MAX_VIEWERS || 25),
     iceServers: env.TURN_URL ? [{ urls: env.TURN_URL, username: env.TURN_USER, credential: env.TURN_PASS }] : [],

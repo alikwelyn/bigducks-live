@@ -12,7 +12,7 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export function createRelayServer({ secret, allowDevSessions = false, maxViewers = 25, iceServers = [] } = {}) {
+export function createRelayServer({ secret, clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, iceServers = [] } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers });
   const staticRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/activity');
@@ -27,15 +27,39 @@ export function createRelayServer({ secret, allowDevSessions = false, maxViewers
         return fs.createReadStream(file).pipe(response);
       }
     }
+    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId });
     if (request.method === 'GET' && url.pathname === '/api/ice') return json(response, 200, { iceServers });
-    if (request.method === 'POST' && url.pathname === '/api/session') {
-      if (!allowDevSessions) return json(response, 403, { error: 'Discord session verification is required' });
+    if (request.method === 'POST' && url.pathname === '/api/discord/token') {
+      if (!clientId || !clientSecret) return json(response, 503, { error: 'Discord OAuth is not configured' });
       let body = '';
       for await (const chunk of request) body += chunk;
       try {
         const input = JSON.parse(body);
-        if (!['publisher', 'viewer'].includes(input.role) || typeof input.room !== 'string' || typeof input.user !== 'string') throw new Error('invalid session');
-        const token = issueToken({ room: input.room, role: input.role, user: input.user }, secret);
+        if (typeof input.code !== 'string' || input.code.length < 8) throw new Error('invalid authorization code');
+        const params = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'authorization_code', code: input.code });
+        const tokenResponse = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params });
+        const token = await tokenResponse.json();
+        if (!tokenResponse.ok || typeof token.access_token !== 'string') return json(response, 401, { error: 'Discord authorization failed' });
+        return json(response, 200, { access_token: token.access_token });
+      } catch (error) { return json(response, 400, { error: error.message }); }
+    }
+    if (request.method === 'POST' && url.pathname === '/api/session') {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      try {
+        const input = JSON.parse(body);
+        if (!['publisher', 'viewer'].includes(input.role) || typeof input.room !== 'string') throw new Error('invalid session');
+        let user = input.user;
+        if (!allowDevSessions) {
+          const bearer = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
+          if (!bearer) return json(response, 401, { error: 'Discord authentication required' });
+          const discordResponse = await fetch('https://discord.com/api/users/@me', { headers: { authorization: `Bearer ${bearer}` } });
+          const discordUser = await discordResponse.json();
+          if (!discordResponse.ok || typeof discordUser.id !== 'string') return json(response, 401, { error: 'Discord authentication failed' });
+          user = discordUser.id;
+        }
+        if (typeof user !== 'string' || !user) throw new Error('invalid user');
+        const token = issueToken({ room: input.room, role: input.role, user }, secret);
         return json(response, 200, { token, room: input.room, role: input.role });
       } catch (error) { return json(response, 400, { error: error.message }); }
     }
