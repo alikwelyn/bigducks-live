@@ -26,12 +26,12 @@ async function authenticateDiscord() {
 }
 
 function renderCapture() {
-  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Escolha a fonte e a qualidade. A captura acontece somente no seu navegador.</p><div class="toolbar"><button class="primary" id="start">Escolher tela ou janela</button><label class="field">Qualidade<select id="quality"><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label><input id="audio" type="checkbox"> áudio do sistema</label></div><div id="status" class="status"></div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span></div></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card"><h1>Transmitir tela</h1><p class="muted">Configure a transmissão e mantenha esta aba aberta.</p><div class="toolbar"><button class="primary" id="start">Escolher tela ou janela</button><button class="danger" id="stop" hidden>Parar transmissão</button><label class="field">Qualidade<select id="quality"><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option><option value="adaptive">Adaptativo</option></select></label><label><input id="audio" type="checkbox"> áudio do sistema</label></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   document.querySelector('#start').onclick = async () => {
     const status = document.querySelector('#status');
     try {
       const quality = document.querySelector('#quality').value;
-      const profile = profileFor(quality === 'adaptive' ? '720p60' : quality);
+      const profile = profileFor(quality === 'adaptive' ? '720p30' : quality);
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { ideal: profile.width, max: profile.width }, height: { ideal: profile.height, max: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
       const params = new URLSearchParams(location.search);
       let token = params.get('t');
@@ -52,6 +52,19 @@ function renderCapture() {
       const { slot } = await joined;
       const peers = new Map();
       let broadcaster;
+      let stopped = false;
+      const stopBroadcast = (message = 'Transmissão encerrada.') => {
+        if (stopped) return;
+        stopped = true;
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop', slot }));
+        broadcaster?.stop();
+        for (const peer of peers.values()) peer.close();
+        socket.close();
+        stream.getTracks().forEach((track) => track.stop());
+        const preview = document.querySelector('#preview'); preview.srcObject = null; preview.hidden = true;
+        document.querySelector('#start').hidden = false; document.querySelector('#stop').hidden = true;
+        status.textContent = message;
+      };
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
@@ -63,7 +76,7 @@ function renderCapture() {
         const offer = await peer.createOffer(); await peer.setLocalDescription(offer);
         socket.send(JSON.stringify({ type: 'rtc', viewer: message.viewer, description: peer.localDescription }));
       });
-      broadcaster = await createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, slot, onStatus: ({ codec, width, height, fps }) => { socket.send(JSON.stringify({ type: 'start', slot, codec, width, height, fps })); document.querySelector('#source').textContent = `Fonte: ${width}×${height}`; document.querySelector('#fps').textContent = `Codec: ${codec} / ${fps} FPS`; }, onEnd: () => { status.textContent = 'Captura encerrada.'; } });
+      broadcaster = await createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, slot, onStatus: ({ codec, width, height, fps }) => { socket.send(JSON.stringify({ type: 'start', slot, codec, width, height, fps })); document.querySelector('#source').textContent = `Fonte: ${width}×${height}`; document.querySelector('#fps').textContent = `Codec: ${codec} / ${fps} FPS`; document.querySelector('#bitrate').textContent = `Bitrate alvo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`; }, onEnd: () => stopBroadcast('Captura encerrada.') });
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
@@ -72,14 +85,17 @@ function renderCapture() {
         if (peer && message.description) await peer.setRemoteDescription(message.description);
         if (peer && message.candidate) await peer.addIceCandidate(message.candidate);
       });
+      const preview = document.querySelector('#preview'); preview.srcObject = stream; preview.hidden = false;
+      document.querySelector('#start').hidden = true; document.querySelector('#stop').hidden = false;
+      document.querySelector('#stop').onclick = () => stopBroadcast();
       status.textContent = 'Transmitindo. Mantenha esta página aberta.';
-      window.addEventListener('beforeunload', () => { broadcaster.stop(); for (const peer of peers.values()) peer.close(); socket.close(); }, { once: true });
+      window.addEventListener('beforeunload', () => stopBroadcast(), { once: true });
     } catch (error) { status.textContent = error?.name === 'NotAllowedError' ? 'Permissão de captura cancelada.' : 'Não foi possível iniciar a captura.'; }
   };
 }
 
 async function renderViewer() {
-  root.innerHTML = `<div class="shell"><div class="card"><h1>BIG DUCKS Stream</h1><p class="muted">Transmissão ao vivo dentro do Discord, com fallback automático.</p><div id="status" class="status">Conectando à sala…</div><div class="toolbar"><button id="publish" class="primary">Transmitir minha tela</button><label class="field">Qualidade<select id="quality"><option>Adaptativo</option><option>720p / 60 FPS</option><option>1080p / 30 FPS</option><option>1080p / 60 FPS</option></select></label></div><section class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></section><div class="stage"><span class="muted">Selecione uma transmissão para assistir</span></div></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card"><div class="toolbar compact"><button id="publish" class="primary">Transmitir minha tela</button><span id="status" class="status">Conectando à sala…</span></div><section class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></section><div class="stage"><span class="muted">Selecione uma transmissão para assistir</span></div></div></div>`;
   const identityPromise = authenticateDiscord();
   document.querySelector('#publish').onclick = async () => {
     try {
@@ -133,7 +149,15 @@ async function renderViewer() {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type === 'start') availableStreams.set(message.slot, message);
-        if (message.type === 'stop') { availableStreams.delete(message.slot); if (selectedSlot === message.slot) selectedSlot = null; }
+        if (message.type === 'stop') {
+          availableStreams.delete(message.slot);
+          if (selectedSlot === message.slot) {
+            selectedSlot = null;
+            player.close();
+            directVideo.srcObject = null; directVideo.style.display = 'none'; canvas.style.display = 'block';
+            document.querySelector('#status').textContent = 'Transmissão encerrada.';
+          }
+        }
         if (message.type === 'start' || message.type === 'stop') renderStreams();
       };
       socket.addEventListener('message', async (event) => {

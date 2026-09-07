@@ -1,4 +1,5 @@
 export const PROFILES = [
+  { name: '720p30', width: 1280, height: 720, fps: 30, bitrate: 2_500_000 },
   { name: '720p60', width: 1280, height: 720, fps: 60, bitrate: 4_000_000 },
   { name: '1080p30', width: 1920, height: 1080, fps: 30, bitrate: 6_000_000 },
   { name: '1080p60', width: 1920, height: 1080, fps: 60, bitrate: 9_000_000 },
