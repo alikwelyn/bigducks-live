@@ -17,9 +17,10 @@ function open(url, timeoutMs, WebSocketClass) {
   });
 }
 
-export async function connectRelaySocket({ origin = location.origin, apiBase = '', token, timeoutMs = 1800, WebSocketClass = WebSocket }) {
+export async function connectRelaySocket({ origin = location.origin, apiBase = '', token, timeoutMs = 8000, allowOriginFallback = false, WebSocketClass = WebSocket }) {
   let lastError;
-  for (const url of relayUrls({ origin, apiBase, token })) {
+  const urls = relayUrls({ origin, apiBase, token });
+  for (const url of allowOriginFallback ? urls : urls.slice(0, 1)) {
     try {
       const socket = await open(url, timeoutMs, WebSocketClass);
       socket.relay = url.includes('/edge/ws') ? 'cloudflare-edge' : 'origin-fallback';

@@ -98,13 +98,13 @@ export function createPlayer(canvas) {
       if (!configured) return;
       const packet = decodePacket(raw);
       if (packet.type === AUDIO) {
-        if (audioDecoder?.state === 'configured') audioDecoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: packet.clock * 1000, data: packet.payload }));
+        if (audioDecoder?.state === 'configured') audioDecoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: packet.clock, data: packet.payload }));
         return;
       }
       if (packet.type === VIDEO_KEYFRAME) hasKeyframe = true;
       if (packet.type === VIDEO_DELTA && !hasKeyframe) return;
       try {
-        decoder.decode(new EncodedVideoChunk({ type: packet.type === VIDEO_KEYFRAME ? 'key' : 'delta', timestamp: packet.clock * 1000, data: packet.payload }));
+        decoder.decode(new EncodedVideoChunk({ type: packet.type === VIDEO_KEYFRAME ? 'key' : 'delta', timestamp: packet.clock, data: packet.payload }));
       } catch { hasKeyframe = false; }
     },
     close() {

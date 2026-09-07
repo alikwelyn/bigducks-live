@@ -57,7 +57,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
     output: (chunk) => {
       const payload = new Uint8Array(chunk.byteLength);
       chunk.copyTo(payload);
-      ws.send(encodePacket({ slot, type: chunk.type === 'key' ? VIDEO_KEYFRAME : VIDEO_DELTA, sentAt: Date.now(), clock: performance.now(), payload }));
+      ws.send(encodePacket({ slot, type: chunk.type === 'key' ? VIDEO_KEYFRAME : VIDEO_DELTA, sentAt: Date.now(), clock: chunk.timestamp, payload }));
     },
     error: (error) => onEnd(error),
   });
@@ -75,7 +75,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
       output: (chunk) => {
         const payload = new Uint8Array(chunk.byteLength);
         chunk.copyTo(payload);
-        ws.send(encodePacket({ slot, type: AUDIO, sentAt: Date.now(), clock: performance.now(), payload }));
+        ws.send(encodePacket({ slot, type: AUDIO, sentAt: Date.now(), clock: chunk.timestamp, payload }));
       },
       error: (error) => onEnd(error),
     });
