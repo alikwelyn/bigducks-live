@@ -11,12 +11,19 @@ export function createPlayer(canvas) {
   let audioGain;
   let muted = false;
   let nextAudioTime = 0;
+  const scheduledAudio = new Set();
   let configured = false;
   let hasKeyframe = false;
   let videoBase = null;
   let lastTimestamp = -Infinity;
   let animationFrame = null;
   const frames = [];
+
+  const clearAudioSchedule = () => {
+    for (const source of scheduledAudio) { try { source.stop(); } catch { /* already ended */ } }
+    scheduledAudio.clear();
+    nextAudioTime = 0;
+  };
 
   const clearFrames = () => {
     while (frames.length) frames.shift().frame.close();
@@ -81,6 +88,7 @@ export function createPlayer(canvas) {
       clearCanvas();
       if (decoder && decoder.state !== 'closed') decoder.close();
       if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
+      clearAudioSchedule();
       audioContext?.close();
       hasKeyframe = false;
       videoBase = null;
@@ -92,6 +100,7 @@ export function createPlayer(canvas) {
     configureAudio(config) {
       if (!config || typeof AudioDecoder !== 'function' || typeof AudioContext !== 'function') return false;
       if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
+      clearAudioSchedule();
       audioContext?.close();
       audioContext = new AudioContext({ latencyHint: 'interactive', sampleRate: config.sampleRate });
       audioGain = audioContext.createGain();
@@ -103,9 +112,11 @@ export function createPlayer(canvas) {
         const buffer = audioContext.createBuffer(audioData.numberOfChannels, audioData.numberOfFrames, audioData.sampleRate);
         for (let channel = 0; channel < audioData.numberOfChannels; channel++) audioData.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: 'f32-planar' });
         const source = audioContext.createBufferSource(); source.buffer = buffer; source.connect(audioGain);
+        source.onended = () => scheduledAudio.delete(source);
         const liveEdge = audioContext.currentTime + 0.08;
-        if (nextAudioTime < audioContext.currentTime || nextAudioTime > audioContext.currentTime + 0.32) nextAudioTime = liveEdge;
-        nextAudioTime = Math.max(nextAudioTime, liveEdge); source.start(nextAudioTime); nextAudioTime += buffer.duration; audioData.close();
+        if (nextAudioTime < audioContext.currentTime || nextAudioTime > audioContext.currentTime + 0.32) clearAudioSchedule();
+        nextAudioTime = Math.max(nextAudioTime, liveEdge);
+        scheduledAudio.add(source); source.start(nextAudioTime); nextAudioTime += buffer.duration; audioData.close();
       }, error() {} });
       audioDecoder.configure({ codec: config.codec || 'opus', sampleRate: config.sampleRate, numberOfChannels: config.numberOfChannels });
       return true;
@@ -133,6 +144,7 @@ export function createPlayer(canvas) {
       clearCanvas();
       if (decoder && decoder.state !== 'closed') decoder.close();
       if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
+      clearAudioSchedule();
       audioContext?.close();
       configured = false;
     },

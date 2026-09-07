@@ -156,7 +156,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           return;
         }
         if (claims.role === 'publisher' && ['start', 'stop'].includes(message.type)) {
-          const outgoing = { ...message, slot: member.slot, name: member.name, avatar: member.avatar };
+          const outgoing = { ...message, slot: member.slot, name: member.name, avatar: member.avatar, userId: claims.user };
           member.stream = message.type === 'start' ? outgoing : null;
           for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stringifyControl(outgoing));
           return;

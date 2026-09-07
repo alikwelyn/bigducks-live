@@ -45,7 +45,7 @@ function renderCapture() {
     try {
       const quality = document.querySelector('#quality').value;
       const profile = profileFor(quality === 'adaptive' ? '720p30' : quality);
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { ideal: profile.width }, height: { ideal: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
       const params = new URLSearchParams(location.search);
       let token = params.get('t');
       if (!token) {
@@ -136,7 +136,8 @@ function renderCapture() {
 
 async function renderViewer() {
   root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><h1>Transmissões ao vivo</h1><p class="muted">Escolha uma transmissão para entrar.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button></header><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
-  const identityPromise = authenticateDiscord();
+  let viewerUserId = '';
+  const identityPromise = authenticateDiscord().then((identity) => { viewerUserId = identity.user; return identity; });
   document.querySelector('#publish').onclick = async () => {
     try {
       const identity = await identityPromise;
@@ -159,6 +160,7 @@ async function renderViewer() {
   const watchAvatar = document.querySelector('#watch-avatar');
   const muteButton = document.querySelector('#mute-live');
   let muted = false;
+  let playbackLocked = false;
   const showWatchView = (stream) => {
     watchName.textContent = stream?.name || 'Transmissão';
     watchAvatar.src = stream?.avatar || '';
@@ -173,12 +175,16 @@ async function renderViewer() {
   const player = createPlayer(canvas);
   const directVideo = document.createElement('video');
   directVideo.autoplay = true; directVideo.playsInline = true; directVideo.controls = true; directVideo.style.display = 'none'; directVideo.style.width = '100%'; directVideo.style.height = '100%'; directVideo.style.objectFit = 'contain';
-  muteButton.onclick = () => {
-    muted = !muted;
+  const setPlaybackMuted = (value, locked = playbackLocked) => {
+    muted = Boolean(value);
+    playbackLocked = locked;
     player.setMuted(muted);
     directVideo.muted = muted;
-    muteButton.textContent = muted ? '🔇 Ativar áudio' : '🔊 Áudio';
+    muteButton.disabled = playbackLocked;
+    muteButton.textContent = playbackLocked ? '🔇 Silenciado durante sua transmissão' : muted ? '🔇 Ativar áudio' : '🔊 Áudio';
+    muteButton.title = playbackLocked ? 'Evita que o áudio reproduzido seja recapturado e gere eco.' : '';
   };
+  muteButton.onclick = () => { if (!playbackLocked) setPlaybackMuted(!muted, false); };
   document.querySelector('.stage').append(directVideo);
   let directPeer;
   let directPending = [];
@@ -240,6 +246,8 @@ async function renderViewer() {
             canvas.style.display = 'block'; directVideo.style.display = 'none';
             player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
             player.configureAudio(message.audioConfig);
+            const viewerIsPublishing = [...availableStreams.values()].some((stream) => stream.userId === viewerUserId);
+            setPlaybackMuted(viewerIsPublishing, viewerIsPublishing);
             socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
             socket.send(JSON.stringify({ type: 'rtc-want', slot: message.slot }));
             rtcSlot = message.slot;
@@ -254,10 +262,14 @@ async function renderViewer() {
       socket.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
-        if (message.type === 'start') availableStreams.set(message.slot, message);
+        if (message.type === 'start') {
+          availableStreams.set(message.slot, message);
+          if (selectedSlot !== null && message.userId === viewerUserId) setPlaybackMuted(true, true);
+        }
         if (message.type === 'thumbnail' && availableStreams.has(message.slot)) availableStreams.get(message.slot).thumbnail = message.data;
         if (message.type === 'stop') {
           availableStreams.delete(message.slot);
+          if (playbackLocked && ![...availableStreams.values()].some((stream) => stream.userId === viewerUserId)) setPlaybackMuted(true, false);
           if (selectedSlot === message.slot) {
             stopRtc();
             selectedSlot = null;

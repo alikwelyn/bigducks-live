@@ -13,11 +13,18 @@ export function fitWithin(width, height, maxWidth = MAX_WIDTH, maxHeight = MAX_H
   return { width: even(Math.round(width * scale)), height: even(Math.round(height * scale)) };
 }
 
+export function frameDisplaySize(frame, fallback = {}) {
+  return {
+    width: frame?.displayWidth || frame?.codedWidth || fallback.width,
+    height: frame?.displayHeight || frame?.codedHeight || fallback.height,
+  };
+}
+
 export function captureConstraints({ fps = 30, width, height, audio = false } = {}) {
   return {
     video: {
-      ...(width ? { width: { ideal: width, max: width } } : {}),
-      ...(height ? { height: { ideal: height, max: height } } : {}),
+      ...(width ? { width: { ideal: width } } : {}),
+      ...(height ? { height: { ideal: height } } : {}),
       frameRate: { ideal: fps, max: fps },
     },
     audio: audio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
@@ -62,10 +69,20 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   if (!track) throw new Error('screen capture returned no video track');
   track.contentHint = 'text';
   try {
-    await track.applyConstraints?.({ width: { ideal: profile.width }, height: { ideal: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } });
+    await track.applyConstraints?.({ frameRate: { ideal: profile.fps, max: profile.fps } });
   } catch { /* tabs and some window sources reject resize constraints */ }
   const settings = track.getSettings();
-  const size = fitWithin(settings.width || profile.width, settings.height || profile.height, profile.width, profile.height);
+  const processor = typeof MediaStreamTrackProcessor === 'function' ? new MediaStreamTrackProcessor({ track }) : null;
+  let reader;
+  let firstFrame;
+  if (processor) {
+    reader = processor.readable.getReader();
+    const first = await reader.read();
+    if (first.done || !first.value) throw new Error('screen capture ended before the first frame');
+    firstFrame = first.value;
+  }
+  const sourceSize = frameDisplaySize(firstFrame, { width: settings.width || profile.width, height: settings.height || profile.height });
+  const size = fitWithin(sourceSize.width, sourceSize.height, profile.width, profile.height);
   const encoder = new VideoEncoder({
     output: (chunk) => {
       const payload = new Uint8Array(chunk.byteLength);
@@ -74,12 +91,17 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
     },
     error: (error) => onEnd(error),
   });
-  const codec = await selectVideoConfig({ width: size.width, height: size.height, fps: profile.fps, bitrate: profile.bitrate });
-  encoder.configure(codec);
+  let codec;
+  try {
+    codec = await selectVideoConfig({ width: size.width, height: size.height, fps: profile.fps, bitrate: profile.bitrate });
+    encoder.configure(codec);
+  } catch (error) {
+    firstFrame?.close();
+    throw error;
+  }
   let stopped = false;
   let forceKeyframe = true;
   let lastKeyframeAt = 0;
-  let reader;
   let audioEncoder;
   let audioReader;
   const audioTrack = stream.getAudioTracks()[0];
@@ -110,15 +132,17 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
     })();
   }
 
-  const processor = typeof MediaStreamTrackProcessor === 'function' ? new MediaStreamTrackProcessor({ track }) : null;
   const pump = async () => {
     if (!processor) return;
-    reader = processor.readable.getReader();
+    let pending = firstFrame;
+    firstFrame = null;
     try {
-      while (!stopped) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (encoder.encodeQueueSize > 2 || ws.bufferedAmount > 256 * 1024) { value.close(); continue; }
+      while (pending || !stopped) {
+        const result = pending ? { done: false, value: pending } : await reader.read();
+        pending = null;
+        if (result.done) break;
+        const value = result.value;
+        if (stopped || encoder.encodeQueueSize > 2 || ws.bufferedAmount > 256 * 1024) { value.close(); continue; }
         const now = Date.now();
         const keyFrame = forceKeyframe || now - lastKeyframeAt >= 3000;
         encoder.encode(value, { keyFrame });

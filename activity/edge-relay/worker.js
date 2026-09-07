@@ -77,7 +77,7 @@ export class EdgeRoom {
     }
 
     if (member.role === 'publisher' && ['start', 'stop'].includes(control.type)) {
-      const outgoing = { ...control, slot: member.slot, name: member.name, avatar: member.avatar };
+      const outgoing = { ...control, slot: member.slot, name: member.name, avatar: member.avatar, userId: member.user };
       member.stream = control.type === 'start' ? outgoing : null;
       socket.serializeAttachment(member);
       for (const viewer of this.sockets('viewer')) send(viewer, outgoing);
