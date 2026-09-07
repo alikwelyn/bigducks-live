@@ -24,10 +24,10 @@ function renderCapture() {
   document.querySelector('#start').onclick = async () => {
     const status = document.querySelector('#status');
     try {
-      const identity = await authenticateDiscord();
       const quality = document.querySelector('#quality').value;
       const profile = profileFor(quality === 'adaptive' ? '720p60' : quality);
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
+      const identity = await authenticateDiscord();
       const params = new URLSearchParams(location.search);
       const sessionResponse = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json', ...(identity.accessToken ? { authorization: `Bearer ${identity.accessToken}` } : {}) }, body: JSON.stringify({ room: params.get('room') || identity.instance, user: identity.user, role: 'publisher' }) });
       if (!sessionResponse.ok) throw new Error('relay session unavailable');
