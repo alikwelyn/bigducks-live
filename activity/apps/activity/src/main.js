@@ -8,6 +8,7 @@ import { createSfuPublisher, createSfuViewer } from './sfu.js';
 import { createPlaybackFeedback } from './playback-feedback.js';
 import { createAudience } from './audience.js';
 import { createViewControls } from './view-controls.js';
+import { createRoomState } from './room-state.js';
 import { pageMode, captureSession, createShareLink } from './access.js';
 import './styles.css';
 
@@ -222,8 +223,9 @@ function renderCapture(token) {
 }
 
 async function renderViewer() {
-  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><span class="eyebrow">BIG DUCKS · SEU CANAL</span><h1>Ao vivo com seus amigos</h1><p class="muted">Escolha uma live e entre. Sem sair do Discord.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span></header><footer class="watch-controls"><span class="live-caption">TRANSMISSÃO AO VIVO</span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button><input id="live-volume" aria-label="Volume da transmissão" type="range" min="0" max="100" value="100"></footer><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><span class="eyebrow">BIG DUCKS · SEU CANAL</span><h1>Ao vivo com seus amigos</h1><p class="muted">Escolha uma live e entre. Sem sair do Discord.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams" aria-busy="true"></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span></header><footer class="watch-controls"><span class="live-caption">TRANSMISSÃO AO VIVO</span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button><input id="live-volume" aria-label="Volume da transmissão" type="range" min="0" max="100" value="100"></footer><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
   let viewerUserId = '';
+  const roomUi = createRoomState({ status: document.querySelector('#status'), container: document.querySelector('#streams'), publish: document.querySelector('#publish'), retry: () => location.reload() });
   const identityPromise = authenticateDiscord().then((identity) => { viewerUserId = identity.user; return identity; });
   document.querySelector('#publish').onclick = async () => {
     try {
@@ -295,7 +297,9 @@ async function renderViewer() {
     if (!response.ok) throw new Error('Discord session unavailable');
     return response.json();
   }).then(async ({ token }) => {
+      roomUi.progress('Buscando as transmissões do canal…');
       const socket = await connectRelaySocket({ apiBase, token });
+      if (roomUi.phase === 'error') { socket.close(); return; }
       const availableStreams = new Map();
       const audiences = new Map();
       let selectedSlot = null;
@@ -330,13 +334,16 @@ async function renderViewer() {
         renderStreams();
       };
       document.querySelector('#back-to-streams').onclick = () => stopWatching();
-      socket.addEventListener('close', () => stopWatching('Conexão com a sala encerrada. Reabra a Activity para continuar.'));
+      socket.addEventListener('close', () => { stopWatching(); availableStreams.clear(); roomUi.fail('A conexão com a sala foi interrompida. Tente novamente para buscar as lives atuais.'); });
       window.addEventListener('beforeunload', () => { stopWatching(); socket.close(); }, { once: true });
       const renderStreams = () => {
         const container = document.querySelector('#streams');
-        if (!availableStreams.size) { container.innerHTML = '<div class="stream"><span>Nenhuma transmissão ativa</span></div>'; return; }
+        if (!roomUi.render(availableStreams.size)) return;
+        const focusedSlot = document.activeElement?.closest?.('.stream-card')?.dataset.slot;
         container.replaceChildren(...[...availableStreams.values()].map((message) => {
           const item = document.createElement('article'); item.className = `stream-card${selectedSlot === message.slot ? ' active' : ''}`; item.tabIndex = 0; item.role = 'button'; item.ariaLabel = `Assistir à transmissão de ${message.name}`;
+          item.dataset.slot = String(message.slot);
+          if (message.newUntil > Date.now()) item.classList.add('new-live');
           const thumbnail = document.createElement('div'); thumbnail.className = 'stream-thumb';
           if (message.thumbnail) { const image = document.createElement('img'); image.src = message.thumbnail; image.alt = `Prévia da transmissão de ${message.name}`; thumbnail.append(image); }
           else { const empty = document.createElement('span'); empty.textContent = 'Aguardando prévia'; thumbnail.append(empty); }
@@ -347,7 +354,7 @@ async function renderViewer() {
           else { const avatar = document.createElement('span'); avatar.className = 'avatar fallback'; avatar.textContent = (message.name || '?').slice(0, 1).toUpperCase(); identity.append(avatar); }
           const text = document.createElement('div'); const name = document.createElement('strong'); name.textContent = message.name; const meta = document.createElement('small'); meta.textContent = `${message.width}×${message.height} · ${Math.round(message.fps)} FPS${message.audioConfig ? ' · Com áudio' : ' · Sem áudio'}${message.transport === 'sfu' ? ' · Edge SFU' : ''}`; text.append(name, meta); identity.append(text);
           if (message.userId === viewerUserId) name.textContent = `${message.name} · Sua live`;
-          const count = document.createElement('small'); count.textContent = `${(audiences.get(message.slot) || []).length} assistindo`; text.append(count);
+          const count = document.createElement('small'); count.dataset.viewerCount = ''; count.textContent = `${(audiences.get(message.slot) || []).length} assistindo`; text.append(count);
           const openStream = async () => {
             if (selectedSlot === message.slot) { stopWatching(); return; }
             if (selectedSlot !== null) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
@@ -404,19 +411,42 @@ async function renderViewer() {
           item.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openStream(); } };
           details.append(identity); item.append(thumbnail, details); return item;
         }));
+        if (focusedSlot !== undefined) [...container.querySelectorAll('.stream-card')].find((card) => card.dataset.slot === focusedSlot)?.focus({ preventScroll: true });
       };
       socket.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
+        if (roomUi.phase === 'error') return;
+        if (message.type === 'room-ready') { roomUi.ready(); renderStreams(); return; }
         if (message.type === 'start') {
+          const newlyLive = roomUi.phase === 'ready' && !availableStreams.has(message.slot);
+          if (newlyLive) {
+            message.newUntil = Date.now() + 10_000;
+            roomUi.announce(message.name || 'Um amigo', () => availableStreams.size);
+            setTimeout(() => {
+              const card = [...document.querySelectorAll('.stream-card')].find((item) => item.dataset.slot === String(message.slot));
+              card?.classList.remove('new-live');
+            }, 10_000);
+          }
           availableStreams.set(message.slot, message);
           if (selectedSlot === message.slot && viewerUserId && message.userId === viewerUserId) setPlaybackMuted(true, true);
         }
-        if (message.type === 'thumbnail' && availableStreams.has(message.slot)) availableStreams.get(message.slot).thumbnail = message.data;
+        if (message.type === 'thumbnail' && availableStreams.has(message.slot)) {
+          availableStreams.get(message.slot).thumbnail = message.data;
+          const card = [...document.querySelectorAll('.stream-card')].find((item) => item.dataset.slot === String(message.slot));
+          if (card) {
+            const thumb = card.querySelector('.stream-thumb');
+            let image = thumb.querySelector('img');
+            if (!image) { thumb.querySelector('span:not(.live-badge)')?.remove(); image = document.createElement('img'); image.alt = `Prévia da transmissão de ${availableStreams.get(message.slot).name}`; thumb.prepend(image); }
+            image.src = message.data;
+          }
+        }
         if (message.type === 'audience') {
           audiences.set(message.slot, message.viewers || []);
           if (selectedSlot === message.slot) watchAudience.update(message.viewers);
-          renderStreams();
+          const card = [...document.querySelectorAll('.stream-card')].find((item) => item.dataset.slot === String(message.slot));
+          const count = card?.querySelector('[data-viewer-count]');
+          if (count) count.textContent = `${(message.viewers || []).length} assistindo`;
         }
         if (message.type === 'fallback-ready' && selectedSlot === message.slot) {
           stopSfu();
@@ -445,7 +475,7 @@ async function renderViewer() {
             showBrowseView();
           }
         }
-        if (message.type === 'start' || message.type === 'stop' || message.type === 'thumbnail') renderStreams();
+        if (message.type === 'start' || message.type === 'stop') renderStreams();
       };
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') { if (relayFallbackActive && !rtcActive) player.push(event.data); return; }
@@ -488,7 +518,7 @@ async function renderViewer() {
         } catch { stopRtc(); }
       });
       socket.send(JSON.stringify({ type: 'hello' }));
-    }).catch((error) => { document.querySelector('#status').textContent = `Não foi possível conectar à sala: ${error.message}`; });
+    }).catch(() => { roomUi.fail(); });
 }
 
 function renderAccessMessage(title, message) {

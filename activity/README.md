@@ -28,13 +28,15 @@ Sem espectadores SFU, o publicador reduz o vídeo para até 320×180, 1 FPS e 40
 
 O áudio da fonte vem marcado por padrão; a autorização no seletor do navegador continua necessária. A prévia local permanece silenciada para evitar eco. Publique frontend, origin e Worker juntos e recarregue as Activities e páginas de captura para atualizar o protocolo de presença SFU. Valide em duas sessões reais: sem espectador, assistindo, voltando à lista e fechando a Activity. O fallback WebCodecs mantém seu comportamento anterior e não recebe esses limites SFU.
 
-O player ocupa a área disponível da Activity em desktop, retrato e paisagem, preservando a proporção original. “Ampliar legendas” alterna 100%, 125% e 150%, mantendo a parte inferior da imagem como referência; a ampliação pode cortar as laterais. Legendas embutidas continuam sendo pixels do vídeo. “Tela cheia” usa o suporte do navegador; se o Discord bloquear a API no iframe, o player orienta usar o controle de tela cheia do próprio Discord. Os controles ficam no topo para não cobrir as legendas.
+O player ocupa a área disponível da Activity em desktop, retrato e paisagem, preservando a proporção original. “Ampliar legendas” alterna 100%, 125% e 150%, mantendo a parte inferior da imagem como referência; a ampliação pode cortar as laterais. Legendas embutidas continuam sendo pixels do vídeo. “Tela cheia” usa o suporte do navegador; se o Discord bloquear a API no iframe, o player orienta usar o controle de tela cheia do próprio Discord. A identificação fica acima da imagem e os controles abaixo, em áreas separadas do vídeo.
 
 A captura e o player mostram a lista de pessoas que abriram a live, com nome e avatar autenticados; os cards mostram a quantidade. A lista acompanha SFU, relay e P2P, mudanças de live, saída e desconexão, e não inclui pessoas que apenas estão na sala. Indica intenção de assistir, não confirmação de reprodução de cada frame. A mesma identidade é exibida uma vez, mesmo com mais de uma conexão.
 
 Assistir à própria live mantém o retorno de áudio silenciado. Transmitir simultaneamente não silencia a live de outra pessoa. Respostas atrasadas de uma assinatura SFU substituída não podem limpar o player atual, e mudanças na quantidade de espectadores preservam a adaptação de qualidade enquanto houver público.
 
-Mute, volume, ampliação e tela cheia permanecem visíveis, sem depender de hover, toque ou temporizador. Em telas estreitas os controles quebram linha e ficam em uma faixa própria acima do vídeo, sem cobrir as legendas. O vídeo usa somente a altura restante da Activity.
+Mute, volume, ampliação e tela cheia permanecem visíveis, sem depender de hover, toque ou temporizador. Em telas estreitas os controles quebram linha em uma faixa própria abaixo do vídeo, sem cobrir as legendas. O vídeo usa somente a altura restante da Activity, com enquadramento integral em 100%.
+
+A lista mostra carregamento até o servidor enviar `room-ready` após a lista inicial. Só então uma lista sem streams vira o estado vazio. Falhas de autenticação, desconexão ou espera acima de 20 segundos apresentam erro e “Tentar novamente”, que recarrega a sessão. Uma nova live aparece automaticamente, com destaque temporário no card e aviso de quem começou. Quem já assiste recebe um aviso com “Ver lives”, sem trocar sua transmissão automaticamente. Miniaturas e contagem de espectadores atualizam os cards sem reconstruí-los ou perder o foco do teclado.
 
 ## Acesso e proteção dos endpoints
 

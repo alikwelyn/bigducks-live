@@ -97,6 +97,7 @@ export class EdgeRoom {
           if (publisherState?.stream) send(socket, publisherState.stream);
         }
         this.notifyAudience();
+        send(socket, { type: 'room-ready' });
       }
       return;
     }

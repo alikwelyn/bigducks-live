@@ -37,4 +37,16 @@ it('counts SFU demand across switching, unwatching, fallback and disconnect with
   expect(a.deserializeAttachment().audienceSlot).toBeNull();
   await control(second, 'start', 1);
   expect(second.messages.findLast((message) => message.type === 'sfu-audience').count).toBe(0);
+  a.messages.length = 0;
+  await control(a, 'hello');
+  expect(a.messages.at(-1).type).toBe('room-ready');
+  expect(a.messages.some((message) => message.type === 'start')).toBe(true);
+});
+
+it('confirms an empty room only after processing the viewer hello', async () => {
+  const viewer = socket({ role: 'viewer', user: 'viewer' });
+  const room = new EdgeRoom({ getWebSockets: () => [viewer] });
+  expect(viewer.messages).toEqual([]);
+  await room.webSocketMessage(viewer, JSON.stringify({ type: 'hello' }));
+  expect(viewer.messages).toEqual([{ type: 'room-ready' }]);
 });

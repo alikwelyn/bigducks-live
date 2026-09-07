@@ -42,12 +42,13 @@ body{background:radial-gradient(ellipse at top,#142536 0,#090f19 65%)}
 /* Controls keep their own space; only the media row consumes remaining height. */
 .discord-mode body,.discord-mode #app{height:100%;min-height:0;min-width:0}
 .discord-mode .shell{padding:0;height:100dvh;min-height:0}
-.watch-view,.discord-mode .watch-view{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);align-items:stretch;justify-items:stretch;width:100%;height:100%;min-height:0;isolation:isolate}
+.watch-view,.discord-mode .watch-view{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;align-items:stretch;justify-items:stretch;width:100%;height:100%;min-height:0;isolation:isolate}
 .watch-view .stage,.discord-mode .watch-view .stage{position:relative;grid-column:1/-1;grid-row:2;inset:auto;width:100%;height:100%;min-height:0;margin:0;aspect-ratio:auto;border-radius:0;overflow:hidden}
 .watch-view .stage video,.watch-view .stage canvas{display:block;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:contain;transform:scale(var(--video-zoom,1));transform-origin:center var(--zoom-origin,50%)}
 .watch-view .watch-header,.watch-view .watch-controls{position:relative;inset:auto;opacity:1;pointer-events:auto;background:#07111f;padding:8px max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));gap:8px;transform:none;min-width:0;transition:none}
-.watch-view .watch-header{grid-column:1;grid-row:1;max-width:50vw;width:auto;flex-wrap:wrap;padding-top:max(8px,env(safe-area-inset-top));z-index:4}
-.watch-view .watch-controls{grid-column:2;grid-row:1;flex-wrap:wrap;align-content:center;justify-content:flex-end}
+.watch-view .watch-header{grid-column:1;grid-row:1;max-width:100%;width:auto;flex-wrap:wrap;padding-top:max(8px,env(safe-area-inset-top));z-index:4;border-bottom:1px solid #ffffff12}
+.watch-view .watch-controls{grid-column:1;grid-row:3;flex-wrap:wrap;align-content:center;justify-content:flex-start;padding-bottom:max(8px,env(safe-area-inset-bottom));border-top:1px solid #ffffff12}
+.watch-view .watch-controls #live-volume{margin-right:auto}
 .watch-view .player-action,.watch-view .back-button,.audience summary{min-height:44px;min-width:44px;font-size:14px;touch-action:manipulation}
 .watch-view #live-volume{width:clamp(60px,12vw,120px);min-height:44px;flex-shrink:1}
 .watch-view .live-caption{display:none}
@@ -63,5 +64,27 @@ body{background:radial-gradient(ellipse at top,#142536 0,#090f19 65%)}
 .capture-card>.audience{margin-top:16px}
 .view-notice:empty{display:none}.view-notice{flex-basis:100%;font-size:13px;color:#eef5ff;text-align:right}
 @media(max-width:640px){.watch-view .watch-live,.watch-view #watch-avatar,.watch-view #watch-name{display:none}.watch-view .watch-controls{gap:8px;justify-content:center}.watch-view .player-action{padding:8px}.discord-mode .viewer-shell:not(.watching){padding:12px}.viewer-heading h1{font-size:24px}.stream-details{min-width:0}.stream-identity{min-width:0}}
-@media(max-width:900px){.watch-view,.discord-mode .watch-view{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr)}.watch-view .watch-header{max-width:100%;grid-column:1;grid-row:1}.watch-view .watch-controls{grid-column:1;grid-row:2;justify-content:center}.watch-view .stage,.discord-mode .watch-view .stage{grid-row:3}}
 @media(max-height:450px){.watch-view .watch-header,.watch-view .watch-controls{padding-top:4px;padding-bottom:4px}.watch-header .audience-list{max-height:50dvh}}
+
+.viewer-shell{position:relative}
+.browse-view>.status{display:flex;align-items:center;gap:9px;margin-bottom:20px;font-size:14px;min-height:24px}
+.browse-view>.status::before{content:'';width:7px;height:7px;border-radius:50%;background:#53dca2;flex:none}
+.browse-view>.status[data-state=loading]::before{background:#77b9ff;box-shadow:0 0 0 4px #77b9ff15}
+.browse-view>.status[data-state=error]{color:#f4b6bd}.browse-view>.status[data-state=error]::before{background:#e67886}
+.room-state-panel,.room-loading{grid-column:1/-1;width:100%;padding:clamp(24px,5vw,64px);border:1px solid var(--border);border-radius:18px;background:#101925}
+.room-state-panel{text-align:center;display:grid;justify-items:center;align-content:center;min-height:300px}
+.room-state-icon{display:grid;place-items:center;width:76px;height:76px;border-radius:20px;background:#65dfae0d;color:#65dfae;margin-bottom:12px}.room-state-icon svg{width:44px;height:44px}
+.room-state-panel h2,.room-loading h2{font-size:clamp(18px,2vw,24px);margin:8px 0;letter-spacing:-.02em}
+.room-state-panel p,.room-loading p{color:var(--text-soft);max-width:520px;margin:4px 0 22px;font-size:15px;line-height:1.7}
+.room-state-panel button{min-height:44px;padding:10px 20px}
+.room-loading-copy{display:flex;align-items:center;gap:16px}.room-loading-copy p{margin-bottom:0}
+.room-spinner{width:26px;height:26px;flex:none;border:2px solid #ffffff20;border-top-color:#65dfae;border-radius:50%;animation:spin 1s linear infinite}
+.room-skeletons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:28px}
+.room-skeleton{height:160px;border-radius:12px;background:linear-gradient(110deg,#182636 25%,#203347 45%,#182636 65%);background-size:240% 100%;animation:room-shimmer 1.8s ease-in-out infinite}
+@keyframes room-shimmer{to{background-position:-240% 0}}
+.stream-card.new-live{border-color:#65dfae;box-shadow:0 0 0 2px #65dfae22}
+.stream-card.new-live .live-badge::after{content:' · COMEÇOU AGORA'}
+.room-live-notice{position:absolute;z-index:6;right:16px;bottom:80px;max-width:min(400px,calc(100% - 32px));padding:14px 16px;display:flex;align-items:center;gap:12px;background:#102b25;border:1px solid #3c9b77;border-radius:12px;box-shadow:0 8px 32px #0006;font-size:14px}
+.room-live-notice button{flex:none;min-height:44px;font-size:13px}
+@media(max-width:640px){.room-state-panel{min-height:280px}.room-skeletons{grid-template-columns:1fr}.room-skeleton:not(:first-child){display:none}.room-loading{padding:24px}.room-loading-copy{align-items:flex-start}.room-live-notice{bottom:130px;flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce){.room-spinner,.room-skeleton{animation:none}}

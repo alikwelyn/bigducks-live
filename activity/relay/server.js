@@ -239,6 +239,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           else {
             for (const publisher of rooms.get(claims.room)?.publishers.values() ?? []) if (publisher.stream) client.send(stringifyControl({ ...publisher.stream, slot: publisher.slot, name: publisher.name }));
             notifyAudience();
+            client.send(stringifyControl({ type: 'room-ready' }));
           }
           return;
         }
