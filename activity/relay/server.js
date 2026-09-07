@@ -101,8 +101,10 @@ export function createRelayServer({ secret, clientId = '', clientSecret = '', al
           return;
         }
         if (claims.role === 'viewer' && message.type === 'unwatch') return rooms.unwatch(claims.room, claims.user, message.slot);
-        if (message.type === 'rtc' || message.type === 'rtc-active' || message.type === 'rtc-bye') {
-          const target = typeof message.viewer === 'string' ? rooms.get(claims.room)?.viewers.get(message.viewer)?.socket : rooms.get(claims.room)?.publisher?.socket;
+        if (['rtc-want', 'rtc', 'rtc-active', 'rtc-bye'].includes(message.type)) {
+          const target = claims.role === 'viewer'
+            ? rooms.get(claims.room)?.publisher?.socket
+            : rooms.get(claims.room)?.viewers.get(message.viewer)?.socket;
           if (target?.readyState === 1) target.send(stringifyControl({ ...message, viewer: claims.role === 'viewer' ? claims.user : message.viewer }));
         }
       } catch { client.close(1003, 'invalid message'); }

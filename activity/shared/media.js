@@ -59,6 +59,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   const codec = codecCandidates(size.width, size.height, profile.fps)[0];
   encoder.configure({ codec: codec.codec, width: size.width, height: size.height, framerate: profile.fps, bitrate: profile.bitrate, latencyMode: 'realtime', avc: codec.avc });
   let stopped = false;
+  let forceKeyframe = true;
   let reader;
   let audioEncoder;
   let audioReader;
@@ -96,7 +97,8 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
         const { done, value } = await reader.read();
         if (done) break;
         if (encoder.encodeQueueSize > 2) { value.close(); continue; }
-        encoder.encode(value, { keyFrame: encoder.encodeQueueSize === 0 && Date.now() % 3000 < 100 });
+        encoder.encode(value, { keyFrame: forceKeyframe || (encoder.encodeQueueSize === 0 && Date.now() % 3000 < 100) });
+        forceKeyframe = false;
         value.close();
       }
     } catch (error) { if (!stopped) onEnd(error); }
@@ -104,5 +106,5 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   track.addEventListener('ended', () => { if (!stopped) onEnd(new Error('capture ended')); });
   onStatus({ codec: codec.codec, ...size, fps: profile.fps });
   void pump();
-  return { stream, encoder, audioEncoder, stop() { stopped = true; reader?.cancel(); audioReader?.cancel(); encoder.close(); audioEncoder?.close(); stream.getTracks().forEach((item) => item.stop()); } };
+  return { stream, encoder, audioEncoder, requestKeyframe() { forceKeyframe = true; }, stop() { stopped = true; reader?.cancel(); audioReader?.cancel(); encoder.close(); audioEncoder?.close(); stream.getTracks().forEach((item) => item.stop()); } };
 }
