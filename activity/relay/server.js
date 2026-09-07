@@ -12,7 +12,7 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export function createRelayServer({ secret, clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, iceServers = [] } = {}) {
+export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, iceServers = [] } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers });
   const staticRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/activity');
@@ -27,19 +27,19 @@ export function createRelayServer({ secret, clientId = '', clientSecret = '', al
         return fs.createReadStream(file).pipe(response);
       }
     }
-    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId });
+    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId, publicOrigin: origin });
     if (request.method === 'GET' && url.pathname === '/api/discord/authorize') {
       if (!clientId || !clientSecret) return json(response, 503, { error: 'Discord OAuth is not configured' });
       const redirect = url.searchParams.get('redirect') || '/share';
       const state = issueToken({ type: 'oauth', redirect: redirect.startsWith('/') ? redirect : '/share' }, secret);
-      const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: `${process.env.PUBLIC_ORIGIN || url.origin}/api/discord/callback`, scope: 'identify', state });
+      const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: `${origin || url.origin}/api/discord/callback`, scope: 'identify', state });
       response.writeHead(302, { location: `https://discord.com/oauth2/authorize?${params}` }); return response.end();
     }
     if (request.method === 'GET' && url.pathname === '/api/discord/callback') {
       try {
         const state = verifyToken(url.searchParams.get('state'), secret);
         if (state.type !== 'oauth') throw new Error('invalid OAuth state');
-        const params = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'authorization_code', code: url.searchParams.get('code') || '', redirect_uri: `${process.env.PUBLIC_ORIGIN || url.origin}/api/discord/callback` });
+        const params = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'authorization_code', code: url.searchParams.get('code') || '', redirect_uri: `${origin || url.origin}/api/discord/callback` });
         const tokenResponse = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params });
         const token = await tokenResponse.json();
         if (!tokenResponse.ok || typeof token.access_token !== 'string') throw new Error('Discord authorization failed');

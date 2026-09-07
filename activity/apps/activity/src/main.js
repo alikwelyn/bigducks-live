@@ -6,19 +6,23 @@ import { createPlayer } from './player.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
-const captureMode = new URLSearchParams(location.search).get('capture') === '1';
+const pageParams = new URLSearchParams(location.search);
+const inDiscord = pageParams.has('frame_id');
+const apiBase = inDiscord ? '/.proxy' : '';
+const apiUrl = (path) => `${apiBase}${path}`;
+const captureMode = pageParams.get('capture') === '1';
 
 async function authenticateDiscord() {
   const params = new URLSearchParams(location.search);
-  if (params.get('external') === '1') return { accessToken: '', user: '', instance: params.get('room') || 'external' };
-  const config = await fetch('/api/config').then((response) => response.json());
-  if (!config.clientId) return { accessToken: '', user: crypto.randomUUID(), instance: 'demo' };
+  if (params.get('external') === '1') return { accessToken: '', user: '', instance: params.get('room') || 'external', sdk: null, publicOrigin: location.origin };
+  const config = await fetch(apiUrl('/api/config')).then((response) => response.json());
+  if (!config.clientId) return { accessToken: '', user: crypto.randomUUID(), instance: 'demo', sdk: null, publicOrigin: location.origin };
   const sdk = new DiscordSDK(config.clientId);
   await sdk.ready();
   const { code } = await sdk.commands.authorize({ client_id: config.clientId, response_type: 'code', state: crypto.randomUUID(), prompt: 'none', scope: ['identify', 'applications.commands'] });
-  const { access_token: accessToken } = await fetch('/api/discord/token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) }).then((response) => response.json());
+  const { access_token: accessToken } = await fetch(apiUrl('/api/discord/token'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) }).then((response) => response.json());
   const auth = await sdk.commands.authenticate({ access_token: accessToken });
-  return { accessToken, user: auth.user.id, instance: sdk.instanceId || 'activity' };
+  return { accessToken, user: auth.user.id, instance: sdk.instanceId || 'activity', sdk, publicOrigin: config.publicOrigin || location.origin };
 }
 
 function renderCapture() {
@@ -31,10 +35,10 @@ function renderCapture() {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: profile.fps, max: profile.fps } }, audio: document.querySelector('#audio').checked });
       const identity = await authenticateDiscord();
       const params = new URLSearchParams(location.search);
-      const sessionResponse = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json', ...(identity.accessToken ? { authorization: `Bearer ${identity.accessToken}` } : {}) }, body: JSON.stringify({ room: params.get('room') || identity.instance, user: identity.user, role: 'publisher' }) });
+      const sessionResponse = await fetch(apiUrl('/api/session'), { method: 'POST', headers: { 'content-type': 'application/json', ...(identity.accessToken ? { authorization: `Bearer ${identity.accessToken}` } : {}) }, body: JSON.stringify({ room: params.get('room') || identity.instance, user: identity.user, role: 'publisher' }) });
       if (!sessionResponse.ok) throw new Error('relay session unavailable');
       const { token } = await sessionResponse.json();
-      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}`);
+      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${apiUrl('/ws')}?token=${encodeURIComponent(token)}`);
       await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
       const peers = new Map();
       let broadcaster;
@@ -67,11 +71,19 @@ function renderCapture() {
 
 async function renderViewer() {
   root.innerHTML = `<div class="shell"><div class="card"><h1>BIG DUCKS Stream</h1><p class="muted">Transmissão ao vivo dentro do Discord, com fallback automático.</p><div id="status" class="status">Conectando à sala…</div><div class="toolbar"><button id="publish" class="primary">Transmitir minha tela</button><label class="field">Qualidade<select id="quality"><option>Adaptativo</option><option>720p / 60 FPS</option><option>1080p / 30 FPS</option><option>1080p / 60 FPS</option></select></label></div><section class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></section><div class="stage"><span class="muted">Selecione uma transmissão para assistir</span></div></div></div>`;
-  document.querySelector('#publish').onclick = () => {
-    const room = new URLSearchParams(location.search).get('room') || '';
-    const redirect = `/share?capture=1&external=1&room=${encodeURIComponent(room)}`;
-    window.open(`/api/discord/authorize?redirect=${encodeURIComponent(redirect)}`, '_blank', 'noopener');
-    document.querySelector('#status').textContent = 'A página de transmissão foi aberta no navegador.';
+  const identityPromise = authenticateDiscord();
+  document.querySelector('#publish').onclick = async () => {
+    const identity = await identityPromise;
+    const redirect = `/share?capture=1&external=1&room=${encodeURIComponent(identity.instance)}`;
+    const url = `${identity.publicOrigin}/api/discord/authorize?redirect=${encodeURIComponent(redirect)}`;
+    try {
+      const result = await identity.sdk?.commands.openExternalLink({ url });
+      if (!identity.sdk) window.open(url, '_blank', 'noopener');
+      if (result?.opened === false) throw new Error('Abertura recusada');
+      document.querySelector('#status').textContent = 'A página de transmissão foi aberta no navegador.';
+    } catch (error) {
+      document.querySelector('#status').textContent = `Não foi possível abrir o navegador: ${error.message}`;
+    }
   };
   const canvas = document.createElement('canvas');
   document.querySelector('.stage').replaceChildren(canvas);
@@ -80,10 +92,11 @@ async function renderViewer() {
   directVideo.autoplay = true; directVideo.playsInline = true; directVideo.controls = true; directVideo.style.display = 'none'; directVideo.style.width = '100%'; directVideo.style.height = '100%';
   document.querySelector('.stage').append(directVideo);
   let directPeer;
-  const params = new URLSearchParams(location.search);
-  if (params.get('room')) {
-    authenticateDiscord().then((identity) => fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json', ...(identity.accessToken ? { authorization: `Bearer ${identity.accessToken}` } : {}) }, body: JSON.stringify({ room: params.get('room') || identity.instance, user: identity.user, role: 'viewer' }) })).then((response) => response.json()).then(({ token }) => {
-      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}`);
+  identityPromise.then((identity) => fetch(apiUrl('/api/session'), { method: 'POST', headers: { 'content-type': 'application/json', ...(identity.accessToken ? { authorization: `Bearer ${identity.accessToken}` } : {}) }, body: JSON.stringify({ room: identity.instance, user: identity.user, role: 'viewer' }) })).then((response) => {
+    if (!response.ok) throw new Error('Discord session unavailable');
+    return response.json();
+  }).then(({ token }) => {
+      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${apiUrl('/ws')}?token=${encodeURIComponent(token)}`);
       socket.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
@@ -103,10 +116,7 @@ async function renderViewer() {
         if (message.description) { await directPeer.setRemoteDescription(message.description); const answer = await directPeer.createAnswer(); await directPeer.setLocalDescription(answer); socket.send(JSON.stringify({ type: 'rtc', description: directPeer.localDescription })); }
         if (message.candidate) await directPeer.addIceCandidate(message.candidate);
       });
-    }).catch(() => { document.querySelector('#status').textContent = 'Não foi possível conectar à sala.'; });
-  } else {
-    document.querySelector('#status').textContent = 'Sala pronta. Acesso privado pela call do Discord.';
-  }
+    }).catch((error) => { document.querySelector('#status').textContent = `Não foi possível conectar à sala: ${error.message}`; });
 }
 
 (captureMode ? renderCapture : renderViewer)();
