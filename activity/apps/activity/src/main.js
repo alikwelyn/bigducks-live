@@ -135,7 +135,7 @@ function renderCapture() {
 }
 
 async function renderViewer() {
-  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><h1>Transmissões ao vivo</h1><p class="muted">Escolha uma transmissão para entrar.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong></header><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><h1>Transmissões ao vivo</h1><p class="muted">Escolha uma transmissão para entrar.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams"><div class="stream"><span>Nenhuma transmissão ativa</span></div></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button><button id="fullscreen-live" class="player-action" type="button">⛶ Tela cheia</button></header><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
   const identityPromise = authenticateDiscord();
   document.querySelector('#publish').onclick = async () => {
     try {
@@ -157,6 +157,9 @@ async function renderViewer() {
   const watchView = document.querySelector('#watch-view');
   const watchName = document.querySelector('#watch-name');
   const watchAvatar = document.querySelector('#watch-avatar');
+  const muteButton = document.querySelector('#mute-live');
+  const fullscreenButton = document.querySelector('#fullscreen-live');
+  let muted = false;
   const showWatchView = (stream) => {
     watchName.textContent = stream?.name || 'Transmissão';
     watchAvatar.src = stream?.avatar || '';
@@ -170,7 +173,23 @@ async function renderViewer() {
   document.querySelector('.stage').replaceChildren(canvas);
   const player = createPlayer(canvas);
   const directVideo = document.createElement('video');
-  directVideo.autoplay = true; directVideo.playsInline = true; directVideo.controls = true; directVideo.style.display = 'none'; directVideo.style.width = '100%'; directVideo.style.height = '100%';
+  directVideo.autoplay = true; directVideo.playsInline = true; directVideo.controls = true; directVideo.style.display = 'none'; directVideo.style.width = '100%'; directVideo.style.height = '100%'; directVideo.style.objectFit = 'contain';
+  muteButton.onclick = () => {
+    muted = !muted;
+    player.setMuted(muted);
+    directVideo.muted = muted;
+    muteButton.textContent = muted ? '🔇 Ativar áudio' : '🔊 Áudio';
+  };
+  fullscreenButton.onclick = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await viewerShell.requestFullscreen();
+    } catch {
+      fullscreenButton.textContent = 'Tela cheia indisponível';
+      setTimeout(() => { fullscreenButton.textContent = '⛶ Tela cheia'; }, 1800);
+    }
+  };
+  document.addEventListener('fullscreenchange', () => { fullscreenButton.textContent = document.fullscreenElement ? '⛶ Sair da tela cheia' : '⛶ Tela cheia'; });
   document.querySelector('.stage').append(directVideo);
   let directPeer;
   let directPending = [];

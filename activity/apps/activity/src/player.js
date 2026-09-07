@@ -8,6 +8,8 @@ export function createPlayer(canvas) {
   let decoder;
   let audioDecoder;
   let audioContext;
+  let audioGain;
+  let muted = false;
   let nextAudioTime = 0;
   let configured = false;
   let hasKeyframe = false;
@@ -32,6 +34,12 @@ export function createPlayer(canvas) {
     const width = frame.displayWidth || frame.codedWidth;
     const height = frame.displayHeight || frame.codedHeight;
     if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    const bounds = canvas.parentElement?.getBoundingClientRect?.();
+    if (bounds?.width && bounds?.height) {
+      const fitHeight = bounds.width / bounds.height > width / height;
+      canvas.style.width = fitHeight ? 'auto' : '100%';
+      canvas.style.height = fitHeight ? '100%' : 'auto';
+    }
     context.drawImage(frame, 0, 0, canvas.width, canvas.height);
     frame.close();
   };
@@ -86,18 +94,26 @@ export function createPlayer(canvas) {
       if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
       audioContext?.close();
       audioContext = new AudioContext({ latencyHint: 'interactive', sampleRate: config.sampleRate });
+      audioGain = audioContext.createGain();
+      audioGain.gain.value = muted ? 0 : 1;
+      audioGain.connect(audioContext.destination);
       audioContext.resume().catch(() => {});
       nextAudioTime = 0;
       audioDecoder = new AudioDecoder({ output(audioData) {
         const buffer = audioContext.createBuffer(audioData.numberOfChannels, audioData.numberOfFrames, audioData.sampleRate);
         for (let channel = 0; channel < audioData.numberOfChannels; channel++) audioData.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: 'f32-planar' });
-        const source = audioContext.createBufferSource(); source.buffer = buffer; source.connect(audioContext.destination);
+        const source = audioContext.createBufferSource(); source.buffer = buffer; source.connect(audioGain);
         const liveEdge = audioContext.currentTime + 0.08;
         if (nextAudioTime < audioContext.currentTime || nextAudioTime > audioContext.currentTime + 0.32) nextAudioTime = liveEdge;
         nextAudioTime = Math.max(nextAudioTime, liveEdge); source.start(nextAudioTime); nextAudioTime += buffer.duration; audioData.close();
       }, error() {} });
       audioDecoder.configure({ codec: config.codec || 'opus', sampleRate: config.sampleRate, numberOfChannels: config.numberOfChannels });
       return true;
+    },
+    setMuted(value) {
+      muted = Boolean(value);
+      if (audioGain) audioGain.gain.value = muted ? 0 : 1;
+      return muted;
     },
     push(raw) {
       if (!configured) return;
