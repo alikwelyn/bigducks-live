@@ -146,6 +146,13 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           return;
         }
         const message = parseControl(data);
+        if (message.type === 'hello') {
+          if (claims.role === 'publisher') client.send(stringifyControl({ type: 'joined', slot: member.slot, name: member.name }));
+          else {
+            for (const publisher of rooms.get(claims.room)?.publishers.values() ?? []) if (publisher.stream) client.send(stringifyControl({ ...publisher.stream, slot: publisher.slot, name: publisher.name }));
+          }
+          return;
+        }
         if (claims.role === 'publisher' && ['start', 'stop'].includes(message.type)) {
           const outgoing = { ...message, slot: member.slot, name: member.name };
           member.stream = message.type === 'start' ? outgoing : null;

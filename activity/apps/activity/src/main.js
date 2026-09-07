@@ -3,6 +3,7 @@ import { profileFor } from '../../../shared/adaptation.js';
 import { createPeer, FALLBACK_MS, fetchIceServers, tuneSenders } from '../../../shared/rtc.js';
 import { createBroadcaster } from '../../../shared/media.js';
 import { createPlayer } from './player.js';
+import { connectRelaySocket } from './relay-socket.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -41,14 +42,13 @@ function renderCapture() {
         if (!sessionResponse.ok) throw new Error('relay session unavailable');
         ({ token } = await sessionResponse.json());
       }
-      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${apiUrl('/ws')}?token=${encodeURIComponent(token)}`);
-      socket.binaryType = 'arraybuffer';
+      const socket = await connectRelaySocket({ apiBase, token });
       const joined = new Promise((resolve) => socket.addEventListener('message', (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type === 'joined') resolve(message);
       }));
-      await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+      socket.send(JSON.stringify({ type: 'hello' }));
       const { slot } = await joined;
       const peers = new Map();
       let broadcaster;
@@ -140,9 +140,8 @@ async function renderViewer() {
   identityPromise.then((identity) => fetch(apiUrl('/api/session'), { method: 'POST', headers: { 'content-type': 'application/json', ...(identity.accessToken ? { authorization: `Bearer ${identity.accessToken}` } : {}) }, body: JSON.stringify({ room: identity.instance, user: identity.user, role: 'viewer' }) })).then((response) => {
     if (!response.ok) throw new Error('Discord session unavailable');
     return response.json();
-  }).then(({ token }) => {
-      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${apiUrl('/ws')}?token=${encodeURIComponent(token)}`);
-      socket.binaryType = 'arraybuffer';
+  }).then(async ({ token }) => {
+      const socket = await connectRelaySocket({ apiBase, token });
       const availableStreams = new Map();
       let selectedSlot = null;
       const stopRtc = ({ resumeRelay = false } = {}) => {
@@ -241,6 +240,7 @@ async function renderViewer() {
           }
         } catch { stopRtc(); }
       });
+      socket.send(JSON.stringify({ type: 'hello' }));
     }).catch((error) => { document.querySelector('#status').textContent = `Não foi possível conectar à sala: ${error.message}`; });
 }
 

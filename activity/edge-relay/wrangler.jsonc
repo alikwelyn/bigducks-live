@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bigducks-stream-relay",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-07",
+  "account_id": "dbc978e2d15a3bb6fb40a4513e9cb70e",
+  "routes": [
+    { "pattern": "stream.skillup.com.br/edge/*", "zone_name": "skillup.com.br" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOMS", "class_name": "EdgeRoom" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["EdgeRoom"] }
+  ],
+  "observability": { "enabled": true }
+}
