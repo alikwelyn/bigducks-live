@@ -43,7 +43,13 @@ function renderCapture() {
       }
       const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${apiUrl('/ws')}?token=${encodeURIComponent(token)}`);
       socket.binaryType = 'arraybuffer';
+      const joined = new Promise((resolve) => socket.addEventListener('message', (event) => {
+        if (typeof event.data !== 'string') return;
+        const message = JSON.parse(event.data);
+        if (message.type === 'joined') resolve(message);
+      }));
       await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+      const { slot } = await joined;
       const peers = new Map();
       let broadcaster;
       socket.addEventListener('message', async (event) => {
@@ -57,7 +63,7 @@ function renderCapture() {
         const offer = await peer.createOffer(); await peer.setLocalDescription(offer);
         socket.send(JSON.stringify({ type: 'rtc', viewer: message.viewer, description: peer.localDescription }));
       });
-      broadcaster = await createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, onStatus: ({ codec, width, height, fps }) => { socket.send(JSON.stringify({ type: 'start', slot: 0, codec, width, height, fps })); document.querySelector('#source').textContent = `Fonte: ${width}×${height}`; document.querySelector('#fps').textContent = `Codec: ${codec} / ${fps} FPS`; }, onEnd: () => { status.textContent = 'Captura encerrada.'; } });
+      broadcaster = await createBroadcaster({ ws: socket, profile, audio: document.querySelector('#audio').checked, stream, slot, onStatus: ({ codec, width, height, fps }) => { socket.send(JSON.stringify({ type: 'start', slot, codec, width, height, fps })); document.querySelector('#source').textContent = `Fonte: ${width}×${height}`; document.querySelector('#fps').textContent = `Codec: ${codec} / ${fps} FPS`; }, onEnd: () => { status.textContent = 'Captura encerrada.'; } });
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
@@ -103,14 +109,32 @@ async function renderViewer() {
   }).then(({ token }) => {
       const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${apiUrl('/ws')}?token=${encodeURIComponent(token)}`);
       socket.binaryType = 'arraybuffer';
+      const availableStreams = new Map();
+      let selectedSlot = null;
+      const renderStreams = () => {
+        const container = document.querySelector('#streams');
+        if (!availableStreams.size) { container.innerHTML = '<div class="stream"><span>Nenhuma transmissão ativa</span></div>'; return; }
+        container.replaceChildren(...[...availableStreams.values()].map((message) => {
+          const item = document.createElement('div'); item.className = 'stream';
+          const label = document.createElement('span'); label.textContent = `${message.name} · ${message.width}×${message.height} / ${message.fps} FPS`;
+          const button = document.createElement('button'); button.textContent = selectedSlot === message.slot ? 'Assistindo' : 'Assistir';
+          button.onclick = () => {
+            if (selectedSlot !== null && selectedSlot !== message.slot) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
+            selectedSlot = message.slot;
+            player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
+            socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
+            document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name}.`;
+            renderStreams();
+          };
+          item.append(label, button); return item;
+        }));
+      };
       socket.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
-        if (message.type !== 'start') return;
-        player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
-        const item = document.createElement('div'); item.className = 'stream'; item.innerHTML = `<span>Stream ao vivo · ${message.width}×${message.height} / ${message.fps} FPS</span><button>Assistir</button>`;
-        item.querySelector('button').onclick = () => { socket.send(JSON.stringify({ type: 'watch', slot: message.slot })); document.querySelector('#status').textContent = 'Recebendo transmissão pelo relay/WebRTC…'; };
-        document.querySelector('#streams').replaceChildren(item);
+        if (message.type === 'start') availableStreams.set(message.slot, message);
+        if (message.type === 'stop') { availableStreams.delete(message.slot); if (selectedSlot === message.slot) selectedSlot = null; }
+        if (message.type === 'start' || message.type === 'stop') renderStreams();
       };
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') { player.push(event.data); return; }
