@@ -2,6 +2,8 @@ import { issueToken, verifyToken } from './tokens.js';
 
 const API_ORIGIN = 'https://rtc.live.cloudflare.com/v1/apps';
 const MAX_SDP_LENGTH = 1_000_000;
+// The capability is revoked when the publication ends, so its lifetime only has to
+// cover a live stream; shortening it would silently downgrade long broadcasts.
 const MEDIA_TTL_SECONDS = 6 * 60 * 60;
 
 function description(value, expectedType) {
@@ -82,12 +84,26 @@ export function createSfuGateway({ appId = '', appSecret = '', secret, fetchImpl
       const media = verifyToken(input?.mediaToken, secret);
       if (media.type !== 'sfu-media' || media.room !== claims.room) throw new Error('media capability room mismatch');
       if (!Array.isArray(media.tracks) || !media.tracks.length || typeof media.sourceSessionId !== 'string') throw new Error('invalid media capability');
+      // The capability dies with the publication: a viewer who saw a live cannot
+      // keep pulling tracks after the streamer stopped.
+      if (!sessions.has(media.sourceSessionId)) throw new Error('media capability publication is no longer live');
       const tracks = media.tracks.map((track) => ({ location: 'remote', sessionId: media.sourceSessionId, trackName: track.trackName }));
       return call(`/sessions/${encodeURIComponent(input.sessionId)}/tracks/new`, { body: { tracks } });
     },
     async renegotiate(claims, input) {
       ownSession(claims, input?.sessionId);
       return call(`/sessions/${encodeURIComponent(input.sessionId)}/renegotiate`, { method: 'PUT', body: { sessionDescription: description(input.sessionDescription, 'answer') } });
+    },
+    // Called when a publisher's socket closes: the publication is over even if the
+    // client never managed to send its own close request.
+    release({ room, user } = {}) {
+      let removed = 0;
+      for (const [id, owner] of sessions) {
+        if (owner.room !== room) continue;
+        if (user && owner.user !== user) continue;
+        sessions.delete(id); removed += 1;
+      }
+      return removed;
     },
     async closeTracks(claims, input) {
       ownSession(claims, input?.sessionId);

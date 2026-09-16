@@ -313,6 +313,8 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
     });
     client.on('close', () => {
       if (member.role === 'publisher') {
+        // The publication is over even if the client could not send its own close request.
+        sfu.release({ room: claims.room, user: claims.user });
         for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) clearAudience(viewer, member.slot);
         const stopped = stringifyControl({ type: 'stop', slot: member.slot, name: member.name });
         for (const viewer of rooms.get(claims.room)?.viewers.values() ?? []) if (viewer.socket.readyState === 1) viewer.socket.send(stopped);

@@ -91,4 +91,36 @@ describe('Cloudflare Realtime SFU gateway', () => {
     await expect(gateway.closeTracks(publisher, { sessionId: 's-pub', mids: ['0'] })).rejects.toThrow(/owner/i);
   });
 
+  it('stops honouring a media capability once the publication is closed', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ sessionId: 's-pub' }, 201))
+      .mockResolvedValueOnce(response({ tracks: [{ mid: '0', trackName: 'video-track' }], sessionDescription: { type: 'answer', sdp: 'answer' } }))
+      .mockResolvedValueOnce(response({ sessionId: 's-view' }, 201))
+      .mockImplementation(async () => response({}));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl });
+    await gateway.createSession(publisher);
+    const published = await gateway.publish(publisher, { sessionId: 's-pub', sessionDescription: { type: 'offer', sdp: 'offer' }, tracks: [{ mid: '0', trackName: 'video-track', kind: 'video' }] });
+    await gateway.createSession(viewer);
+    await gateway.subscribe(viewer, { sessionId: 's-view', mediaToken: published.mediaToken });
+    await gateway.closeTracks(publisher, { sessionId: 's-pub', mids: ['0'] });
+    await expect(gateway.subscribe(viewer, { sessionId: 's-view', mediaToken: published.mediaToken })).rejects.toThrow(/publication|capability/i);
+  });
+
+  it('revokes the publication when the publisher leaves without a close request', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ sessionId: 's-pub' }, 201))
+      .mockResolvedValueOnce(response({ tracks: [{ mid: '0', trackName: 'video-track' }], sessionDescription: { type: 'answer', sdp: 'answer' } }))
+      .mockResolvedValueOnce(response({ sessionId: 's-view' }, 201))
+      .mockImplementation(async () => response({}));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl });
+    await gateway.createSession(publisher);
+    const published = await gateway.publish(publisher, { sessionId: 's-pub', sessionDescription: { type: 'offer', sdp: 'offer' }, tracks: [{ mid: '0', trackName: 'video-track', kind: 'video' }] });
+    await gateway.createSession(viewer);
+    await gateway.subscribe(viewer, { sessionId: 's-view', mediaToken: published.mediaToken });
+    expect(gateway.release({ room: 'room-a', user: 'pub' })).toBe(1);
+    await expect(gateway.subscribe(viewer, { sessionId: 's-view', mediaToken: published.mediaToken })).rejects.toThrow(/publication|capability/i);
+    expect(gateway.release({ room: 'room-a', user: 'pub' })).toBe(0);
+    expect(gateway.release({ room: 'outra-sala' })).toBe(0);
+  });
+
 });
