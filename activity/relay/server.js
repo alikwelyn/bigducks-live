@@ -17,10 +17,10 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [], sfuAppId = '', sfuAppSecret = '', sfuFetch = globalThis.fetch, guildId = '', discordFetch = globalThis.fetch, apiRateLimit = 600 } = {}) {
+export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [], sfuAppId = '', sfuAppSecret = '', sfuFetch = globalThis.fetch, guildId = '', discordFetch = globalThis.fetch, apiRateLimit = 600, sfuMaxRateKeys = 10_000 } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers, maxPublishers });
-  const sfu = createSfuGateway({ appId: sfuAppId, appSecret: sfuAppSecret, secret, fetchImpl: sfuFetch });
+  const sfu = createSfuGateway({ appId: sfuAppId, appSecret: sfuAppSecret, secret, fetchImpl: sfuFetch, maxRateKeys: sfuMaxRateKeys });
   const apiAllowed = createLimiter({ limit: apiRateLimit });
   const guildCache = new Map();
   // Cached briefly: /api/session runs on every Activity open and Discord rate-limits per app.
@@ -130,7 +130,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         return json(response, 200, result);
       } catch (error) {
         const message = String(error?.message || 'SFU operation failed');
-        const status = message.includes('not configured') ? 503 : message.includes('rate limit') ? 429 : /role|required|owner|room/.test(message) ? 403 : message.startsWith('Cloudflare Realtime') || message.includes('publication failed') ? 502 : 400;
+        const status = message.includes('not configured') ? 503 : message.includes('rate limit') || message.startsWith('SFU session capacity') ? 429 : /role|required|owner|room/.test(message) ? 403 : message.startsWith('Cloudflare Realtime') || message.includes('publication failed') ? 502 : 400;
         return json(response, status, { error: message });
       }
     }

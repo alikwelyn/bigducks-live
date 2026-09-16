@@ -26,6 +26,7 @@ export async function verifyEdgeToken(token, secret, now = Math.floor(Date.now()
   let claims;
   try { claims = JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0]))); } catch { throw new Error('invalid token body'); }
   if (!Number.isInteger(claims.exp) || claims.exp <= now) throw new Error('token expired');
-  if (typeof claims.room !== 'string' || !claims.room || typeof claims.user !== 'string' || !['publisher', 'viewer'].includes(claims.role)) throw new Error('invalid token claims');
+  // Mirrors the origin guard: only room sessions may be used as one.
+  if (claims.type || typeof claims.room !== 'string' || !claims.room || typeof claims.user !== 'string' || !['publisher', 'viewer'].includes(claims.role)) throw new Error('invalid token claims');
   return claims;
 }
