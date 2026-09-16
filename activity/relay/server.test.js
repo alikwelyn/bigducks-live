@@ -204,3 +204,48 @@ describe('relay server', () => {
     expect([...result.data]).toEqual([0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 9, 8]);
   });
 });
+
+describe('discord server membership', () => {
+  const discord = (guilds, status = 200) => vi.fn(async (url) => {
+    if (url.endsWith('/users/@me')) return new Response(JSON.stringify({ id: 'u1', username: 'ana', global_name: 'Ana' }), { status: 200 });
+    if (url.endsWith('/users/@me/guilds')) return new Response(JSON.stringify(guilds), { status });
+    return new Response('{}', { status: 404 });
+  });
+  const session = (base) => fetch(`${base}/api/session`, { method: 'POST', headers: { authorization: 'Bearer discord-token' }, body: JSON.stringify({ room: 'r', user: 'spoofed', role: 'viewer' }) });
+
+  it('refuses a caller who is not in the configured server', async () => {
+    const discordFetch = discord([{ id: 'outro-servidor' }]);
+    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const response = await session(`http://127.0.0.1:${server.port}`);
+    expect(response.status).toBe(403);
+    expect(await response.json()).not.toHaveProperty('token');
+  });
+
+  it('accepts a member and issues the session for the authenticated identity', async () => {
+    const discordFetch = discord([{ id: 'outro' }, { id: 'meu-servidor' }]);
+    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const response = await session(`http://127.0.0.1:${server.port}`);
+    expect(response.status).toBe(200);
+    expect(JSON.parse(Buffer.from((await response.json()).token.split('.')[0], 'base64url').toString()).user).toBe('u1');
+  });
+
+  it('denies when the guild list cannot be read, so a missing scope cannot silently open the room', async () => {
+    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch: discord({}, 403) });
+    expect((await session(`http://127.0.0.1:${server.port}`)).status).toBe(403);
+  });
+
+  it('does not ask Discord for guilds when no server is configured', async () => {
+    const discordFetch = discord([{ id: 'qualquer' }]);
+    const server = await start({ allowDevSessions: false, discordFetch });
+    expect((await session(`http://127.0.0.1:${server.port}`)).status).toBe(200);
+    expect(discordFetch.mock.calls.some(([url]) => url.endsWith('/users/@me/guilds'))).toBe(false);
+  });
+
+  it('caches the membership answer per user instead of calling Discord on every open', async () => {
+    const discordFetch = discord([{ id: 'meu-servidor' }]);
+    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const base = `http://127.0.0.1:${server.port}`;
+    await session(base); await session(base);
+    expect(discordFetch.mock.calls.filter(([url]) => url.endsWith('/users/@me/guilds'))).toHaveLength(1);
+  });
+});
