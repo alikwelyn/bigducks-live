@@ -70,6 +70,24 @@ describe('SFU browser transport', () => {
       expect(published.peer.getSenders()[0].setParameters).toHaveBeenCalledTimes(adjustments);
     } finally { published?.close(); vi.useRealTimers(); }
   });
+  it('reports a dropped publisher connection so the stream can degrade instead of freezing silently', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn().mockResolvedValueOnce(json({ sessionId: 'session' }))
+        .mockResolvedValueOnce(json({ sessionDescription: { type: 'answer', sdp: 'answer' }, mediaToken: 'media' })).mockResolvedValue(json({}));
+      const onDisconnect = vi.fn();
+      const published = await createSfuPublisher({ stream: new FakeMediaStream([{ id: 'v', kind: 'video', getSettings: () => ({ width: 1280, height: 720 }) }]), profile: { width: 1280, height: 720, bitrate: 2_500_000, fps: 30 }, fetchImpl, RTCPeerConnectionClass: FakePeerConnection, onDisconnect });
+      published.peer.connectionState = 'failed';
+      published.peer.listeners.get('connectionstatechange')?.();
+      expect(onDisconnect).toHaveBeenCalledOnce();
+      published.peer.iceConnectionState = 'disconnected';
+      published.peer.listeners.get('iceconnectionstatechange')?.();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(onDisconnect).toHaveBeenCalledOnce();
+      published.close();
+    } finally { vi.useRealTimers(); }
+  });
+
   it('sends the room token only to the authenticated origin proxy', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({ sessionId: 'session' }));
     expect(await sfuRequest({ apiBase: '/.proxy', token: 'room-token', operation: 'session', fetchImpl })).toEqual({ sessionId: 'session' });

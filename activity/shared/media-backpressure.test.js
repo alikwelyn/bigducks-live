@@ -2,7 +2,29 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createBroadcaster } from './media.js';
 import { decodePacket, AUDIO, VIDEO_KEYFRAME } from './protocol.js';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => vi.unstubAllGlobals());it('reports an unexpected capture end instead of freezing viewers silently', async () => {
+  class Encoder {
+    encodeQueueSize = 0;
+    constructor(callbacks) { this.callbacks = callbacks; }
+    static async isConfigSupported(config) { return { supported: true, config }; }
+    configure() {} encode() {} close() {}
+  }
+  vi.stubGlobal('VideoEncoder', Encoder);
+  let reads = 0;
+  vi.stubGlobal('MediaStreamTrackProcessor', class {
+    constructor() {
+      this.readable = { getReader: () => ({ read: async () => (reads++ === 0 ? { value: { displayWidth: 1280, displayHeight: 720, close() {} } } : { done: true }), cancel: async () => {} }) };
+    }
+  });
+  const video = { kind: 'video', getSettings: () => ({ width: 1280, height: 720 }), addEventListener() {} };
+  const stream = { getVideoTracks: () => [video], getAudioTracks: () => [] };
+  const onEnd = vi.fn();
+  const broadcaster = await createBroadcaster({ ws: { readyState: 1, bufferedAmount: 0, send: vi.fn() }, stream, profile: { width: 1280, height: 720, fps: 30, bitrate: 2500000 }, stopTracks: false, onEnd });
+  await vi.waitFor(() => expect(onEnd).toHaveBeenCalledOnce());
+  broadcaster.stop();
+  expect(onEnd).toHaveBeenCalledOnce();
+});
+
 it('drops already encoded audio and video while the socket is congested or stopped', async () => {
   class Encoder {
     encodeQueueSize = 0;

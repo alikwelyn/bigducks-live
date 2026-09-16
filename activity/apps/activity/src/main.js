@@ -12,6 +12,7 @@ import { createRoomState } from './room-state.js';
 import { createCaptureContinuity } from './capture-continuity.js';
 import { pageMode, captureSession, createShareLink } from './access.js';
 import { createConnectionPanel } from './connection-panel.js';
+import { createStallWatchdog } from './stall-watchdog.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -129,6 +130,19 @@ function renderCapture(token) {
           .catch((error) => { relayStarting = null; throw error; });
         return relayStarting;
       };
+      const publishViaRelay = async (reason) => {
+        if (stopped || !sfuPublisher) return;
+        if (reason) status.textContent = reason;
+        try {
+          sfuPublisher.close(); sfuPublisher = null;
+          await ensureRelay();
+          broadcaster?.requestKeyframe();
+          socket.send(JSON.stringify({ type: 'start', slot, transport: 'relay', ...relayMedia, waiting: continuity?.waiting }));
+          status.textContent = 'Conexão SFU caiu; transmitindo pelo relay de compatibilidade.';
+        } catch {
+          if (!stopped) status.textContent = 'A transmissão foi interrompida e não pôde ser retomada automaticamente. Clique em Parar e inicie de novo.';
+        }
+      };
       socket.addEventListener('message', async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
@@ -211,7 +225,7 @@ function renderCapture(token) {
       if (runtimeConfig.sfuEnabled) {
         try {
           const iceServers = await fetchIceServers('', token).catch(() => [{ urls: 'stun:stun.cloudflare.com:3478' }]);
-          sfuPublisher = await createSfuPublisher({ stream, profile, token, iceServers });
+          sfuPublisher = await createSfuPublisher({ stream, profile, token, iceServers, onDisconnect: () => { void publishViaRelay(); } });
           if (stopped) { sfuPublisher.close(); return; }
           await sfuPublisher.replaceVideoTrack(stream.getVideoTracks()[0]);
         } catch { sfuPublisher?.close(); sfuPublisher = null; }
@@ -340,6 +354,8 @@ async function renderViewer() {
   };
   let directPeer;
   let sfuViewer;
+  let stallWatch;
+  let relayBytes = 0;
   let relayFallbackActive = false;
   let directPending = [];
   let rtcSlot = null;
@@ -363,8 +379,23 @@ async function renderViewer() {
         relayFallbackActive = false;
         connectionPanel.clear();
       };
+      const stopStallWatch = () => { stallWatch?.stop(); stallWatch = undefined; };
+      const watchForStall = (sample, onStall) => {
+        stopStallWatch();
+        stallWatch = createStallWatchdog({ sample, onStall });
+        stallWatch.start();
+      };
+      const videoBytes = (peer) => async () => {
+        const counters = new Map();
+        const reports = await peer.getStats();
+        reports.forEach((report) => {
+          if (report.type === 'inbound-rtp' && (report.kind || report.mediaType) === 'video' && !report.isRemote) counters.set('video', report.bytesReceived || 0);
+        });
+        return counters;
+      };
       const stopRtc = ({ resumeRelay = false } = {}) => {
         clearTimeout(rtcTimer);
+        stopStallWatch();
         if (rtcSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'rtc-bye', slot: rtcSlot }));
         const peer = directPeer; directPeer = null; peer?.close(); directPending = [];
         directVideo.pause(); directVideo.srcObject = null; directVideo.style.display = 'none';
@@ -382,6 +413,7 @@ async function renderViewer() {
       const stopWatching = (statusText = 'Você parou de assistir.') => {
         if (selectedSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
         feedback.hide();
+        stopStallWatch();
         stopRtc(); stopSfu(); selectedSlot = null; player.close();
         document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
         document.querySelector('#status').textContent = statusText;
@@ -446,6 +478,7 @@ async function renderViewer() {
                 if (!isCurrent()) { viewed.close(); return; }
                 sfuViewer = viewed;
                 connectionPanel.set('Cloudflare SFU', viewed.peer);
+                watchForStall(videoBytes(viewed.peer), () => { if (isCurrent()) requestFallback(); });
                 document.querySelector('#status').textContent = `Assistindo ${message.name} pela Cloudflare SFU.`;
                 return;
               } catch {
@@ -458,6 +491,13 @@ async function renderViewer() {
             player.configureAudio(message.audioConfig);
             relayFallbackActive = true;
             connectionPanel.set('Relay WebSocket', null);
+            relayBytes = 0;
+            watchForStall(async () => new Map([['relay', relayBytes]]), () => {
+              if (selectedSlot === null || socket.readyState !== WebSocket.OPEN) return;
+              feedback.show('Recuperando a transmissão…');
+              socket.send(JSON.stringify({ type: 'watch', slot: selectedSlot }));
+              socket.send(JSON.stringify({ type: 'rtc-want', slot: selectedSlot }));
+            });
             socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
             socket.send(JSON.stringify({ type: 'rtc-want', slot: message.slot }));
             rtcSlot = message.slot;
@@ -528,6 +568,12 @@ async function renderViewer() {
           player.configureAudio(message.audioConfig);
           relayFallbackActive = true;
           connectionPanel.set('Relay WebSocket', null);
+          relayBytes = 0;
+          watchForStall(async () => new Map([['relay', relayBytes]]), () => {
+            if (selectedSlot === null || socket.readyState !== WebSocket.OPEN) return;
+            feedback.show('Recuperando a transmissão…');
+            socket.send(JSON.stringify({ type: 'watch', slot: selectedSlot }));
+          });
           socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
           document.querySelector('#status').textContent = 'Assistindo pelo relay de compatibilidade.';
         }
@@ -550,7 +596,7 @@ async function renderViewer() {
         if (message.type === 'start' || message.type === 'stop') renderStreams();
       };
       socket.addEventListener('message', async (event) => {
-        if (typeof event.data !== 'string') { if (relayFallbackActive && !rtcActive) player.push(event.data); return; }
+        if (typeof event.data !== 'string') { relayBytes += event.data.byteLength || 0; if (relayFallbackActive && !rtcActive) player.push(event.data); return; }
         const message = JSON.parse(event.data);
         if (message.type !== 'rtc' || message.slot !== selectedSlot) return;
         try {
@@ -565,6 +611,7 @@ async function renderViewer() {
                 rtcActive = true; clearTimeout(rtcTimer);
                 player.close(); canvas.style.display = 'none'; directVideo.style.display = 'block';
                 connectionPanel.set('Conexão direta P2P', directPeer);
+                watchForStall(videoBytes(directPeer), () => { if (directPeer) stopRtc({ resumeRelay: true }); });
                 socket.send(JSON.stringify({ type: 'rtc-active', slot: selectedSlot }));
                 document.querySelector('#status').textContent = 'Conexão direta P2P ativa.';
               };

@@ -143,7 +143,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
       try {
         while (!stopped) {
           const { done, value } = await audioReader.read();
-          if (done) break;
+          if (done) { if (!stopped) onEnd(new Error('A captura de áudio terminou inesperadamente.')); break; }
           if (canSend() && audioEncoder.encodeQueueSize < 4) audioEncoder.encode(value);
           value.close();
         }
@@ -159,7 +159,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
       while (pending || !stopped) {
         const result = pending ? { done: false, value: pending } : await reader.read();
         pending = null;
-        if (result.done) break;
+        if (result.done) { if (!stopped) onEnd(new Error('A captura da tela terminou inesperadamente.')); break; }
         const value = result.value;
         if (!canSend()) { forceKeyframe = true; needsOutputKeyframe = true; value.close(); continue; }
         if (encoder.encodeQueueSize > 2) { value.close(); continue; }
