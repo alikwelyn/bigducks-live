@@ -3,7 +3,7 @@ import { releasePlayback } from './watch-teardown.js';
 
 const video = () => ({ style: {}, srcObject: { id: 'stream' }, pause: vi.fn(), load: vi.fn(), removeAttribute: vi.fn() });
 
-it('fully detaches the previous stream so its last frame cannot survive a teardown', () => {
+it('detaches the stream, drops the source and returns the stage to the canvas', () => {
   const element = video(); const canvas = { style: { display: 'none' } };
   releasePlayback({ video: element, canvas });
   expect(element.pause).toHaveBeenCalledOnce();
@@ -14,17 +14,24 @@ it('fully detaches the previous stream so its last frame cannot survive a teardo
   expect(canvas.style.display).toBe('block');
 });
 
-it('tolerates a teardown with missing elements or a paused media element', () => {
-  expect(() => releasePlayback({})).not.toThrow();
+it('drops the source before reloading it', () => {
+  const element = video();
+  releasePlayback({ video: element });
+  expect(element.removeAttribute.mock.invocationCallOrder[0]).toBeLessThan(element.load.mock.invocationCallOrder[0]);
+});
+
+it('keeps going when one step fails instead of leaving the stream attached', () => {
   const element = video();
   element.pause = () => { throw new Error('already detached'); };
   expect(() => releasePlayback({ video: element })).not.toThrow();
   expect(element.srcObject).toBeNull();
+  expect(element.removeAttribute).toHaveBeenCalledWith('src');
+  expect(element.load).toHaveBeenCalledOnce();
 });
 
-it('releases a native video element that has no MediaStream attached', () => {
-  const element = video(); element.srcObject = null;
-  releasePlayback({ video: element, canvas: null });
-  expect(element.load).toHaveBeenCalledOnce();
-  expect(element.removeAttribute).toHaveBeenCalledWith('src');
+it('tolerates missing elements and elements without the media API', () => {
+  expect(() => releasePlayback({})).not.toThrow();
+  const bare = { style: {} };
+  expect(() => releasePlayback({ video: bare })).not.toThrow();
+  expect(bare.style.display).toBe('none');
 });

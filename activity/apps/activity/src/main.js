@@ -562,7 +562,7 @@ async function renderViewer() {
           stopSfu();
           const stage = document.querySelector('.stage');
           stage.replaceChildren(canvas, directVideo);
-          directVideo.style.display = 'none'; canvas.style.display = 'block';
+          releasePlayback({ video: directVideo, canvas });
           player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
           player.configureAudio(message.audioConfig);
           relayFallbackActive = true;
@@ -586,7 +586,6 @@ async function renderViewer() {
             stopRtc(); stopSfu();
             selectedSlot = null;
             player.close();
-            releasePlayback({ video: directVideo, canvas });
             document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
             document.querySelector('#status').textContent = 'Transmissão encerrada.';
             showBrowseView();
