@@ -130,7 +130,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         return json(response, 200, result);
       } catch (error) {
         const message = String(error?.message || 'SFU operation failed');
-        const status = message.includes('not configured') ? 503 : message.includes('rate limit') ? 429 : /role|required|owner|room/.test(message) ? 403 : message.startsWith('Cloudflare Realtime') || message.includes('publication failed') ? 502 : 400;
+        const status = message.includes('not configured') ? 503 : message.includes('rate limit') || message.includes('capacity') ? 429 : /role|required|owner|room/.test(message) ? 403 : message.startsWith('Cloudflare Realtime') || message.includes('publication failed') ? 502 : 400;
         return json(response, status, { error: message });
       }
     }

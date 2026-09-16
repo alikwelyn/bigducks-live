@@ -47,4 +47,24 @@ describe('Cloudflare Realtime SFU gateway', () => {
     await gateway.createSession(viewer);
     await expect(gateway.renegotiate({ ...viewer, user: 'other' }, { sessionId: 's-one', sessionDescription: { type: 'answer', sdp: 'answer' } })).rejects.toThrow('owner');
   });
+  it('keeps the rate-limit map bounded instead of growing with attacker-chosen rooms', async () => {
+    const fetchImpl = vi.fn(async () => response({ sessionId: `s-${Math.random()}` }, 201));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl, maxRateKeys: 50 });
+    for (let index = 0; index < 50; index++) await gateway.createSession({ room: `room-${index}`, user: 'pub', role: 'publisher' });
+    await expect(gateway.createSession({ room: 'room-novo', user: 'pub', role: 'publisher' })).rejects.toThrow(/capacity/i);
+    // An expired window is pruned, so the same identity is not permanently locked out.
+    const clock = vi.spyOn(Date, 'now');
+    clock.mockReturnValue(Date.now() + 61_000);
+    try {
+      await expect(gateway.createSession({ room: 'room-novo', user: 'pub', role: 'publisher' })).resolves.toHaveProperty('sessionId');
+    } finally { clock.mockRestore(); }
+  });
+
+  it('still rate limits one identity that opens sessions in a burst', async () => {
+    const fetchImpl = vi.fn(async () => response({ sessionId: `s-${Math.random()}` }, 201));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl });
+    for (let index = 0; index < 10; index++) await gateway.createSession({ room: 'room-a', user: 'pub', role: 'publisher' });
+    await expect(gateway.createSession({ room: 'room-a', user: 'pub', role: 'publisher' })).rejects.toThrow(/rate limit/i);
+  });
+
 });

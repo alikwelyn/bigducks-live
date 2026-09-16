@@ -10,6 +10,13 @@ describe('edge relay token verification', () => {
     await expect(verifyEdgeToken(token, secret, 120)).resolves.toMatchObject({ room: 'call-1', role: 'viewer', user: '42', name: 'Duck' });
   });
 
+  it('rejects a signed capability that is not a room session', async () => {
+    const media = issueToken({ type: 'sfu-media', room: 'call-1', user: '42', role: 'viewer' }, secret, 60, 100);
+    const oauth = issueToken({ type: 'oauth', room: 'call-1', user: '42', role: 'viewer' }, secret, 60, 100);
+    await expect(verifyEdgeToken(media, secret, 120)).rejects.toThrow(/claims/i);
+    await expect(verifyEdgeToken(oauth, secret, 120)).rejects.toThrow(/claims/i);
+  });
+
   it('rejects expired, modified, and malformed tokens', async () => {
     const token = issueToken({ room: 'call-1', role: 'publisher', user: '42' }, secret, 10, 100);
     await expect(verifyEdgeToken(token, secret, 111)).rejects.toThrow(/expired/i);

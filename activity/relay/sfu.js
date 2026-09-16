@@ -17,7 +17,7 @@ function localTracks(value) {
   });
 }
 
-export function createSfuGateway({ appId = '', appSecret = '', secret, fetchImpl = globalThis.fetch } = {}) {
+export function createSfuGateway({ appId = '', appSecret = '', secret, fetchImpl = globalThis.fetch, maxRateKeys = 10_000 } = {}) {
   const enabled = Boolean(appId && appSecret);
   const sessions = new Map();
   const creations = new Map();
@@ -50,6 +50,10 @@ export function createSfuGateway({ appId = '', appSecret = '', secret, fetchImpl
       const now = Date.now();
       for (const [id, owner] of sessions) if (owner.createdAt < now - MEDIA_TTL_SECONDS * 1000) sessions.delete(id);
       const ownerKey = `${claims.room}:${claims.user}:${claims.role}`;
+      // The key contains a caller-chosen room, so prune expired windows and cap the map
+      // instead of letting distinct room names grow it without bound.
+      for (const [key, list] of creations) if (!list.some((createdAt) => createdAt > now - 60_000)) creations.delete(key);
+      if (!creations.has(ownerKey) && creations.size >= maxRateKeys) throw new Error('SFU session capacity reached');
       const recent = (creations.get(ownerKey) || []).filter((createdAt) => createdAt > now - 60_000);
       if (recent.length >= 10) throw new Error('SFU session rate limit reached');
       recent.push(now); creations.set(ownerKey, recent);
