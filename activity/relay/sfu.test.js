@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { issueToken } from './tokens.js';
+import { verifyToken } from './tokens.js';
 import { createSfuGateway } from './sfu.js';
 
 const secret = 'test-secret-012345678901234567890123';
@@ -89,6 +90,33 @@ describe('Cloudflare Realtime SFU gateway', () => {
     await gateway.createSession(publisher);
     await gateway.closeTracks(publisher, { sessionId: 's-pub', mids: ['0'] });
     await expect(gateway.closeTracks(publisher, { sessionId: 's-pub', mids: ['0'] })).rejects.toThrow(/owner/i);
+  });
+
+  it('stops honouring a media capability once the publication is closed', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ sessionId: 's-pub' }, 201))
+      .mockResolvedValueOnce(response({ tracks: [{ mid: '0', trackName: 'video-track' }], sessionDescription: { type: 'answer', sdp: 'answer' } }))
+      .mockResolvedValueOnce(response({ sessionId: 's-view' }, 201))
+      .mockImplementation(async () => response({}));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl });
+    await gateway.createSession(publisher);
+    const published = await gateway.publish(publisher, { sessionId: 's-pub', sessionDescription: { type: 'offer', sdp: 'offer' }, tracks: [{ mid: '0', trackName: 'video-track', kind: 'video' }] });
+    await gateway.createSession(viewer);
+    await gateway.subscribe(viewer, { sessionId: 's-view', mediaToken: published.mediaToken });
+    await gateway.closeTracks(publisher, { sessionId: 's-pub', mids: ['0'] });
+    await expect(gateway.subscribe(viewer, { sessionId: 's-view', mediaToken: published.mediaToken })).rejects.toThrow(/publication|capability/i);
+  });
+
+  it('issues a media capability that outlives a short stream but not a day', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ sessionId: 's-pub' }, 201))
+      .mockResolvedValueOnce(response({ tracks: [{ mid: '0', trackName: 'video-track' }], sessionDescription: { type: 'answer', sdp: 'answer' } }));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl });
+    await gateway.createSession(publisher);
+    const published = await gateway.publish(publisher, { sessionId: 's-pub', sessionDescription: { type: 'offer', sdp: 'offer' }, tracks: [{ mid: '0', trackName: 'video-track', kind: 'video' }] });
+    const claims = verifyToken(published.mediaToken, secret);
+    expect(claims.exp - claims.iat).toBeGreaterThanOrEqual(30 * 60);
+    expect(claims.exp - claims.iat).toBeLessThanOrEqual(2 * 60 * 60);
   });
 
 });

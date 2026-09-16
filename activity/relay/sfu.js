@@ -2,7 +2,8 @@ import { issueToken, verifyToken } from './tokens.js';
 
 const API_ORIGIN = 'https://rtc.live.cloudflare.com/v1/apps';
 const MAX_SDP_LENGTH = 1_000_000;
-const MEDIA_TTL_SECONDS = 6 * 60 * 60;
+// Long enough for a normal session, short enough that a leaked capability is not a day-long entitlement.
+const MEDIA_TTL_SECONDS = 60 * 60;
 
 function description(value, expectedType) {
   if (!value || value.type !== expectedType || typeof value.sdp !== 'string' || !value.sdp || value.sdp.length > MAX_SDP_LENGTH) throw new Error(`invalid ${expectedType} session description`);
@@ -82,6 +83,9 @@ export function createSfuGateway({ appId = '', appSecret = '', secret, fetchImpl
       const media = verifyToken(input?.mediaToken, secret);
       if (media.type !== 'sfu-media' || media.room !== claims.room) throw new Error('media capability room mismatch');
       if (!Array.isArray(media.tracks) || !media.tracks.length || typeof media.sourceSessionId !== 'string') throw new Error('invalid media capability');
+      // The capability dies with the publication: a viewer who saw a live cannot
+      // keep pulling tracks after the streamer stopped.
+      if (!sessions.has(media.sourceSessionId)) throw new Error('media capability publication is no longer live');
       const tracks = media.tracks.map((track) => ({ location: 'remote', sessionId: media.sourceSessionId, trackName: track.trackName }));
       return call(`/sessions/${encodeURIComponent(input.sessionId)}/tracks/new`, { body: { tracks } });
     },
