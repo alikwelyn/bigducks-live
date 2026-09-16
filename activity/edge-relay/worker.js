@@ -86,6 +86,13 @@ export class EdgeRoom {
     let control;
     try { control = JSON.parse(message); } catch { return socket.close(1003, 'invalid control'); }
     if (!control || typeof control.type !== 'string') return socket.close(1003, 'invalid control');
+    if (member.role === 'viewer') {
+      // Kept next to the audience fields so one notify covers both and no duplicate
+      // message carries the pre-change count.
+      if (['watch', 'fallback-want'].includes(control.type)) member.watched = selectWatchedSlot(control.slot);
+      else if (['sfu-watch', 'rtc-active'].includes(control.type)) member.watched = null;
+      else if (control.type === 'unwatch' && member.watched === control.slot) member.watched = null;
+    }
     if (updateAudience(member, control)) {
       socket.serializeAttachment(member);
       this.notifyAudience();
@@ -133,29 +140,21 @@ export class EdgeRoom {
 
     if (member.role === 'viewer' && control.type === 'sfu-watch') {
       // Moving to an SFU subscription ends the relay subscription, so the encoder can idle.
-      member.watched = null;
       socket.serializeAttachment(member);
-      this.notifyAudience();
       return;
     }
     if (member.role === 'viewer' && control.type === 'watch') {
-      member.watched = selectWatchedSlot(control.slot);
       socket.serializeAttachment(member);
-      this.notifyAudience();
       const publisher = this.publisher(member.watched);
       if (publisher) send(publisher, { type: 'need-keyframe', slot: member.watched, viewer: member.user });
       return;
     }
     if (member.role === 'viewer' && control.type === 'unwatch') {
-      if (member.watched === control.slot) member.watched = null;
       socket.serializeAttachment(member);
-      this.notifyAudience();
       return;
     }
     if (member.role === 'viewer' && control.type === 'fallback-want') {
-      member.watched = selectWatchedSlot(control.slot);
       socket.serializeAttachment(member);
-      this.notifyAudience();
       const publisher = this.publisher(member.watched);
       if (publisher) send(publisher, { type: 'fallback-want', slot: member.watched, viewer: member.user });
       return;
@@ -166,9 +165,7 @@ export class EdgeRoom {
       return;
     }
     if (member.role === 'viewer' && control.type === 'rtc-active') {
-      member.watched = null;
       socket.serializeAttachment(member);
-      this.notifyAudience();
     }
 
     if (['rtc-want', 'rtc', 'rtc-active', 'rtc-bye'].includes(control.type)) {

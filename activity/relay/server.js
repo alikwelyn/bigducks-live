@@ -225,8 +225,11 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
     const notifyAudience = () => {
       const room = rooms.get(claims.room);
       for (const publisher of room?.publishers.values() ?? []) {
+        const liveViewers = [...room.viewers.values()].filter((viewer) => viewer.socket?.readyState === 1);
         if (publisher.socket?.readyState === 1) publisher.socket.send(stringifyControl({ type: 'sfu-audience', slot: publisher.slot,
-          count: [...room.viewers.values()].filter((viewer) => viewer.sfuSlot === publisher.slot && viewer.socket?.readyState === 1).length }));
+          count: liveViewers.filter((viewer) => viewer.sfuSlot === publisher.slot).length }));
+        if (publisher.socket?.readyState === 1) publisher.socket.send(stringifyControl({ type: 'relay-audience', slot: publisher.slot,
+          count: liveViewers.filter((viewer) => viewer.slot === publisher.slot).length }));
         const outgoing = stringifyControl({ type: 'audience', slot: publisher.slot, viewers: audienceFor([...room.viewers.values()].filter((viewer) => viewer.socket?.readyState === 1), publisher.slot) });
         if (publisher.socket?.readyState === 1) publisher.socket.send(outgoing);
         for (const viewer of room.viewers.values()) if (viewer.socket?.readyState === 1) viewer.socket.send(outgoing);

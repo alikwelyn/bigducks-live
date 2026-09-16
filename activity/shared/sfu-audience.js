@@ -41,4 +41,5 @@ export function audienceFor(members, slot) {
 export function clearAudience(member, slot) {
   if (member.audienceSlot === slot) member.audienceSlot = null;
   if (member.sfuSlot === slot) member.sfuSlot = null;
+  if (member.watched === slot) member.watched = null;
 }

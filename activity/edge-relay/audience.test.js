@@ -76,6 +76,7 @@ it('reports the relay-only audience so an idle encoder can be stopped', async ()
   const room = new EdgeRoom({ getWebSockets: () => [publisher, sfuViewer, relayViewer] });
   const control = (client, type, slot) => room.webSocketMessage(client, JSON.stringify({ type, slot }));
   const relayCount = () => publisher.messages.findLast((message) => message.type === 'relay-audience')?.count;
+  const relayMessages = () => publisher.messages.filter((message) => message.type === 'relay-audience').length;
   await control(publisher, 'start', 0);
   expect(relayCount()).toBe(0);
   await control(sfuViewer, 'sfu-watch', 0);
@@ -87,6 +88,12 @@ it('reports the relay-only audience so an idle encoder can be stopped', async ()
   await control(relayViewer, 'fallback-want', 0);
   expect(relayCount()).toBe(1);
   await control(relayViewer, 'unwatch', 0);
+  expect(relayCount()).toBe(0);
+  publisher.messages.length = 0;
+  await control(relayViewer, 'fallback-want', 0);
+  expect(relayCount()).toBe(1);
+  expect(relayMessages()).toBe(1);
+  await control(publisher, 'stop', 0);
   expect(relayCount()).toBe(0);
   await room.webSocketClose(relayViewer);
   expect(relayCount()).toBe(0);

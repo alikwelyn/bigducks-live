@@ -2,6 +2,9 @@ export const ICE_DEFAULT = [{ urls: 'stun:stun.l.google.com:19302' }];
 export const FALLBACK_MS = 8000;
 // Each P2P peer costs the streamer one more full-quality upload.
 export const MAX_P2P_PEERS = 3;
+export function shouldAcceptPeer({ size = 0, known = false } = {}) {
+  return known || size < MAX_P2P_PEERS;
+}
 
 export function shouldFallback({ state, gotFrame, elapsed }) {
   return !gotFrame && (['failed', 'closed', 'disconnected'].includes(state) || elapsed >= FALLBACK_MS);
