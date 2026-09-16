@@ -17,11 +17,27 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [], sfuAppId = '', sfuAppSecret = '', sfuFetch = globalThis.fetch, apiRateLimit = 600 } = {}) {
+export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [], sfuAppId = '', sfuAppSecret = '', sfuFetch = globalThis.fetch, guildId = '', discordFetch = globalThis.fetch, apiRateLimit = 600 } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers, maxPublishers });
   const sfu = createSfuGateway({ appId: sfuAppId, appSecret: sfuAppSecret, secret, fetchImpl: sfuFetch });
   const apiAllowed = createLimiter({ limit: apiRateLimit });
+  const guildCache = new Map();
+  // Cached briefly: /api/session runs on every Activity open and Discord rate-limits per app.
+  const isGuildMember = async (userId, bearer) => {
+    const cached = guildCache.get(userId);
+    if (cached && cached.expires > Date.now()) return cached.allowed;
+    let allowed = false;
+    try {
+      const response = await discordFetch('https://discord.com/api/users/@me/guilds?limit=200', { headers: { authorization: `Bearer ${bearer}` } });
+      const guilds = response.ok ? await response.json() : null;
+      allowed = Array.isArray(guilds) && guilds.some((guild) => guild?.id === guildId);
+    } catch { allowed = false; }
+    if (guildCache.size >= 5000) for (const [id, entry] of guildCache) if (entry.expires <= Date.now()) guildCache.delete(id);
+    if (guildCache.size >= 5000) guildCache.clear();
+    guildCache.set(userId, { allowed, expires: Date.now() + 60_000 });
+    return allowed;
+  };
   const shareAllowed = createLimiter({ limit: 10 });
   const invitations = new Map();
   const roomClaims = (token, role) => {
@@ -124,7 +140,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
       const nonce = crypto.randomBytes(32).toString('hex');
       const state = issueToken({ type: 'oauth', redirect, nonce }, secret);
       response.setHeader('set-cookie', `oauth_state=${nonce}; HttpOnly; Secure; SameSite=Lax; Path=/api/discord; Max-Age=300`);
-      const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: `${origin || url.origin}/api/discord/callback`, scope: 'identify', state });
+      const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: `${origin || url.origin}/api/discord/callback`, scope: 'identify guilds', state });
       response.writeHead(302, { location: `https://discord.com/oauth2/authorize?${params}` }); return response.end();
     }
     if (request.method === 'GET' && url.pathname === '/api/discord/callback') {
@@ -170,12 +186,14 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         if (!allowDevSessions) {
           const bearer = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1] || request.headers.cookie?.match(/(?:^|; )discord_access_token=([^;]+)/)?.[1];
           if (!bearer) return json(response, 401, { error: 'Discord authentication required' });
-          const discordResponse = await fetch('https://discord.com/api/users/@me', { headers: { authorization: `Bearer ${bearer}` } });
+          const discordResponse = await discordFetch('https://discord.com/api/users/@me', { headers: { authorization: `Bearer ${bearer}` } });
           const discordUser = await discordResponse.json();
           if (!discordResponse.ok || typeof discordUser.id !== 'string') return json(response, 401, { error: 'Discord authentication failed' });
           user = discordUser.id;
           name = discordUser.global_name || discordUser.username || discordUser.id;
           if (discordUser.avatar) avatar = `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`;
+          // Authentication proves who the caller is; this proves they belong to the configured server.
+          if (guildId && !(await isGuildMember(user, bearer))) return json(response, 403, { error: 'Discord server membership required' });
         }
         if (!validRoomClaims({ room: input.room, role: input.role, user })) throw new Error('invalid user');
         const token = issueToken({ room: input.room, role: input.role, user, name: String(name || user).slice(0, 80), avatar }, secret, 6 * 60 * 60);

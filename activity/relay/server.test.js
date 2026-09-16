@@ -110,7 +110,9 @@ describe('relay server', () => {
     const server = await start({ clientId: '123', clientSecret: 'secret', origin: 'https://stream.skillup.com.br' });
     const base = `http://127.0.0.1:${server.port}`;
     const response = await fetch(base + '/api/discord/authorize?redirect=//evil.test', { redirect: 'manual' });
-    const state = new URL(response.headers.get('location')).searchParams.get('state');
+    const location = new URL(response.headers.get('location'));
+    const state = location.searchParams.get('state');
+    expect(location.searchParams.get('scope')).toContain('guilds');
     expect(response.headers.get('set-cookie')).toMatch(/oauth_state=.*HttpOnly.*Secure.*SameSite=Lax/);
     expect((await fetch(base + '/api/discord/callback?state=' + encodeURIComponent(state) + '&code=fake', { redirect: 'manual' })).status).toBe(400);
   });
@@ -202,5 +204,87 @@ describe('relay server', () => {
     const result = await received;
     expect(result.binary).toBe(true);
     expect([...result.data]).toEqual([0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 9, 8]);
+  });
+});
+
+describe('discord server membership', () => {
+  const discord = (guilds, status = 200) => vi.fn(async (url) => {
+    if (url.endsWith('/users/@me')) return new Response(JSON.stringify({ id: 'u1', username: 'ana', global_name: 'Ana' }), { status: 200 });
+    if (url.includes('/users/@me/guilds')) return new Response(JSON.stringify(guilds), { status });
+    return new Response('{}', { status: 404 });
+  });
+  const session = (base) => fetch(`${base}/api/session`, { method: 'POST', headers: { authorization: 'Bearer discord-token' }, body: JSON.stringify({ room: 'r', user: 'spoofed', role: 'viewer' }) });
+
+  it('refuses a caller who is not in the configured server', async () => {
+    const discordFetch = discord([{ id: 'outro-servidor' }]);
+    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const response = await session(`http://127.0.0.1:${server.port}`);
+    expect(response.status).toBe(403);
+    expect(await response.json()).not.toHaveProperty('token');
+  });
+
+  it('accepts a member and issues the session for the authenticated identity', async () => {
+    const discordFetch = discord([{ id: 'outro' }, { id: 'meu-servidor' }]);
+    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const response = await session(`http://127.0.0.1:${server.port}`);
+    expect(response.status).toBe(200);
+    expect(JSON.parse(Buffer.from((await response.json()).token.split('.')[0], 'base64url').toString()).user).toBe('u1');
+  });
+
+  it('denies when the guild list cannot be read, so a missing scope cannot silently open the room', async () => {
+    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch: discord({}, 403) });
+    expect((await session(`http://127.0.0.1:${server.port}`)).status).toBe(403);
+  });
+
+  it('does not ask Discord for guilds when no server is configured', async () => {
+    const discordFetch = discord([{ id: 'qualquer' }]);
+    const server = await start({ allowDevSessions: false, discordFetch });
+    expect((await session(`http://127.0.0.1:${server.port}`)).status).toBe(200);
+    expect(discordFetch.mock.calls.some(([url]) => url.includes('/users/@me/guilds'))).toBe(false);
+  });
+
+  it('caches the membership answer per user instead of calling Discord on every open', async () => {
+    const discordFetch = discord([{ id: 'meu-servidor' }]);
+    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const base = `http://127.0.0.1:${server.port}`;
+    await session(base); await session(base);
+    expect(discordFetch.mock.calls.filter(([url]) => url.includes('/users/@me/guilds'))).toHaveLength(1);
+  });
+});
+
+describe('discord server membership edge cases', () => {
+  const me = () => new Response(JSON.stringify({ id: 'u1', username: 'ana' }), { status: 200 });
+  const withGuilds = (handler) => vi.fn(async (url) => (url.endsWith('/users/@me') ? me() : handler()));
+  const body = (value, status = 200) => new Response(value, { status });
+  const session = (base, role = 'viewer') => fetch(`${base}/api/session`, { method: 'POST', headers: { authorization: 'Bearer t' }, body: JSON.stringify({ room: 'r', user: 'spoofed', role }) });
+
+  it('denies a non-array guild body instead of treating it as membership', async () => {
+    const server = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => body('{}')) });
+    expect((await session(`http://127.0.0.1:${server.port}`)).status).toBe(403);
+  });
+
+  it('denies an empty guild list and a failed request', async () => {
+    const empty = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => body('[]')) });
+    expect((await session(`http://127.0.0.1:${empty.port}`)).status).toBe(403);
+    const failing = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => { throw new Error('network'); }) });
+    expect((await session(`http://127.0.0.1:${failing.port}`)).status).toBe(403);
+  });
+
+  it('applies the same gate to a publisher request', async () => {
+    const server = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => body('[{"id":"outro"}]')) });
+    expect((await session(`http://127.0.0.1:${server.port}`, 'publisher')).status).toBe(403);
+  });
+
+  it('keys the membership cache per user instead of reusing another answer', async () => {
+    let current = 'u1';
+    const discordFetch = vi.fn(async (url) => {
+      if (url.endsWith('/users/@me')) return new Response(JSON.stringify({ id: current, username: current }), { status: 200 });
+      return new Response(current === 'u1' ? '[{"id":"g1"}]' : '[]', { status: 200 });
+    });
+    const server = await start({ allowDevSessions: false, guildId: 'g1', discordFetch });
+    const base = `http://127.0.0.1:${server.port}`;
+    expect((await session(base)).status).toBe(200);
+    current = 'u2';
+    expect((await session(base)).status).toBe(403);
   });
 });

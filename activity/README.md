@@ -52,7 +52,7 @@ A lista mostra carregamento até o servidor enviar `room-ready` após a lista in
 - JSON: até 16 KiB nas APIs comuns e 1,2 MB no SFU. Limite HTTP de 600 requisições/minuto por endereço de conexão, sem confiar em headers de IP enviados pelo cliente; atrás do Traefik funciona como proteção agregada, não como limite individual. Não limita pacotes de mídia.
 - Origem de navegador validada nas operações mutáveis; OAuth externo vincula estado a cookie HttpOnly e restringe redirects locais. Requisições sem Origin ainda exigem autenticação quando aplicável.
 - Respostas usam no-referrer, no-store, nosniff e noindex. Isso reduz vazamentos e indexação; **não bloqueia bots maliciosos nem substitui autenticação**. `/healthz`, `/api/config` e assets continuam públicos e sem segredos, necessários à operação.
-- Não foi ativada restrição de guild/canal: uma identidade Discord autenticada não prova participação em um servidor. Restrição real exige guild permitida e verificação backend de participação/presença. Também não há limite financeiro ou garantia contra DDoS.
+- Restrição por servidor é **opcional e ativada por configuração**: com `DISCORD_GUILD_ID` definido, `/api/session` exige que o usuário autenticado pertença àquele servidor (`GET /users/@me/guilds`), com cache de 60 s por usuário. Sem a variável, o comportamento é o de antes. A verificação exige o escopo `guilds` no OAuth: quem já autorizou antes precisa autorizar de novo uma vez. Ela prova **somente participação no servidor**: a sala e o papel continuam escolhidos pelo cliente, o token é transferível e não carrega o servidor, então vale até expirar (6 h) mesmo para quem saiu do servidor ou recebeu o token de outra pessoa. Prova de presença no canal de voz exigiria um bot; restringir por canal seria outro desenho. Ainda não há limite financeiro ou garantia contra DDoS.
 - Qualidade, SFU, fallback e franquias não foram alterados por este endurecimento. Segredos previamente expostos devem ser rotacionados nos serviços.
 
 ## Desenvolvimento
@@ -64,4 +64,4 @@ npm run build
 npm start
 ```
 
-Configuração de produção: copie `.env.example` para `.env`, defina `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `PUBLIC_ORIGIN` e um `SESSION_SECRET` aleatório com pelo menos 32 bytes. O modo de sessão de desenvolvimento deve permanecer desabilitado em produção.
+Configuração de produção: copie `.env.example` para `.env`, defina `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `PUBLIC_ORIGIN` e um `SESSION_SECRET` aleatório com pelo menos 32 bytes. Defina também `DISCORD_GUILD_ID` para restringir a sala ao seu servidor; sem ela, qualquer conta Discord autenticada pode abrir sessão. O modo de sessão de desenvolvimento deve permanecer desabilitado em produção.

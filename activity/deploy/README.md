@@ -10,6 +10,8 @@ PORT=3001
 PUBLIC_ORIGIN=https://stream.skillup.com.br
 DISCORD_CLIENT_ID=<client-id público>
 DISCORD_CLIENT_SECRET=<segredo>
+# Recomendado: sem esta variavel a sala aceita qualquer conta Discord autenticada.
+DISCORD_GUILD_ID=<id do servidor Discord>
 SESSION_SECRET=<mínimo 32 bytes aleatórios>
 CLOUDFLARE_SFU_APP_ID=<Realtime SFU App ID>
 CLOUDFLARE_SFU_APP_SECRET=<Realtime SFU App Secret>
