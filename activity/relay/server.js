@@ -29,10 +29,11 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
     if (cached && cached.expires > Date.now()) return cached.allowed;
     let allowed = false;
     try {
-      const response = await discordFetch('https://discord.com/api/users/@me/guilds', { headers: { authorization: `Bearer ${bearer}` } });
+      const response = await discordFetch('https://discord.com/api/users/@me/guilds?limit=200', { headers: { authorization: `Bearer ${bearer}` } });
       const guilds = response.ok ? await response.json() : null;
       allowed = Array.isArray(guilds) && guilds.some((guild) => guild?.id === guildId);
     } catch { allowed = false; }
+    if (guildCache.size >= 5000) for (const [id, entry] of guildCache) if (entry.expires <= Date.now()) guildCache.delete(id);
     if (guildCache.size >= 5000) guildCache.clear();
     guildCache.set(userId, { allowed, expires: Date.now() + 60_000 });
     return allowed;
