@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ICE_DEFAULT, FALLBACK_MS, shouldFallback, fetchIceServers } from './rtc.js';
+import { ICE_DEFAULT, FALLBACK_MS, MAX_P2P_PEERS, shouldAcceptPeer, shouldFallback, fetchIceServers } from './rtc.js';
 afterEach(() => vi.unstubAllGlobals());
 
 describe('direct RTC transport', () => {
@@ -9,6 +9,14 @@ describe('direct RTC transport', () => {
     await fetchIceServers('/.proxy', 'private-room-token');
     expect(fetchImpl).toHaveBeenCalledWith('/.proxy/api/ice', { headers: { authorization: 'Bearer private-room-token' } });
   });
+  it('caps the direct fan-out but still lets a known viewer replace its own peer', () => {
+    expect(shouldAcceptPeer({ size: 0 })).toBe(true);
+    expect(shouldAcceptPeer({ size: MAX_P2P_PEERS - 1 })).toBe(true);
+    expect(shouldAcceptPeer({ size: MAX_P2P_PEERS })).toBe(false);
+    expect(shouldAcceptPeer({ size: MAX_P2P_PEERS, known: true })).toBe(true);
+    expect(shouldAcceptPeer({})).toBe(true);
+  });
+
   it('has a public STUN fallback and bounded activation deadline', () => {
     expect(ICE_DEFAULT[0].urls).toMatch(/^stun:/);
     expect(FALLBACK_MS).toBe(8000);

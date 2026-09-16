@@ -31,6 +31,7 @@ export class EdgeRoom {
     for (const publisher of this.sockets('publisher')) {
       const member = attachment(publisher);
       send(publisher, { type: 'sfu-audience', slot: member.slot, count: viewers.filter((viewer) => viewer.sfuSlot === member.slot).length });
+      send(publisher, { type: 'relay-audience', slot: member.slot, count: viewers.filter((viewer) => viewer.watched === member.slot).length });
       const message = { type: 'audience', slot: member.slot, viewers: audienceFor(viewers, member.slot) };
       send(publisher, message);
       for (const viewer of this.sockets('viewer')) if (viewer !== exclude) send(viewer, message);
@@ -85,6 +86,13 @@ export class EdgeRoom {
     let control;
     try { control = JSON.parse(message); } catch { return socket.close(1003, 'invalid control'); }
     if (!control || typeof control.type !== 'string') return socket.close(1003, 'invalid control');
+    if (member.role === 'viewer') {
+      // Kept next to the audience fields so one notify covers both and no duplicate
+      // message carries the pre-change count.
+      if (['watch', 'fallback-want'].includes(control.type)) member.watched = selectWatchedSlot(control.slot);
+      else if (['sfu-watch', 'rtc-active'].includes(control.type)) member.watched = null;
+      else if (control.type === 'unwatch' && member.watched === control.slot) member.watched = null;
+    }
     if (updateAudience(member, control)) {
       socket.serializeAttachment(member);
       this.notifyAudience();
@@ -130,20 +138,22 @@ export class EdgeRoom {
       return;
     }
 
+    if (member.role === 'viewer' && control.type === 'sfu-watch') {
+      // Moving to an SFU subscription ends the relay subscription, so the encoder can idle.
+      socket.serializeAttachment(member);
+      return;
+    }
     if (member.role === 'viewer' && control.type === 'watch') {
-      member.watched = selectWatchedSlot(control.slot);
       socket.serializeAttachment(member);
       const publisher = this.publisher(member.watched);
       if (publisher) send(publisher, { type: 'need-keyframe', slot: member.watched, viewer: member.user });
       return;
     }
     if (member.role === 'viewer' && control.type === 'unwatch') {
-      if (member.watched === control.slot) member.watched = null;
       socket.serializeAttachment(member);
       return;
     }
     if (member.role === 'viewer' && control.type === 'fallback-want') {
-      member.watched = selectWatchedSlot(control.slot);
       socket.serializeAttachment(member);
       const publisher = this.publisher(member.watched);
       if (publisher) send(publisher, { type: 'fallback-want', slot: member.watched, viewer: member.user });
@@ -155,7 +165,6 @@ export class EdgeRoom {
       return;
     }
     if (member.role === 'viewer' && control.type === 'rtc-active') {
-      member.watched = null;
       socket.serializeAttachment(member);
     }
 

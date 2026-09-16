@@ -1,6 +1,6 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { profileFor } from '../../../shared/adaptation.js';
-import { createPeer, FALLBACK_MS, fetchIceServers, tuneSenders } from '../../../shared/rtc.js';
+import { createPeer, FALLBACK_MS, fetchIceServers, shouldAcceptPeer, tuneSenders } from '../../../shared/rtc.js';
 import { captureMonitor, createBroadcaster, fitWithin } from '../../../shared/media.js';
 import { createPlayer } from './player.js';
 import { awaitJoined, connectRelaySocket } from './relay-socket.js';
@@ -15,6 +15,7 @@ import { createConnectionPanel } from './connection-panel.js';
 import { createStallWatchController } from './stall-watchdog.js';
 import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js';
 import { releasePlayback } from './watch-teardown.js';
+import { relayEncoderAction } from './relay-audience.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -83,6 +84,7 @@ function renderCapture(token) {
       const peers = new Map();
       let broadcaster;
       let relayStarting;
+      let relayWanted = false;
       let relayMedia;
       let sfuPublisher;
       let continuity;
@@ -126,7 +128,7 @@ function renderCapture(token) {
         if (broadcaster) return Promise.resolve(relayMedia);
         if (relayStarting) return relayStarting;
         relayStarting = createBroadcaster({ ws: socket, profile, audio: true, stream, slot, stopTracks: false, onStatus: (media) => { relayMedia = media; }, onEnd: (error) => { if (!sfuPublisher && !continuity?.waiting) stopBroadcast(error?.message || 'Captura encerrada.'); } })
-          .then((value) => { if (stopped) value.stop(); else broadcaster = value; return relayMedia; })
+          .then((value) => { if (stopped || !relayWanted) value.stop(); else broadcaster = value; return relayMedia; })
           .catch((error) => { relayStarting = null; throw error; });
         return relayStarting;
       };
@@ -135,6 +137,7 @@ function renderCapture(token) {
         if (reason) status.textContent = reason;
         try {
           sfuPublisher.close(); sfuPublisher = null;
+          relayWanted = true;
           await ensureRelay();
           broadcaster?.requestKeyframe();
           socket.send(JSON.stringify({ type: 'start', slot, transport: 'relay', ...relayMedia, waiting: continuity?.waiting }));
@@ -147,6 +150,19 @@ function renderCapture(token) {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type === 'audience' && message.slot === slot) { captureAudience.update(message.viewers); return; }
+        if (message.type === 'relay-audience' && message.slot === slot) {
+          if (!Number.isInteger(message.count) || message.count < 0) return;
+          relayWanted = message.count > 0;
+          // Nobody watching through the relay: stop paying for an encoder nobody reads.
+          const action = relayEncoderAction({ viewers: message.count, running: Boolean(broadcaster), starting: Boolean(relayStarting) });
+          if (action === 'stop') {
+            try { broadcaster?.stop(); } catch { /* encoder already closed */ }
+            broadcaster = null; relayStarting = null;
+          } else if (action === 'start') {
+            void ensureRelay().then(() => broadcaster?.requestKeyframe()).catch(() => {});
+          }
+          return;
+        }
         if (message.type === 'sfu-audience' && message.slot === slot && Number.isInteger(message.count) && message.count >= 0) {
           sfuAudience = message.count;
           await updateAudience();
@@ -155,6 +171,7 @@ function renderCapture(token) {
         if (message.type === 'need-keyframe') { broadcaster?.requestKeyframe(); return; }
         if (message.type === 'fallback-want') {
           try {
+            relayWanted = true;
             await ensureRelay();
             broadcaster?.requestKeyframe();
             socket.send(JSON.stringify({ type: 'fallback-ready', slot, viewer: message.viewer, ...relayMedia }));
@@ -162,6 +179,9 @@ function renderCapture(token) {
           return;
         }
         if (message.type !== 'rtc-want') return;
+        // One peer per viewer would multiply the streamer's upload without limit,
+        // but an existing viewer must still be able to replace its own dead peer.
+        if (!shouldAcceptPeer({ size: peers.size, known: peers.has(message.viewer) })) return;
         peers.get(message.viewer)?.peer.close();
         const outbound = [];
         let offerSent = false;
@@ -390,13 +410,13 @@ async function renderViewer() {
         });
         return counters;
       };
-      const stopRtc = ({ resumeRelay = false } = {}) => {
+      const stopRtc = ({ resumeRelay = false, keepRelayWatch = false } = {}) => {
         clearTimeout(rtcTimer);
-        stopStallWatch();
+        if (!keepRelayWatch) stopStallWatch();
         if (rtcSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'rtc-bye', slot: rtcSlot }));
         const peer = directPeer; directPeer = null; peer?.close(); directPending = [];
         releasePlayback({ video: directVideo, canvas });
-        connectionPanel.clear();
+        if (!keepRelayWatch) connectionPanel.clear();
         const wasActive = rtcActive; rtcActive = false; rtcSlot = null;
         if (resumeRelay && wasActive && selectedSlot !== null) {
           const stream = availableStreams.get(selectedSlot);
@@ -497,7 +517,7 @@ async function renderViewer() {
             socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
             socket.send(JSON.stringify({ type: 'rtc-want', slot: message.slot }));
             rtcSlot = message.slot;
-            rtcTimer = setTimeout(() => { if (!rtcActive) stopRtc(); }, FALLBACK_MS);
+            rtcTimer = setTimeout(() => { if (!rtcActive) stopRtc({ keepRelayWatch: relayFallbackActive }); }, FALLBACK_MS);
             document.querySelector('#status').textContent = `Assistindo à transmissão de ${message.name} pelo relay.`;
           };
           item.onclick = openStream;
