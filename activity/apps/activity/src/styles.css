@@ -88,3 +88,11 @@ body{background:radial-gradient(ellipse at top,#142536 0,#090f19 65%)}
 .room-live-notice button{flex:none;min-height:44px;font-size:13px}
 @media(max-width:640px){.room-state-panel{min-height:280px}.room-skeletons{grid-template-columns:1fr}.room-skeleton:not(:first-child){display:none}.room-loading{padding:24px}.room-loading-copy{align-items:flex-start}.room-live-notice{bottom:130px;flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.room-spinner,.room-skeleton{animation:none}}
+
+/* Live transport diagnostics: identifies the actual path in use and, when opened, its buffers. */
+.connection-panel{position:relative;color:var(--text-soft);font-size:13px}
+.connection-panel summary{display:flex;align-items:center;gap:6px;min-height:44px;padding:8px 12px;border:1px solid var(--border);border-radius:10px;cursor:pointer;white-space:nowrap;color:#eef5ff}
+.connection-panel summary:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.connection-report{position:absolute;left:0;bottom:calc(100% + 8px);width:min(320px,calc(100vw - 24px));padding:10px 12px;background:#101925;border:1px solid var(--border);border-radius:12px;line-height:1.6;box-shadow:0 8px 24px #0008}
+.connection-report:empty{display:none}
+@media(max-width:640px){.connection-panel summary{padding:8px}.connection-report{font-size:12px}}

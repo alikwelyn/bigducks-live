@@ -2,11 +2,16 @@ import { AUDIO, decodePacket, VIDEO_KEYFRAME, VIDEO_DELTA } from '../../../share
 
 const VIDEO_BUFFER_MS = 80;
 const MAX_VIDEO_FRAMES = 12;
+const MAX_VIDEO_DECODE_QUEUE = 4;
+const MAX_AUDIO_DECODE_QUEUE = 8;
+const MAX_VIDEO_LEAD_MS = 250;
 
-export function createPlayer(canvas) {
+export function createPlayer(canvas, { onResync = () => {} } = {}) {
   const context = canvas.getContext('2d', { alpha: false, desynchronized: true });
   let decoder;
+  let videoConfig;
   let audioDecoder;
+  let audioConfig;
   let audioContext;
   let audioGain;
   let muted = false;
@@ -83,7 +88,7 @@ export function createPlayer(canvas) {
     }
     lastTimestamp = timestamp;
     let showAt = videoBase + timestamp;
-    if (showAt < now - VIDEO_BUFFER_MS) {
+    if (showAt < now - VIDEO_BUFFER_MS || showAt > now + MAX_VIDEO_LEAD_MS) {
       clearFrames();
       videoBase = now + VIDEO_BUFFER_MS - timestamp;
       showAt = videoBase + timestamp;
@@ -103,7 +108,8 @@ export function createPlayer(canvas) {
       videoBase = null;
       lastTimestamp = -Infinity;
       decoder = new VideoDecoder({ output: scheduleFrame, error() { hasKeyframe = false; } });
-      decoder.configure({ codec, optimizeForLatency: true });
+      videoConfig = { codec, optimizeForLatency: true };
+      decoder.configure(videoConfig);
       configured = true;
     },
     configureAudio(config) {
@@ -125,7 +131,8 @@ export function createPlayer(canvas) {
         nextAudioTime = Math.max(nextAudioTime, liveEdge);
         scheduledAudio.add(source); source.start(nextAudioTime); nextAudioTime += buffer.duration; audioData.close();
       }, error() {} });
-      audioDecoder.configure({ codec: config.codec || 'opus', sampleRate: config.sampleRate, numberOfChannels: config.numberOfChannels });
+      audioConfig = { codec: config.codec || 'opus', sampleRate: config.sampleRate, numberOfChannels: config.numberOfChannels };
+      audioDecoder.configure(audioConfig);
       return true;
     },
     setVolume(value) {
@@ -141,8 +148,19 @@ export function createPlayer(canvas) {
       if (!configured) return;
       const packet = decodePacket(raw);
       if (packet.type === AUDIO) {
-        if (audioDecoder?.state === 'configured') audioDecoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: packet.clock, data: packet.payload }));
+        if (audioDecoder?.state === 'configured') {
+          if (audioDecoder.decodeQueueSize >= MAX_AUDIO_DECODE_QUEUE) {
+            audioDecoder.reset(); audioDecoder.configure(audioConfig); clearAudioSchedule();
+          }
+          audioDecoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: packet.clock, data: packet.payload }));
+        }
         return;
+      }
+      if (decoder.decodeQueueSize >= MAX_VIDEO_DECODE_QUEUE) {
+        // Drop pending dependent frames instead of playing an ever-growing backlog.
+        decoder.reset(); decoder.configure(videoConfig);
+        clearFrames(); videoBase = null; lastTimestamp = -Infinity; hasKeyframe = false;
+        onResync();
       }
       if (packet.type === VIDEO_KEYFRAME) hasKeyframe = true;
       if (packet.type === VIDEO_DELTA && !hasKeyframe) return;

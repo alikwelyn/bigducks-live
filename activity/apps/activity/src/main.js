@@ -11,6 +11,7 @@ import { createViewControls } from './view-controls.js';
 import { createRoomState } from './room-state.js';
 import { createCaptureContinuity } from './capture-continuity.js';
 import { pageMode, captureSession, createShareLink } from './access.js';
+import { createConnectionPanel } from './connection-panel.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -329,6 +330,7 @@ async function renderViewer() {
   muteButton.onclick = () => { if (!playbackLocked) setPlaybackMuted(!muted, false); };
   document.querySelector('.stage').append(directVideo);
   const viewControls = createViewControls(watchView, directVideo);
+  const connectionPanel = createConnectionPanel(document.querySelector('.watch-controls'), () => retryWatch());
   const feedback = createPlaybackFeedback(watchView, directVideo, canvas, () => retryWatch());
   document.querySelector('#live-volume').oninput = (event) => {
     const volume = Number(event.target.value) / 100;
@@ -359,6 +361,7 @@ async function renderViewer() {
         const active = sfuViewer; sfuViewer = null;
         try { active?.close(); } catch { /* already closed */ }
         relayFallbackActive = false;
+        connectionPanel.clear();
       };
       const stopRtc = ({ resumeRelay = false } = {}) => {
         clearTimeout(rtcTimer);
@@ -366,11 +369,13 @@ async function renderViewer() {
         const peer = directPeer; directPeer = null; peer?.close(); directPending = [];
         directVideo.pause(); directVideo.srcObject = null; directVideo.style.display = 'none';
         canvas.style.display = 'block';
+        connectionPanel.clear();
         const wasActive = rtcActive; rtcActive = false; rtcSlot = null;
         if (resumeRelay && wasActive && selectedSlot !== null) {
           const stream = availableStreams.get(selectedSlot);
           if (stream) player.configure({ codec: stream.codec || 'avc1.64002a' });
           socket.send(JSON.stringify({ type: 'watch', slot: selectedSlot }));
+          connectionPanel.set('Relay WebSocket', null);
           document.querySelector('#status').textContent = 'P2P interrompido; usando relay.';
         }
       };
@@ -440,6 +445,7 @@ async function renderViewer() {
                 const viewed = await createSfuViewer({ mediaToken: message.mediaToken, video: directVideo, token, apiBase, iceServers, onDisconnect: requestFallback, isCurrent });
                 if (!isCurrent()) { viewed.close(); return; }
                 sfuViewer = viewed;
+                connectionPanel.set('Cloudflare SFU', viewed.peer);
                 document.querySelector('#status').textContent = `Assistindo ${message.name} pela Cloudflare SFU.`;
                 return;
               } catch {
@@ -451,6 +457,7 @@ async function renderViewer() {
             player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
             player.configureAudio(message.audioConfig);
             relayFallbackActive = true;
+            connectionPanel.set('Relay WebSocket', null);
             socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
             socket.send(JSON.stringify({ type: 'rtc-want', slot: message.slot }));
             rtcSlot = message.slot;
@@ -520,6 +527,7 @@ async function renderViewer() {
           player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
           player.configureAudio(message.audioConfig);
           relayFallbackActive = true;
+          connectionPanel.set('Relay WebSocket', null);
           socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
           document.querySelector('#status').textContent = 'Assistindo pelo relay de compatibilidade.';
         }
@@ -556,6 +564,7 @@ async function renderViewer() {
                 if (rtcActive || !directPeer) return;
                 rtcActive = true; clearTimeout(rtcTimer);
                 player.close(); canvas.style.display = 'none'; directVideo.style.display = 'block';
+                connectionPanel.set('Conexão direta P2P', directPeer);
                 socket.send(JSON.stringify({ type: 'rtc-active', slot: selectedSlot }));
                 document.querySelector('#status').textContent = 'Conexão direta P2P ativa.';
               };

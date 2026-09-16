@@ -97,12 +97,24 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
   }
   const sourceSize = frameDisplaySize(firstFrame, { width: settings.width || profile.width, height: settings.height || profile.height });
   const size = fitWithin(sourceSize.width, sourceSize.height, profile.width, profile.height);
+  let stopped = false;
+  let forceKeyframe = true;
+  let needsOutputKeyframe = true;
+  let lastKeyframeAt = 0;
+  const canSend = () => !stopped && ws.readyState === 1 && ws.bufferedAmount < 256 * 1024;
+  const sendChunk = (chunk, type) => {
+    if (!canSend()) {
+      if (type !== AUDIO) { forceKeyframe = true; needsOutputKeyframe = true; }
+      return;
+    }
+    if (type === VIDEO_DELTA && needsOutputKeyframe) { forceKeyframe = true; return; }
+    if (type === VIDEO_KEYFRAME) needsOutputKeyframe = false;
+    const payload = new Uint8Array(chunk.byteLength);
+    chunk.copyTo(payload);
+    ws.send(encodePacket({ slot, type, sentAt: Date.now(), clock: chunk.timestamp, payload }));
+  };
   const encoder = new VideoEncoder({
-    output: (chunk) => {
-      const payload = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(payload);
-      ws.send(encodePacket({ slot, type: chunk.type === 'key' ? VIDEO_KEYFRAME : VIDEO_DELTA, sentAt: Date.now(), clock: chunk.timestamp, payload }));
-    },
+    output: (chunk) => sendChunk(chunk, chunk.type === 'key' ? VIDEO_KEYFRAME : VIDEO_DELTA),
     error: (error) => onEnd(error),
   });
   let codec;
@@ -113,9 +125,6 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
     firstFrame?.close();
     throw error;
   }
-  let stopped = false;
-  let forceKeyframe = true;
-  let lastKeyframeAt = 0;
   let audioEncoder;
   let audioReader;
   const audioTrack = stream.getAudioTracks()[0];
@@ -124,11 +133,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
     const audioSettings = audioTrack.getSettings();
     audioConfig = { codec: 'opus', sampleRate: audioSettings.sampleRate || 48_000, numberOfChannels: Math.max(1, Math.min(2, audioSettings.channelCount || 2)), bitrate: 96_000 };
     audioEncoder = new AudioEncoder({
-      output: (chunk) => {
-        const payload = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(payload);
-        ws.send(encodePacket({ slot, type: AUDIO, sentAt: Date.now(), clock: chunk.timestamp, payload }));
-      },
+      output: (chunk) => sendChunk(chunk, AUDIO),
       error: (error) => onEnd(error),
     });
     audioEncoder.configure(audioConfig);
@@ -139,7 +144,7 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
         while (!stopped) {
           const { done, value } = await audioReader.read();
           if (done) break;
-          if (audioEncoder.encodeQueueSize < 4) audioEncoder.encode(value);
+          if (canSend() && audioEncoder.encodeQueueSize < 4) audioEncoder.encode(value);
           value.close();
         }
       } catch (error) { if (!stopped) onEnd(error); }
@@ -156,12 +161,13 @@ export async function createBroadcaster({ ws, profile, audio = false, stream = n
         pending = null;
         if (result.done) break;
         const value = result.value;
-        if (stopped || encoder.encodeQueueSize > 2 || ws.bufferedAmount > 256 * 1024) { value.close(); continue; }
+        if (!canSend()) { forceKeyframe = true; needsOutputKeyframe = true; value.close(); continue; }
+        if (encoder.encodeQueueSize > 2) { value.close(); continue; }
         const now = Date.now();
         const keyFrame = forceKeyframe || now - lastKeyframeAt >= 3000;
+        forceKeyframe = false;
         encoder.encode(value, { keyFrame });
         if (keyFrame) lastKeyframeAt = now;
-        forceKeyframe = false;
         value.close();
       }
     } catch (error) { if (!stopped) onEnd(error); }
