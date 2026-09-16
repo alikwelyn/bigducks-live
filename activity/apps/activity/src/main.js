@@ -1,6 +1,6 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { profileFor } from '../../../shared/adaptation.js';
-import { createPeer, FALLBACK_MS, fetchIceServers, tuneSenders } from '../../../shared/rtc.js';
+import { createPeer, FALLBACK_MS, MAX_P2P_PEERS, fetchIceServers, tuneSenders } from '../../../shared/rtc.js';
 import { captureMonitor, createBroadcaster, fitWithin } from '../../../shared/media.js';
 import { createPlayer } from './player.js';
 import { awaitJoined, connectRelaySocket } from './relay-socket.js';
@@ -15,6 +15,7 @@ import { createConnectionPanel } from './connection-panel.js';
 import { createStallWatchController } from './stall-watchdog.js';
 import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js';
 import { releasePlayback } from './watch-teardown.js';
+import { relayEncoderAction } from './relay-audience.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -147,6 +148,17 @@ function renderCapture(token) {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type === 'audience' && message.slot === slot) { captureAudience.update(message.viewers); return; }
+        if (message.type === 'relay-audience' && message.slot === slot) {
+          // Nobody watching through the relay: stop paying for an encoder nobody reads.
+          const action = relayEncoderAction({ viewers: message.count, running: Boolean(broadcaster), starting: Boolean(relayStarting) });
+          if (action === 'stop') {
+            try { broadcaster?.stop(); } catch { /* encoder already closed */ }
+            broadcaster = null; relayStarting = null;
+          } else if (action === 'start') {
+            void ensureRelay().then(() => broadcaster?.requestKeyframe()).catch(() => {});
+          }
+          return;
+        }
         if (message.type === 'sfu-audience' && message.slot === slot && Number.isInteger(message.count) && message.count >= 0) {
           sfuAudience = message.count;
           await updateAudience();
@@ -162,6 +174,8 @@ function renderCapture(token) {
           return;
         }
         if (message.type !== 'rtc-want') return;
+        // One peer per viewer would multiply the streamer's upload without limit.
+        if (peers.size >= MAX_P2P_PEERS) return;
         peers.get(message.viewer)?.peer.close();
         const outbound = [];
         let offerSent = false;

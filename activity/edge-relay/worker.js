@@ -31,6 +31,7 @@ export class EdgeRoom {
     for (const publisher of this.sockets('publisher')) {
       const member = attachment(publisher);
       send(publisher, { type: 'sfu-audience', slot: member.slot, count: viewers.filter((viewer) => viewer.sfuSlot === member.slot).length });
+      send(publisher, { type: 'relay-audience', slot: member.slot, count: viewers.filter((viewer) => viewer.watched === member.slot).length });
       const message = { type: 'audience', slot: member.slot, viewers: audienceFor(viewers, member.slot) };
       send(publisher, message);
       for (const viewer of this.sockets('viewer')) if (viewer !== exclude) send(viewer, message);
@@ -130,9 +131,17 @@ export class EdgeRoom {
       return;
     }
 
+    if (member.role === 'viewer' && control.type === 'sfu-watch') {
+      // Moving to an SFU subscription ends the relay subscription, so the encoder can idle.
+      member.watched = null;
+      socket.serializeAttachment(member);
+      this.notifyAudience();
+      return;
+    }
     if (member.role === 'viewer' && control.type === 'watch') {
       member.watched = selectWatchedSlot(control.slot);
       socket.serializeAttachment(member);
+      this.notifyAudience();
       const publisher = this.publisher(member.watched);
       if (publisher) send(publisher, { type: 'need-keyframe', slot: member.watched, viewer: member.user });
       return;
@@ -140,11 +149,13 @@ export class EdgeRoom {
     if (member.role === 'viewer' && control.type === 'unwatch') {
       if (member.watched === control.slot) member.watched = null;
       socket.serializeAttachment(member);
+      this.notifyAudience();
       return;
     }
     if (member.role === 'viewer' && control.type === 'fallback-want') {
       member.watched = selectWatchedSlot(control.slot);
       socket.serializeAttachment(member);
+      this.notifyAudience();
       const publisher = this.publisher(member.watched);
       if (publisher) send(publisher, { type: 'fallback-want', slot: member.watched, viewer: member.user });
       return;
@@ -157,6 +168,7 @@ export class EdgeRoom {
     if (member.role === 'viewer' && control.type === 'rtc-active') {
       member.watched = null;
       socket.serializeAttachment(member);
+      this.notifyAudience();
     }
 
     if (['rtc-want', 'rtc', 'rtc-active', 'rtc-bye'].includes(control.type)) {

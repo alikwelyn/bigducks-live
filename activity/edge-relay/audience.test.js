@@ -68,3 +68,26 @@ it('confirms an empty room only after processing the viewer hello', async () => 
   await room.webSocketMessage(viewer, JSON.stringify({ type: 'hello' }));
   expect(viewer.messages).toEqual([{ type: 'room-ready' }]);
 });
+
+it('reports the relay-only audience so an idle encoder can be stopped', async () => {
+  const publisher = socket({ role: 'publisher', slot: 0 });
+  const sfuViewer = socket({ role: 'viewer', user: 'sfu', watched: null });
+  const relayViewer = socket({ role: 'viewer', user: 'relay', watched: null });
+  const room = new EdgeRoom({ getWebSockets: () => [publisher, sfuViewer, relayViewer] });
+  const control = (client, type, slot) => room.webSocketMessage(client, JSON.stringify({ type, slot }));
+  const relayCount = () => publisher.messages.findLast((message) => message.type === 'relay-audience')?.count;
+  await control(publisher, 'start', 0);
+  expect(relayCount()).toBe(0);
+  await control(sfuViewer, 'sfu-watch', 0);
+  expect(relayCount()).toBe(0);
+  await control(relayViewer, 'fallback-want', 0);
+  expect(relayCount()).toBe(1);
+  await control(relayViewer, 'sfu-watch', 0);
+  expect(relayCount()).toBe(0);
+  await control(relayViewer, 'fallback-want', 0);
+  expect(relayCount()).toBe(1);
+  await control(relayViewer, 'unwatch', 0);
+  expect(relayCount()).toBe(0);
+  await room.webSocketClose(relayViewer);
+  expect(relayCount()).toBe(0);
+});
