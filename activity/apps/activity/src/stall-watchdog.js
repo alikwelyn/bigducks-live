@@ -31,3 +31,19 @@ export function createStallWatchdog({ sample, onStall = () => {}, intervalMs = S
     get stalled() { return triggered; },
   };
 }
+
+// Owns the single live watchdog. Teardown paths only have to call stop(), so a
+// forgotten cancellation cannot leave a poll running against a closed peer.
+export function createStallWatchController({ create = createStallWatchdog } = {}) {
+  let current;
+  return {
+    watch(sample, onStall) {
+      current?.stop();
+      current = create({ sample, onStall });
+      current.start();
+      return current;
+    },
+    stop() { current?.stop(); current = undefined; },
+    get armed() { return Boolean(current); },
+  };
+}

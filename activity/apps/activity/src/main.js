@@ -12,7 +12,7 @@ import { createRoomState } from './room-state.js';
 import { createCaptureContinuity } from './capture-continuity.js';
 import { pageMode, captureSession, createShareLink } from './access.js';
 import { createConnectionPanel } from './connection-panel.js';
-import { createStallWatchdog } from './stall-watchdog.js';
+import { createStallWatchController } from './stall-watchdog.js';
 import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js';
 import { releasePlayback } from './watch-teardown.js';
 import './styles.css';
@@ -354,7 +354,7 @@ async function renderViewer() {
   };
   let directPeer;
   let sfuViewer;
-  let stallWatch;
+  const stallWatch = createStallWatchController();
   let relayBytes = 0;
   let relayFallbackActive = false;
   let directPending = [];
@@ -372,7 +372,7 @@ async function renderViewer() {
       const audiences = new Map();
       let selectedSlot = null;
       let watchRevision = 0;
-      const stopStallWatch = () => { stallWatch?.stop(); stallWatch = undefined; };
+      const stopStallWatch = () => stallWatch.stop();
       const stopSfu = () => {
         watchRevision++;
         const active = sfuViewer; sfuViewer = null;
@@ -381,11 +381,7 @@ async function renderViewer() {
         stopStallWatch();
         connectionPanel.clear();
       };
-      const watchForStall = (sample, onStall) => {
-        stopStallWatch();
-        stallWatch = createStallWatchdog({ sample, onStall });
-        stallWatch.start();
-      };
+      const watchForStall = (sample, onStall) => stallWatch.watch(sample, onStall);
       const videoBytes = (peer) => async () => {
         const counters = new Map();
         const reports = await peer.getStats();
