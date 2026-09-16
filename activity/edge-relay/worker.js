@@ -2,8 +2,11 @@ import { allocatePublisherSlot, MAX_BUFFERED_BYTES, MAX_VIEWERS, selectWatchedSl
 import { verifyEdgeToken } from './token.js';
 import { updateStreamSource } from '../shared/source-update.js';
 import { updateAudience, audienceFor, clearAudience } from '../shared/sfu-audience.js';
+import { addUsage, clampReportedBytes, freshUsage, usageSummary } from './usage.js';
 
 const INTERNAL_CLAIMS = 'x-bigducks-edge-claims';
+const USAGE_PERSIST_MS = 60_000;
+const USAGE_NOTIFY_MS = 30_000;
 
 function attachment(socket) {
   try { return socket.deserializeAttachment(); } catch { return null; }
@@ -16,6 +19,38 @@ function send(socket, message) {
 export class EdgeRoom {
   constructor(state) {
     this.state = state;
+    this.usage = freshUsage();
+    this.usageLoaded = false;
+  }
+
+  // Accounting must never interfere with media: every storage access is optional
+  // and failures are swallowed.
+  async loadUsage() {
+    if (this.usageLoaded) return;
+    this.usageLoaded = true;
+    try {
+      const stored = await this.state.storage?.get?.('usage');
+      if (stored && stored.month === this.usage.month && (stored.relayBytes || 0) + (stored.sfuBytes || 0) > this.usage.relayBytes + this.usage.sfuBytes) this.usage = stored;
+    } catch { /* keep the in-memory figure */ }
+  }
+
+  async recordUsage(delta) {
+    const now = Date.now();
+    await this.loadUsage();
+    this.usage = addUsage(this.usage, { ...delta, now });
+    if (!this.usagePersistedAt || now - this.usagePersistedAt > USAGE_PERSIST_MS) {
+      this.usagePersistedAt = now;
+      try { await this.state.storage?.put?.('usage', this.usage); } catch { /* not fatal */ }
+    }
+    if (!this.usageNotifiedAt || now - this.usageNotifiedAt > USAGE_NOTIFY_MS) {
+      this.usageNotifiedAt = now;
+      this.notifyUsage();
+    }
+  }
+
+  notifyUsage() {
+    const summary = usageSummary(this.usage);
+    for (const publisher of this.sockets('publisher')) send(publisher, { type: 'usage', ...summary });
   }
 
   sockets(role) {
@@ -75,10 +110,12 @@ export class EdgeRoom {
 
     if (message instanceof ArrayBuffer) {
       if (member.role !== 'publisher' || message.byteLength < 18 || new Uint8Array(message, 0, 1)[0] !== member.slot) return;
+      let delivered = 0;
       for (const viewer of this.sockets('viewer')) {
         const viewerState = attachment(viewer);
-        if (viewerState?.watched === member.slot && (viewer.bufferedAmount ?? 0) < MAX_BUFFERED_BYTES) send(viewer, message);
+        if (viewerState?.watched === member.slot && (viewer.bufferedAmount ?? 0) < MAX_BUFFERED_BYTES) { send(viewer, message); delivered += 1; }
       }
+      if (delivered) void this.recordUsage({ relay: message.byteLength * delivered });
       return;
     }
 
@@ -99,7 +136,7 @@ export class EdgeRoom {
     }
 
     if (control.type === 'hello') {
-      if (member.role === 'publisher') send(socket, { type: 'joined', slot: member.slot, name: member.name, edge: true });
+      if (member.role === 'publisher') { send(socket, { type: 'joined', slot: member.slot, name: member.name, edge: true }); send(socket, { type: 'usage', ...usageSummary(this.usage) }); }
       else {
         for (const publisher of this.sockets('publisher')) {
           const publisherState = attachment(publisher);
@@ -138,6 +175,12 @@ export class EdgeRoom {
       return;
     }
 
+    if (member.role === 'viewer' && control.type === 'meter') {
+      // Best-effort, self-reported and clamped: visibility, never enforcement.
+      const bytes = clampReportedBytes(control.bytes);
+      if (bytes) void this.recordUsage({ sfu: bytes });
+      return;
+    }
     if (member.role === 'viewer' && control.type === 'sfu-watch') {
       // Moving to an SFU subscription ends the relay subscription, so the encoder can idle.
       socket.serializeAttachment(member);

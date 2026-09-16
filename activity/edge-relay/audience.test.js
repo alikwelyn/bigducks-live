@@ -98,3 +98,26 @@ it('reports the relay-only audience so an idle encoder can be stopped', async ()
   await room.webSocketClose(relayViewer);
   expect(relayCount()).toBe(0);
 });
+
+it('reports an informational monthly figure without ever blocking media', async () => {
+  const stored = {};
+  const publisher = socket({ role: 'publisher', slot: 0 });
+  const viewer = socket({ role: 'viewer', user: 'friend', watched: null });
+  const room = new EdgeRoom({ getWebSockets: () => [publisher, viewer], storage: { get: async (key) => stored[key], put: async (key, value) => { stored[key] = value; } } });
+  const control = (client, payload) => room.webSocketMessage(client, JSON.stringify(payload));
+  await control(publisher, { type: 'hello' });
+  expect(publisher.messages.findLast((message) => message.type === 'usage')).toMatchObject({ gigabytes: 0 });
+  await control(publisher, { type: 'start', slot: 0 });
+  await control(viewer, { type: 'fallback-want', slot: 0 });
+  const frame = new ArrayBuffer(1000);
+  new Uint8Array(frame)[0] = 0;
+  await room.webSocketMessage(publisher, frame);
+  await control(viewer, { type: 'meter', bytes: 4_000_000 });
+  await control(viewer, { type: 'meter', bytes: -5 });
+  // The report is throttled, so ask again the way a reconnect would.
+  publisher.messages.length = 0;
+  await control(publisher, { type: 'hello' });
+  const summary = publisher.messages.findLast((message) => message.type === 'usage');
+  expect(summary).toMatchObject({ bytes: 4_001_000, gigabytes: expect.any(Number) });
+  expect(viewer.messages.some((message) => message.type === 'usage')).toBe(false);
+});
