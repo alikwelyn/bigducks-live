@@ -372,14 +372,15 @@ async function renderViewer() {
       const audiences = new Map();
       let selectedSlot = null;
       let watchRevision = 0;
+      const stopStallWatch = () => { stallWatch?.stop(); stallWatch = undefined; };
       const stopSfu = () => {
         watchRevision++;
         const active = sfuViewer; sfuViewer = null;
         try { active?.close(); } catch { /* already closed */ }
         relayFallbackActive = false;
+        stopStallWatch();
         connectionPanel.clear();
       };
-      const stopStallWatch = () => { stallWatch?.stop(); stallWatch = undefined; };
       const watchForStall = (sample, onStall) => {
         stopStallWatch();
         stallWatch = createStallWatchdog({ sample, onStall });
