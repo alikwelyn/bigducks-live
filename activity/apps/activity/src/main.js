@@ -58,6 +58,7 @@ function renderCapture(token) {
   const startCapture = async () => {
     if (starting) return;
     let captured;
+    let socket;
     starting = true;
     startButton.disabled = true;
     switchButton.disabled = true;
@@ -71,7 +72,7 @@ function renderCapture(token) {
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) videoTrack.contentHint = 'detail';
       const runtimeConfig = await fetch(apiUrl('/api/config')).then((response) => response.json()).catch(() => ({}));
-      const socket = await connectRelaySocket({ apiBase, token });
+      socket = await connectRelaySocket({ apiBase, token });
       // Bounded handshake: a socket that dies here must fail loudly, not leave the studio stuck.
       const joined = awaitJoined(socket, { timeoutMs: 8000 });
       socket.send(JSON.stringify({ type: 'hello' }));
@@ -272,6 +273,7 @@ function renderCapture(token) {
       window.addEventListener('beforeunload', () => stopBroadcast(), { once: true });
     } catch (error) {
       activeStop?.();
+      try { socket?.close(); } catch { /* socket already closed */ }
       captured?.getTracks().forEach((track) => track.stop());
       starting = false;
       startButton.disabled = false;

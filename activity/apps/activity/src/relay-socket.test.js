@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { awaitJoined, relayUrls } from './relay-socket.js';
 
@@ -19,7 +20,8 @@ describe('joining a room', () => {
     socket.message(new ArrayBuffer(4));
     socket.message(text({ type: 'joined', slot: 2, name: 'Ana' }));
     await expect(joined).resolves.toMatchObject({ slot: 2, name: 'Ana' });
-    expect(socket.listeners?.('message')?.length ?? 0).toBe(0);
+    expect(getEventListeners(socket, 'message')).toHaveLength(0);
+    expect(getEventListeners(socket, 'close')).toHaveLength(0);
   });
 
   it('rejects instead of hanging when the room closes before confirming', async () => {
@@ -34,6 +36,15 @@ describe('joining a room', () => {
     const joined = awaitJoined(socket, { timeoutMs: 8000 });
     socket.dispatchEvent(new Event('error'));
     await expect(joined).rejects.toThrow(/falhou antes de confirmar/i);
+  });
+
+  it('clears the deadline as soon as the room confirms', async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const joined = awaitJoined(socket, { timeoutMs: 8000 });
+    socket.message(text({ type: 'joined', slot: 1 }));
+    await expect(joined).resolves.toMatchObject({ slot: 1 });
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('rejects on timeout and leaves no pending timer behind', async () => {
