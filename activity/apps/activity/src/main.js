@@ -3,7 +3,7 @@ import { profileFor } from '../../../shared/adaptation.js';
 import { createPeer, FALLBACK_MS, fetchIceServers, tuneSenders } from '../../../shared/rtc.js';
 import { captureMonitor, createBroadcaster, fitWithin } from '../../../shared/media.js';
 import { createPlayer } from './player.js';
-import { connectRelaySocket } from './relay-socket.js';
+import { awaitJoined, connectRelaySocket } from './relay-socket.js';
 import { createSfuPublisher, createSfuViewer } from './sfu.js';
 import { createPlaybackFeedback } from './playback-feedback.js';
 import { createAudience } from './audience.js';
@@ -72,11 +72,8 @@ function renderCapture(token) {
       if (videoTrack) videoTrack.contentHint = 'detail';
       const runtimeConfig = await fetch(apiUrl('/api/config')).then((response) => response.json()).catch(() => ({}));
       const socket = await connectRelaySocket({ apiBase, token });
-      const joined = new Promise((resolve) => socket.addEventListener('message', (event) => {
-        if (typeof event.data !== 'string') return;
-        const message = JSON.parse(event.data);
-        if (message.type === 'joined') resolve(message);
-      }));
+      // Bounded handshake: a socket that dies here must fail loudly, not leave the studio stuck.
+      const joined = awaitJoined(socket, { timeoutMs: 8000 });
       socket.send(JSON.stringify({ type: 'hello' }));
       const { slot } = await joined;
       const peers = new Map();
