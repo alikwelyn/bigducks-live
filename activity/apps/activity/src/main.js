@@ -14,6 +14,7 @@ import { pageMode, captureSession, createShareLink } from './access.js';
 import { createConnectionPanel } from './connection-panel.js';
 import { createStallWatchdog } from './stall-watchdog.js';
 import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js';
+import { releasePlayback } from './watch-teardown.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -108,6 +109,7 @@ function renderCapture(token) {
         const preview = document.querySelector('#preview'); preview.srcObject = null; preview.hidden = true;
         status.textContent = message;
         captureAudience.update([]);
+        captureAudience.close();
         activeStop = null;
         activeSwitch = null;
         continuity?.close();
@@ -396,8 +398,7 @@ async function renderViewer() {
         stopStallWatch();
         if (rtcSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'rtc-bye', slot: rtcSlot }));
         const peer = directPeer; directPeer = null; peer?.close(); directPending = [];
-        directVideo.pause(); directVideo.srcObject = null; directVideo.style.display = 'none';
-        canvas.style.display = 'block';
+        releasePlayback({ video: directVideo, canvas });
         connectionPanel.clear();
         const wasActive = rtcActive; rtcActive = false; rtcSlot = null;
         if (resumeRelay && wasActive && selectedSlot !== null) {
@@ -561,7 +562,7 @@ async function renderViewer() {
           stopSfu();
           const stage = document.querySelector('.stage');
           stage.replaceChildren(canvas, directVideo);
-          directVideo.style.display = 'none'; canvas.style.display = 'block';
+          releasePlayback({ video: directVideo, canvas });
           player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
           player.configureAudio(message.audioConfig);
           relayFallbackActive = true;
@@ -585,7 +586,6 @@ async function renderViewer() {
             stopRtc(); stopSfu();
             selectedSlot = null;
             player.close();
-            directVideo.removeAttribute('src'); directVideo.load();
             document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
             document.querySelector('#status').textContent = 'Transmissão encerrada.';
             showBrowseView();
