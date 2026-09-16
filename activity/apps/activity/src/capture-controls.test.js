@@ -12,6 +12,7 @@ it('makes the audio choice read as fixed while a live is running', () => {
   expect(value.switch.hidden).toBe(false);
   expect(value.audio.disabled).toBe(true);
   expect(value.audio.title).toBe(LIVE_AUDIO_TITLE);
+  expect(value.audio.title).toMatch(/encerre a transmissão/i);
 });
 
 it('restores every control when the live stops', () => {

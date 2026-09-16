@@ -1,5 +1,5 @@
 export const DEFAULT_AUDIO_TITLE = 'O áudio do sistema é autorizado no seletor do navegador ao iniciar a transmissão.';
-export const LIVE_AUDIO_TITLE = 'O áudio foi definido ao iniciar. Use "Trocar monitor" para autorizar outro áudio.';
+export const LIVE_AUDIO_TITLE = 'O áudio foi definido ao iniciar. Para transmitir sem som, encerre a transmissão e inicie de novo com esta opção desmarcada.';
 
 // The transmitted audio track is synthesised by the continuity module, so the
 // checkbox cannot change a live stream. Disabling it prevents a streamer from

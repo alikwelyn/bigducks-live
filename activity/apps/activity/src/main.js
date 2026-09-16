@@ -49,7 +49,7 @@ function renderCapture(token) {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label title="${DEFAULT_AUDIO_TITLE}"><input id="audio" type="checkbox" checked> compartilhar áudio do sistema</label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label>compartilhar áudio do sistema <input id="audio" title="${DEFAULT_AUDIO_TITLE}" type="checkbox" checked></label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   const startButton = document.querySelector('#start');
   const stopButton = document.querySelector('#stop');
   const switchButton = document.querySelector('#switch-source');
@@ -62,8 +62,6 @@ function renderCapture(token) {
     if (starting) return;
     let captured;
     starting = true;
-    startButton.disabled = true;
-    switchButton.disabled = true;
     setControls({ live: false, starting: true });
     try {
       const quality = document.querySelector('#quality').value;
@@ -268,6 +266,8 @@ function renderCapture(token) {
       };
       preview.addEventListener('loadeddata', sendThumbnail, { once: true });
       thumbnailTimer = setInterval(sendThumbnail, 3000);
+      // The relay/SFU setup can outlive the session: a close during it already stopped us.
+      if (stopped) return;
       starting = false;
       setControls({ live: true });
       status.textContent = continuity.waiting ? 'O compartilhamento foi interrompido. Selecione o monitor novamente.' : 'Transmitindo. Mantenha esta página aberta.';
