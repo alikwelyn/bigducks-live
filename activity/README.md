@@ -4,7 +4,7 @@ Activity independente do núcleo Go do BIG DUCKS LIVE. A captura de tela ou jane
 
 A captura aceita somente **Tela inteira**. No seletor do navegador, escolha o monitor do jogo e autorize o áudio do sistema. A transmissão acompanha a passagem entre cliente e partida do LoL naquele monitor. Janelas, guias e fontes cujo tipo não pode ser confirmado são recusadas, e suas trilhas são interrompidas imediatamente. O navegador pode continuar exibindo essas opções no seletor; a validação ocorre após a escolha.
 
-Todo o monitor fica visível e o áudio pode incluir outros aplicativos, inclusive o Discord. A opção de áudio vem marcada, mas sua disponibilidade depende do navegador e da autorização no seletor; a página avisa quando não há trilha de áudio. Interromper o compartilhamento mantém a live numa tela de espera. **Selecionar monitor** e **Trocar monitor** preservam a mesma sessão; cancelar o seletor mantém a fonte anterior. **Parar transmissão** encerra a live.
+Todo o monitor fica visível e o áudio pode incluir outros aplicativos, inclusive o Discord. A opção de áudio vem marcada, mas sua disponibilidade depende do navegador e da autorização no seletor; a página avisa quando não há trilha de áudio. **O áudio é definido ao iniciar:** a caixa fica desabilitada durante a live porque a trilha transmitida é sintetizada e desmarcá-la não cortaria o som. Para mudar o áudio, use **Trocar monitor**. Interromper o compartilhamento mantém a live numa tela de espera. **Selecionar monitor** e **Trocar monitor** preservam a mesma sessão; cancelar o seletor mantém a fonte anterior. **Parar transmissão** encerra a live.
 
 ## Transporte de mídia
 
