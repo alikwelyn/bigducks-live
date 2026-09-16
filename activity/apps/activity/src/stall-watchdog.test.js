@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { createStallWatchdog } from './stall-watchdog.js';
+import { createStallWatchController, createStallWatchdog } from './stall-watchdog.js';
 
 afterEach(() => vi.useRealTimers());
 
@@ -43,4 +43,20 @@ it('does not treat missing counters as a stall forever', async () => {
   await vi.advanceTimersByTimeAsync(30_000);
   expect(onStall).not.toHaveBeenCalled();
   watchdog.stop();
+});
+
+it('keeps exactly one watchdog alive across teardown and restart', () => {
+  const watches = [];
+  const controller = createStallWatchController({ create: () => { const w = { start: vi.fn(), stop: vi.fn() }; watches.push(w); return w; } });
+  controller.watch(() => new Map(), () => {});
+  expect(watches).toHaveLength(1);
+  expect(watches[0].start).toHaveBeenCalledOnce();
+  controller.watch(() => new Map(), () => {});
+  expect(watches).toHaveLength(2);
+  expect(watches[0].stop).toHaveBeenCalledOnce();
+  expect(watches[1].start).toHaveBeenCalledOnce();
+  controller.stop();
+  expect(watches[1].stop).toHaveBeenCalledOnce();
+  expect(controller.armed).toBe(false);
+  expect(() => controller.stop()).not.toThrow();
 });
