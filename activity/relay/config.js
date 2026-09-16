@@ -18,6 +18,7 @@ export function loadConfig(env = process.env) {
     turnKeySecret: env.CLOUDFLARE_TURN_KEY_SECRET || '',
     sfuAppId: env.CLOUDFLARE_SFU_APP_ID || '',
     sfuAppSecret: env.CLOUDFLARE_SFU_APP_SECRET || '',
+    sfuMaxRateKeys: Number(env.SFU_MAX_RATE_KEYS || 10_000),
     iceServers: env.TURN_URL ? [{ urls: env.TURN_URL, username: env.TURN_USER, credential: env.TURN_PASS }] : [],
   };
 }

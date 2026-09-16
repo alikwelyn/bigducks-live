@@ -21,6 +21,7 @@ export function createSfuGateway({ appId = '', appSecret = '', secret, fetchImpl
   const enabled = Boolean(appId && appSecret);
   const sessions = new Map();
   const creations = new Map();
+  const rateKeyCap = Number.isInteger(maxRateKeys) && maxRateKeys > 0 ? maxRateKeys : 10_000;
   const base = `${API_ORIGIN}/${encodeURIComponent(appId)}`;
 
   const call = async (path, { method = 'POST', body } = {}) => {
@@ -53,7 +54,7 @@ export function createSfuGateway({ appId = '', appSecret = '', secret, fetchImpl
       // The key contains a caller-chosen room, so prune expired windows and cap the map
       // instead of letting distinct room names grow it without bound.
       for (const [key, list] of creations) if (!list.some((createdAt) => createdAt > now - 60_000)) creations.delete(key);
-      if (!creations.has(ownerKey) && creations.size >= maxRateKeys) throw new Error('SFU session capacity reached');
+      if (!creations.has(ownerKey) && creations.size >= rateKeyCap) throw new Error('SFU session capacity reached');
       const recent = (creations.get(ownerKey) || []).filter((createdAt) => createdAt > now - 60_000);
       if (recent.length >= 10) throw new Error('SFU session rate limit reached');
       recent.push(now); creations.set(ownerKey, recent);
@@ -91,8 +92,13 @@ export function createSfuGateway({ appId = '', appSecret = '', secret, fetchImpl
     async closeTracks(claims, input) {
       ownSession(claims, input?.sessionId);
       const mids = Array.isArray(input?.mids) ? input.mids.filter((mid) => typeof mid === 'string' && mid).slice(0, 2) : [];
-      if (!mids.length) return {};
-      return call(`/sessions/${encodeURIComponent(input.sessionId)}/tracks/close`, { method: 'PUT', body: { tracks: mids.map((mid) => ({ mid })), force: true } });
+      try {
+        if (!mids.length) return {};
+        return await call(`/sessions/${encodeURIComponent(input.sessionId)}/tracks/close`, { method: 'PUT', body: { tracks: mids.map((mid) => ({ mid })), force: true } });
+      } finally {
+        // Closing is terminal: keeping ownership would leak one entry per stream for 6h.
+        sessions.delete(input.sessionId);
+      }
     },
   };
 }

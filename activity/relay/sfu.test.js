@@ -67,4 +67,28 @@ describe('Cloudflare Realtime SFU gateway', () => {
     await expect(gateway.createSession({ room: 'room-a', user: 'pub', role: 'publisher' })).rejects.toThrow(/rate limit/i);
   });
 
+  it('refuses a nonsense cap instead of locking every identity out', async () => {
+    const fetchImpl = vi.fn(async () => response({ sessionId: 's' }, 201));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl, maxRateKeys: 0 });
+    await expect(gateway.createSession({ room: 'r', user: 'u', role: 'viewer' })).resolves.toHaveProperty('sessionId');
+  });
+
+  it('keeps admitting a known identity while the rate-limit map is full', async () => {
+    const fetchImpl = vi.fn(async () => response({ sessionId: `s-${Math.random()}` }, 201));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl, maxRateKeys: 2 });
+    const known = { room: 'r', user: 'u', role: 'viewer' };
+    await gateway.createSession(known);
+    await gateway.createSession({ room: 'outra', user: 'u', role: 'viewer' });
+    await expect(gateway.createSession({ room: 'terceira', user: 'u', role: 'viewer' })).rejects.toThrow(/capacity/i);
+    await expect(gateway.createSession(known)).resolves.toHaveProperty('sessionId');
+  });
+
+  it('forgets a session once it is closed instead of holding it for six hours', async () => {
+    const fetchImpl = vi.fn(async () => response({ sessionId: 's-pub' }, 201));
+    const gateway = createSfuGateway({ appId: 'app-id', appSecret: 'app-secret', secret, fetchImpl });
+    await gateway.createSession(publisher);
+    await gateway.closeTracks(publisher, { sessionId: 's-pub', mids: ['0'] });
+    await expect(gateway.closeTracks(publisher, { sessionId: 's-pub', mids: ['0'] })).rejects.toThrow(/owner/i);
+  });
+
 });
