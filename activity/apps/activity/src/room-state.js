@@ -1,3 +1,5 @@
+import { CODES, withCode } from './diagnostic-code.js';
+
 export function createRoomState({ status, container, publish, retry, timeoutMs = 20_000 }) {
   let phase = 'loading';
   let noticeTimer;
@@ -25,7 +27,7 @@ export function createRoomState({ status, container, publish, retry, timeoutMs =
   container.setAttribute('aria-busy', 'true');
   setStatus('Conectando com o Discord…');
   container.innerHTML = '<div class="room-loading"><div class="room-loading-copy"><span class="room-spinner" aria-hidden="true"></span><div><h2>Buscando as lives do canal</h2><p>Estamos conectando você aos seus amigos.</p></div></div><div class="room-skeletons" aria-hidden="true"><div class="room-skeleton"></div><div class="room-skeleton"></div><div class="room-skeleton"></div></div></div>';
-  const timeout = setTimeout(() => fail('A conexão demorou mais que o esperado. Tente novamente para atualizar a sala.'), timeoutMs);
+  const timeout = setTimeout(() => fail(withCode('A conexão demorou mais que o esperado. Tente novamente para atualizar a sala.', CODES.ROOM_TIMEOUT)), timeoutMs);
   const connectedStatus = (count) => count ? `${count} ${count === 1 ? 'live disponível' : 'lives disponíveis'} · Escolha uma para assistir` : 'Você está na sala · Aguardando a primeira live';
   return {
     get phase() { return phase; },
