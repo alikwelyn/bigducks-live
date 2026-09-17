@@ -401,7 +401,8 @@ async function renderViewer() {
       const stopStallWatch = () => stallWatch.stop();
       const usageReporter = createUsageReporter({
         sample: async () => {
-          const peer = sfuViewer?.peer || directPeer;
+          // Only the SFU leg is Cloudflare egress; P2P bytes travel between peers.
+          const peer = sfuViewer?.peer;
           if (!peer) return undefined;
           const reports = await peer.getStats();
           let total = 0;

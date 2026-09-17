@@ -1,6 +1,12 @@
 // Informational accounting only. Nothing here may block, throttle or stop a
 // stream: the owner asked for visibility, not a limit.
-export const MAX_REPORTED_BYTES = 8 * 1024 * 1024;
+// One report covers ~30s of media. At the fastest shipped profile (1080p60,
+// 9 Mbps plus audio) that is ~34 MB, so the ceiling has to sit above it or every
+// legitimate report would be truncated.
+export const MAX_REPORTED_BYTES = 48 * 1024 * 1024;
+// A viewer cannot report faster than it can legitimately receive, which is what
+// keeps the ceiling from also becoming an inflation lever.
+export const METER_MIN_INTERVAL_MS = 25_000;
 
 export function monthKey(now = Date.now()) {
   return new Date(now).toISOString().slice(0, 7);

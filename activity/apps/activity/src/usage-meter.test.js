@@ -10,7 +10,8 @@ it('reports only the increase since the previous sample', async () => {
   const send = vi.fn();
   const reporter = createUsageReporter({ send, sample: async () => values[Math.min(index++, values.length - 1)] });
   reporter.start();
-  // The first sample only establishes the baseline; nothing had been received yet.
+  // The first sample establishes the baseline and is not reported, so the first
+  // interval of a session is never counted.
   for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(30_000);
   expect(send.mock.calls.map(([bytes]) => bytes)).toEqual([500, 2500]);
   reporter.stop();
