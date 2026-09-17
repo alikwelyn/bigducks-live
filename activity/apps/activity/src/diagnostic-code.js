@@ -17,6 +17,9 @@ export const CODES = Object.freeze({
   CAPTURE_FAILED: 0xd,
   PUBLISH_FAILED: 0xe,
   RELAY_UNAVAILABLE: 0xf,
+  // Appended later on purpose: existing values never change meaning.
+  SFU_FAILED: 0x10,
+  SESSION_UNKNOWN: 0x11,
 });
 
 export function codeLabel(code) {

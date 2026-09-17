@@ -1,18 +1,25 @@
 name: Activity version
 
 # The Activity shows its deployed version in the UI, so every publish to
-# public-main moves the patch number. The bump commit carries [skip ci] so it
-# cannot trigger itself.
+# public-main moves the patch number. The generated commit is recognised by the
+# guard below, and a GITHUB_TOKEN push never starts a workflow run anyway.
 on:
   push:
     branches: [public-main]
+
+# Two merges in quick succession must not both bump from the same base.
+concurrency:
+  group: activity-version
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
   bump:
-    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    # Cannot loop: GitHub never runs workflows for pushes made with GITHUB_TOKEN,
+    # and the guard skips the bump commit anyway.
+    if: "${{ !startsWith(github.event.head_commit.message, 'chore(activity): bump version') }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -40,6 +47,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add activity/package.json activity/package-lock.json
-          git commit -m "chore(activity): bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+          git commit -m "chore(activity): bump version to ${{ steps.bump.outputs.version }}"
           git pull --rebase origin public-main
           git push origin HEAD:public-main
