@@ -24,19 +24,24 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
   const apiAllowed = createLimiter({ limit: apiRateLimit });
   const guildCache = new Map();
   // Cached briefly: /api/session runs on every Activity open and Discord rate-limits per app.
-  const isGuildMember = async (userId, bearer) => {
+  // Returns 'member', 'not-member' or 'unverifiable'. The last one matters: a token
+  // that never granted the `guilds` scope cannot be checked, and reporting that as
+  // "not a member" would lock out every honest user with no way to tell why.
+  const guildMembership = async (userId, bearer) => {
     const cached = guildCache.get(userId);
-    if (cached && cached.expires > Date.now()) return cached.allowed;
-    let allowed = false;
+    if (cached && cached.expires > Date.now()) return cached.verdict;
+    let verdict = 'unverifiable';
     try {
-      const response = await discordFetch('https://discord.com/api/users/@me/guilds?limit=200', { headers: { authorization: `Bearer ${bearer}` } });
-      const guilds = response.ok ? await response.json() : null;
-      allowed = Array.isArray(guilds) && guilds.some((guild) => guild?.id === guildId);
-    } catch { allowed = false; }
+      const guildResponse = await discordFetch('https://discord.com/api/users/@me/guilds?limit=200', { headers: { authorization: `Bearer ${bearer}` } });
+      if (guildResponse.ok) {
+        const guilds = await guildResponse.json();
+        if (Array.isArray(guilds)) verdict = guilds.some((guild) => guild?.id === guildId) ? 'member' : 'not-member';
+      }
+    } catch { verdict = 'unverifiable'; }
     if (guildCache.size >= 5000) for (const [id, entry] of guildCache) if (entry.expires <= Date.now()) guildCache.delete(id);
     if (guildCache.size >= 5000) guildCache.clear();
-    guildCache.set(userId, { allowed, expires: Date.now() + 60_000 });
-    return allowed;
+    guildCache.set(userId, { verdict, expires: Date.now() + 60_000 });
+    return verdict;
   };
   const shareAllowed = createLimiter({ limit: 10 });
   const invitations = new Map();
@@ -89,7 +94,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         return fs.createReadStream(file).pipe(response);
       }
     }
-    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId, publicOrigin: origin, sfuEnabled: sfu.enabled });
+    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId, publicOrigin: origin, sfuEnabled: sfu.enabled, guildRestricted: Boolean(guildId) });
     if (request.method === 'POST' && ['/api/capture-session', '/api/share-link'].includes(url.pathname)) {
       const token = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
       let claims;
@@ -185,15 +190,19 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         let avatar = '';
         if (!allowDevSessions) {
           const bearer = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1] || request.headers.cookie?.match(/(?:^|; )discord_access_token=([^;]+)/)?.[1];
-          if (!bearer) return json(response, 401, { error: 'Discord authentication required' });
+          if (!bearer) return json(response, 401, { error: 'Discord authentication required', code: 'discord_required' });
           const discordResponse = await discordFetch('https://discord.com/api/users/@me', { headers: { authorization: `Bearer ${bearer}` } });
           const discordUser = await discordResponse.json();
-          if (!discordResponse.ok || typeof discordUser.id !== 'string') return json(response, 401, { error: 'Discord authentication failed' });
+          if (!discordResponse.ok || typeof discordUser.id !== 'string') return json(response, 401, { error: 'Discord authentication failed', code: 'discord_failed' });
           user = discordUser.id;
           name = discordUser.global_name || discordUser.username || discordUser.id;
           if (discordUser.avatar) avatar = `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`;
           // Authentication proves who the caller is; this proves they belong to the configured server.
-          if (guildId && !(await isGuildMember(user, bearer))) return json(response, 403, { error: 'Discord server membership required' });
+          if (guildId) {
+            const verdict = await guildMembership(user, bearer);
+            if (verdict === 'unverifiable') return json(response, 503, { error: 'Could not verify your server membership; the guilds scope is missing. Ask the owner, or re-authorise the Activity.', code: 'guild_unverifiable' });
+            if (verdict !== 'member') return json(response, 403, { error: 'Sua conta nao esta no servidor autorizado para esta Activity.', code: 'guild_required' });
+          }
         }
         if (!validRoomClaims({ room: input.room, role: input.role, user })) throw new Error('invalid user');
         const token = issueToken({ room: input.room, role: input.role, user, name: String(name || user).slice(0, 80), avatar }, secret, 6 * 60 * 60);
