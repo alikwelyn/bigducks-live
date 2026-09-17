@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createSfuPublisher, createSfuViewer, sfuRequest } from './sfu.js';
+import { SIMULCAST_LAYERS, createSfuPublisher, createSfuViewer, sfuRequest, videoEncodings } from './sfu.js';
 
 class FakeMediaStream {
   constructor(tracks = []) { this.tracks = [...tracks]; }
@@ -56,7 +56,7 @@ describe('SFU browser transport', () => {
     try {
       const fetchImpl = vi.fn().mockResolvedValueOnce(json({ sessionId: 'session' }))
         .mockResolvedValueOnce(json({ sessionDescription: { type: 'answer', sdp: 'answer' }, mediaToken: 'media' })).mockResolvedValue(json({}));
-      published = await createSfuPublisher({ stream: new FakeMediaStream([{ id: 'v', kind: 'video', getSettings: () => ({ width: 1280, height: 720 }) }]), profile: { automatic: true, width: 1280, height: 720, bitrate: 2_500_000, fps: 30 }, fetchImpl, RTCPeerConnectionClass: FakePeerConnection });
+      published = await createSfuPublisher({ simulcast: false, stream: new FakeMediaStream([{ id: 'v', kind: 'video', getSettings: () => ({ width: 1280, height: 720 }) }]), profile: { automatic: true, width: 1280, height: 720, bitrate: 2_500_000, fps: 30 }, fetchImpl, RTCPeerConnectionClass: FakePeerConnection });
       await published.setAudience(0);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(published.peer.getStats).not.toHaveBeenCalled();
@@ -123,7 +123,7 @@ describe('SFU browser transport', () => {
       .mockResolvedValueOnce(json({ sessionDescription: { type: 'answer', sdp: 'publisher-answer' }, mediaToken: 'signed-media', tracks: [{ kind: 'video', trackName: 'video-id' }, { kind: 'audio', trackName: 'audio-id' }] }));
     const published = await createSfuPublisher({ stream: new FakeMediaStream([video, audio]), profile: { width: 1280, height: 720, bitrate: 2_500_000, fps: 30 }, token: 'room-token', fetchImpl, RTCPeerConnectionClass: FakePeerConnection });
     expect(published.mediaToken).toBe('signed-media');
-    expect(published.peer.transceivers[0].init.sendEncodings).toEqual([{ maxBitrate: 2_500_000, maxFramerate: 30, scaleResolutionDownBy: 2 }]);
+    expect(published.peer.transceivers[0].init.sendEncodings.map((encoding) => encoding.rid)).toEqual(['h', 'm', 'l']);
     const publishBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
     expect(publishBody.tracks).toEqual([{ mid: '0', trackName: 'video-id', kind: 'video' }, { mid: '1', trackName: 'audio-id', kind: 'audio' }]);
     expect(published.peer.remoteDescription.type).toBe('answer');
@@ -153,5 +153,35 @@ describe('SFU browser transport', () => {
     expect(JSON.parse(fetchImpl.mock.calls[2][1].body).sessionDescription).toEqual({ type: 'answer', sdp: 'viewer-answer' });
     viewed.close();
     expect(viewed.peer.connectionState).toBe('closed');
+  });
+});
+
+describe('simulcast layers', () => {
+  const track = { id: 'v', kind: 'video', getSettings: () => ({ width: 1280, height: 720 }) };
+  const profile = { width: 1280, height: 720, bitrate: 2_500_000, fps: 30 };
+
+  it('gives the SFU three distinct layers, cheapest last', () => {
+    const layers = videoEncodings(track, profile, { simulcast: true });
+    expect(layers.map((layer) => layer.rid)).toEqual(SIMULCAST_LAYERS.map((layer) => layer.rid));
+    expect(layers[0].maxBitrate).toBe(2_500_000);
+    expect(layers[1].maxBitrate).toBeLessThan(layers[0].maxBitrate);
+    expect(layers[2].maxBitrate).toBeLessThan(layers[1].maxBitrate);
+    expect(layers[1].scaleResolutionDownBy).toBeGreaterThan(layers[0].scaleResolutionDownBy);
+    expect(layers[2].scaleResolutionDownBy).toBeGreaterThan(layers[1].scaleResolutionDownBy);
+  });
+
+  it('publishes a single encoding when simulcast is off', () => {
+    const layers = videoEncodings(track, profile, { simulcast: false });
+    expect(layers).toHaveLength(1);
+    expect(layers[0].rid).toBeUndefined();
+  });
+
+  it('publishes the three layers on the video transceiver only', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ sessionId: 'session' }))
+      .mockResolvedValueOnce(json({ sessionDescription: { type: 'answer', sdp: 'answer' }, mediaToken: 'media' })).mockImplementation(async () => json({}));
+    const published = await createSfuPublisher({ stream: new FakeMediaStream([{ id: 'v', kind: 'video', getSettings: () => ({ width: 1280, height: 720 }) }, { id: 'a', kind: 'audio' }]), profile, fetchImpl, RTCPeerConnectionClass: FakePeerConnection });
+    expect(published.peer.transceivers[0].init.sendEncodings.map((encoding) => encoding.rid)).toEqual(['h', 'm', 'l']);
+    expect(published.peer.transceivers[1].init.sendEncodings).toBeUndefined();
+    published.close();
   });
 });
