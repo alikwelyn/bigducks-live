@@ -17,6 +17,7 @@ import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js
 import { releasePlayback } from './watch-teardown.js';
 import { relayEncoderAction } from './relay-audience.js';
 import { createUsageReporter } from './usage-meter.js';
+import { requestSession, sessionMessage, REAUTHORISE_CODES } from './session-client.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -29,15 +30,30 @@ document.body.classList.toggle('discord-mode', inDiscord);
 
 async function authenticateDiscord() {
   const params = new URLSearchParams(location.search);
-  if (params.get('external') === '1') return { accessToken: '', user: '', instance: params.get('room') || 'external', sdk: null, publicOrigin: location.origin };
+  if (params.get('external') === '1') return { accessToken: '', user: '', instance: params.get('room') || 'external', sdk: null, publicOrigin: location.origin, reauthorize: null };
   const config = await fetch(apiUrl('/api/config')).then((response) => response.json());
-  if (!config.clientId) return { accessToken: '', user: crypto.randomUUID(), instance: 'demo', sdk: null, publicOrigin: location.origin };
+  if (!config.clientId) return { accessToken: '', user: crypto.randomUUID(), instance: 'demo', sdk: null, publicOrigin: location.origin, reauthorize: null };
   const sdk = new DiscordSDK(config.clientId);
   await sdk.ready();
-  const { code } = await sdk.commands.authorize({ client_id: config.clientId, response_type: 'code', state: crypto.randomUUID(), prompt: 'none', scope: ['identify', 'guilds', 'applications.commands'] });
-  const { access_token: accessToken } = await fetch(apiUrl('/api/discord/token'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) }).then((response) => response.json());
-  const auth = await sdk.commands.authenticate({ access_token: accessToken });
-  return { accessToken, user: auth.user.id, instance: sdk.instanceId || 'activity', sdk, publicOrigin: config.publicOrigin || location.origin };
+  const grant = async (prompt) => {
+    const { code } = await sdk.commands.authorize({ client_id: config.clientId, response_type: 'code', state: crypto.randomUUID(), prompt, scope: ['identify', 'guilds', 'applications.commands'] });
+    const { access_token } = await fetch(apiUrl('/api/discord/token'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) }).then((response) => response.json());
+    const auth = await sdk.commands.authenticate({ access_token });
+    return { accessToken: access_token, user: auth.user.id };
+  };
+  const identity = await grant('none');
+  return { ...identity, instance: sdk.instanceId || 'activity', sdk, publicOrigin: config.publicOrigin || location.origin, reauthorize: () => grant('consent') };
+}
+
+async function sessionFor(identity, role, room) {
+  try {
+    return await requestSession({ apiBase, identity, role, room });
+  } catch (error) {
+    if (!REAUTHORISE_CODES.has(error.code) || !identity?.reauthorize) throw error;
+    // The token predates the guilds scope, so ask Discord for consent and try once more.
+    Object.assign(identity, await identity.reauthorize());
+    return requestSession({ apiBase, identity, role, room });
+  }
 }
 
 function renderCapture(token) {
@@ -321,16 +337,14 @@ async function renderViewer() {
   document.querySelector('#publish').onclick = async () => {
     try {
       const identity = await identityPromise;
-      const response = await fetch(apiUrl('/api/session'), { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${identity.accessToken}` }, body: JSON.stringify({ room: identity.instance, user: identity.user, role: 'publisher' }) });
-      if (!response.ok) throw new Error('Não foi possível criar a transmissão');
-      const { token } = await response.json();
+      const { token } = await sessionFor(identity, 'publisher', identity.instance);
       const url = await createShareLink({ publicOrigin: identity.publicOrigin, apiBase, token });
       const result = await identity.sdk?.commands.openExternalLink({ url });
       if (!identity.sdk) window.open(url, '_blank', 'noopener');
       if (result?.opened === false) throw new Error('Abertura recusada');
       document.querySelector('#status').textContent = 'A página de transmissão foi aberta no navegador.';
     } catch (error) {
-      document.querySelector('#status').textContent = `Não foi possível abrir o navegador: ${error.message}`;
+      document.querySelector('#status').textContent = `Não foi possível abrir o navegador: ${sessionMessage(error)}`;
     }
   };
   const viewerShell = document.querySelector('.viewer-shell');
@@ -387,10 +401,7 @@ async function renderViewer() {
   let rtcSlot = null;
   let rtcActive = false;
   let rtcTimer;
-  identityPromise.then((identity) => fetch(apiUrl('/api/session'), { method: 'POST', headers: { 'content-type': 'application/json', ...(identity.accessToken ? { authorization: `Bearer ${identity.accessToken}` } : {}) }, body: JSON.stringify({ room: identity.instance, user: identity.user, role: 'viewer' }) })).then((response) => {
-    if (!response.ok) throw new Error('Discord session unavailable');
-    return response.json();
-  }).then(async ({ token }) => {
+  identityPromise.then((identity) => sessionFor(identity, 'viewer', identity.instance)).then(async ({ token }) => {
       roomUi.progress('Buscando as transmissões do canal…');
       const socket = await connectRelaySocket({ apiBase, token });
       if (roomUi.phase === 'error') { socket.close(); return; }
@@ -674,7 +685,7 @@ async function renderViewer() {
         } catch { stopRtc(); }
       });
       socket.send(JSON.stringify({ type: 'hello' }));
-    }).catch(() => { roomUi.fail(); });
+    }).catch((error) => { roomUi.fail(sessionMessage(error)); });
 }
 
 function renderAccessMessage(title, message) {

@@ -231,9 +231,13 @@ describe('discord server membership', () => {
     expect(JSON.parse(Buffer.from((await response.json()).token.split('.')[0], 'base64url').toString()).user).toBe('u1');
   });
 
-  it('denies when the guild list cannot be read, so a missing scope cannot silently open the room', async () => {
+  it('refuses and says why when the guild list cannot be read, so a missing scope cannot silently open the room', async () => {
     const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch: discord({}, 403) });
-    expect((await session(`http://127.0.0.1:${server.port}`)).status).toBe(403);
+    const response = await session(`http://127.0.0.1:${server.port}`);
+    // Denied either way; the distinct code is what lets the client explain it and
+    // re-ask Discord for consent instead of showing a generic failure.
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'guild_unverifiable' });
   });
 
   it('does not ask Discord for guilds when no server is configured', async () => {
@@ -258,16 +262,27 @@ describe('discord server membership edge cases', () => {
   const body = (value, status = 200) => new Response(value, { status });
   const session = (base, role = 'viewer') => fetch(`${base}/api/session`, { method: 'POST', headers: { authorization: 'Bearer t' }, body: JSON.stringify({ room: 'r', user: 'spoofed', role }) });
 
-  it('denies a non-array guild body instead of treating it as membership', async () => {
+  it('refuses a non-array guild body instead of treating it as membership', async () => {
     const server = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => body('{}')) });
-    expect((await session(`http://127.0.0.1:${server.port}`)).status).toBe(403);
+    const response = await session(`http://127.0.0.1:${server.port}`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'guild_unverifiable' });
   });
 
-  it('denies an empty guild list and a failed request', async () => {
+  it('refuses a verified non-member with a distinct code, and an unreachable list as unverifiable', async () => {
     const empty = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => body('[]')) });
-    expect((await session(`http://127.0.0.1:${empty.port}`)).status).toBe(403);
+    const denied = await session(`http://127.0.0.1:${empty.port}`);
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ code: 'guild_required' });
     const failing = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => { throw new Error('network'); }) });
-    expect((await session(`http://127.0.0.1:${failing.port}`)).status).toBe(403);
+    expect((await session(`http://127.0.0.1:${failing.port}`)).status).toBe(503);
+  });
+
+  it('tells the client whether the room is restricted at all', async () => {
+    const open = await start({ allowDevSessions: false });
+    const restricted = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: vi.fn(async () => new Response('[]', { status: 200 })) });
+    expect(await (await fetch(`http://127.0.0.1:${open.port}/api/config`)).json()).toMatchObject({ guildRestricted: false });
+    expect(await (await fetch(`http://127.0.0.1:${restricted.port}/api/config`)).json()).toMatchObject({ guildRestricted: true });
   });
 
   it('applies the same gate to a publisher request', async () => {
