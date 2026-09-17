@@ -1,8 +1,9 @@
 import { expect, it } from 'vitest';
 import { EdgeRoom } from './worker.js';
+import { MAX_REPORTED_BYTES } from './usage.js';
 
 function socket(member) {
-  return { messages: [], deserializeAttachment: () => member, serializeAttachment: (value) => { member = value; }, send(value) { this.messages.push(JSON.parse(value)); } };
+  return { messages: [], deserializeAttachment: () => member, serializeAttachment: (value) => { member = value; }, send(value) { this.messages.push(typeof value === 'string' ? JSON.parse(value) : value); } };
 }
 
 it('keeps viewers and publication credentials when a window closes and the next source resumes', async () => {
@@ -97,4 +98,43 @@ it('reports the relay-only audience so an idle encoder can be stopped', async ()
   expect(relayCount()).toBe(0);
   await room.webSocketClose(relayViewer);
   expect(relayCount()).toBe(0);
+});
+
+it('reports an informational monthly figure without ever blocking media', async () => {
+  const stored = {};
+  const publisher = socket({ role: 'publisher', slot: 0 });
+  const viewer = socket({ role: 'viewer', user: 'friend', watched: null });
+  const room = new EdgeRoom({ getWebSockets: () => [publisher, viewer], storage: { get: async (key) => stored[key], put: async (key, value) => { stored[key] = value; } } });
+  const control = (client, payload) => room.webSocketMessage(client, JSON.stringify(payload));
+  await control(publisher, { type: 'hello' });
+  expect(publisher.messages.findLast((message) => message.type === 'usage')).toMatchObject({ gigabytes: 0 });
+  await control(publisher, { type: 'start', slot: 0 });
+  await control(viewer, { type: 'fallback-want', slot: 0 });
+  const frame = new ArrayBuffer(1000);
+  new Uint8Array(frame)[0] = 0;
+  await room.webSocketMessage(publisher, frame);
+  await control(viewer, { type: 'meter', bytes: 4_000_000 });
+  // Same second: the report is rate-gated, so this second one is ignored.
+  await control(viewer, { type: 'meter', bytes: 4_000_000 });
+  await control(viewer, { type: 'meter', bytes: -5 });
+  // The report is throttled, so ask again the way a reconnect would.
+  publisher.messages.length = 0;
+  await control(publisher, { type: 'hello' });
+  const summary = publisher.messages.findLast((message) => message.type === 'usage');
+  expect(summary).toMatchObject({ bytes: 4_001_000, gigabytes: expect.any(Number) });
+  expect(viewer.messages.some((message) => message.type === 'usage')).toBe(false);
+});
+
+it('clamps an absurd self-report and shows a stored total before any media flows', async () => {
+  const stored = { usage: { month: new Date().toISOString().slice(0, 7), relayBytes: 1_000_000_000, sfuBytes: 0, updatedAt: Date.now() } };
+  const publisher = socket({ role: 'publisher', slot: 0 });
+  const viewer = socket({ role: 'viewer', user: 'friend', watched: null });
+  const room = new EdgeRoom({ getWebSockets: () => [publisher, viewer], storage: { get: async (key) => stored[key], put: async (key, value) => { stored[key] = value; } } });
+  const control = (client, payload) => room.webSocketMessage(client, JSON.stringify(payload));
+  // The owner checks the figure before starting: storage must be read eagerly.
+  await control(publisher, { type: 'hello' });
+  expect(publisher.messages.findLast((message) => message.type === 'usage')).toMatchObject({ bytes: 1_000_000_000, gigabytes: 1 });
+  await control(viewer, { type: 'meter', bytes: MAX_REPORTED_BYTES * 10 });
+  await control(publisher, { type: 'hello' });
+  expect(publisher.messages.findLast((message) => message.type === 'usage').bytes).toBe(1_000_000_000 + MAX_REPORTED_BYTES);
 });

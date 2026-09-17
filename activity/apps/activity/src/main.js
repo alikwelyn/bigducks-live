@@ -16,6 +16,7 @@ import { createStallWatchController } from './stall-watchdog.js';
 import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js';
 import { releasePlayback } from './watch-teardown.js';
 import { relayEncoderAction } from './relay-audience.js';
+import { createUsageReporter } from './usage-meter.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -51,7 +52,7 @@ function renderCapture(token) {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label>compartilhar áudio do sistema <input id="audio" title="${DEFAULT_AUDIO_TITLE}" type="checkbox" checked></label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label>compartilhar áudio do sistema <input id="audio" title="${DEFAULT_AUDIO_TITLE}" type="checkbox" checked></label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span><span id="usage">Consumo do mês (estimado): —</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   const startButton = document.querySelector('#start');
   const stopButton = document.querySelector('#stop');
   const switchButton = document.querySelector('#switch-source');
@@ -150,6 +151,11 @@ function renderCapture(token) {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type === 'audience' && message.slot === slot) { captureAudience.update(message.viewers); return; }
+        if (message.type === 'usage') {
+          // Informational only: nothing here limits or stops the stream.
+          document.querySelector('#usage').textContent = `Consumo do mês (estimado): ${Number(message.gigabytes || 0).toFixed(2)} GB`;
+          return;
+        }
         if (message.type === 'relay-audience' && message.slot === slot) {
           if (!Number.isInteger(message.count) || message.count < 0) return;
           relayWanted = message.count > 0;
@@ -393,6 +399,19 @@ async function renderViewer() {
       let selectedSlot = null;
       let watchRevision = 0;
       const stopStallWatch = () => stallWatch.stop();
+      const usageReporter = createUsageReporter({
+        sample: async () => {
+          // Only the SFU leg is Cloudflare egress; P2P bytes travel between peers.
+          const peer = sfuViewer?.peer;
+          if (!peer) return undefined;
+          const reports = await peer.getStats();
+          let total = 0;
+          let seen = false;
+          reports.forEach((report) => { if (report.type === 'inbound-rtp' && !report.isRemote) { total += report.bytesReceived || 0; seen = true; } });
+          return seen ? total : undefined;
+        },
+        send: (bytes) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'meter', bytes })); },
+      });
       const stopSfu = () => {
         watchRevision++;
         const active = sfuViewer; sfuViewer = null;
@@ -430,6 +449,7 @@ async function renderViewer() {
         if (selectedSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
         feedback.hide();
         stopStallWatch();
+        usageReporter.stop();
         stopRtc(); stopSfu(); selectedSlot = null; player.close();
         document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
         document.querySelector('#status').textContent = statusText;
@@ -463,6 +483,7 @@ async function renderViewer() {
             if (selectedSlot !== null) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
             stopRtc(); stopSfu(); player.close();
             selectedSlot = message.slot;
+            usageReporter.start();
             watchAudience.update(audiences.get(message.slot));
             retryWatch = () => { stopWatching(); void openStream(); };
             feedback.show(`Conectando à live de ${message.name}…`, message.thumbnail);
