@@ -1,0 +1,45 @@
+name: Activity version
+
+# The Activity shows its deployed version in the UI, so every publish to
+# public-main moves the patch number. The bump commit carries [skip ci] so it
+# cannot trigger itself.
+on:
+  push:
+    branches: [public-main]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: public-main
+      - name: Bump the activity patch version
+        id: bump
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const manifest = 'activity/package.json';
+            const lockfile = 'activity/package-lock.json';
+            const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+            const [major, minor, patch] = pkg.version.split('.').map(Number);
+            pkg.version = [major, minor, patch + 1].join('.');
+            fs.writeFileSync(manifest, JSON.stringify(pkg, null, 2) + '\n');
+            const lock = JSON.parse(fs.readFileSync(lockfile, 'utf8'));
+            lock.version = pkg.version;
+            if (lock.packages && lock.packages['']) lock.packages[''].version = pkg.version;
+            fs.writeFileSync(lockfile, JSON.stringify(lock, null, 2) + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + pkg.version + '\n');
+          "
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add activity/package.json activity/package-lock.json
+          git commit -m "chore(activity): bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+          git pull --rebase origin public-main
+          git push origin HEAD:public-main

@@ -1,4 +1,5 @@
 import { connectionStats } from './connection-stats.js';
+import { codeLabel } from './diagnostic-code.js';
 
 const SAMPLE_MS = 5000;
 const LABELS = { videoBufferMs: 'Buffer de vídeo', audioBufferMs: 'Buffer de áudio', decodeMs: 'Decodificação/quadro', rttMs: 'Ida e volta', videoFps: 'Quadros por segundo' };
@@ -45,9 +46,11 @@ export function createConnectionPanel(container, reconnect) {
     active += 1; stopTimer(); peer = null; previous = new Map();
     transport = 'Aguardando'; summary.textContent = 'Conexão'; report.textContent = ''; retry.disabled = true;
   };
-  const set = (label, connection) => {
+  const set = (label, connection, code) => {
     active += 1; stopTimer(); previous = new Map(); transport = label; peer = connection || null;
-    summary.textContent = `Conexão: ${label}`; report.textContent = ''; retry.disabled = false;
+    const suffix = codeLabel(code);
+    summary.textContent = suffix ? `Conexão: ${label} · ${suffix}` : `Conexão: ${label}`;
+    report.textContent = ''; retry.disabled = false;
     if (details.open && peer) void sample();
   };
   clear();

@@ -7,7 +7,6 @@ import { awaitJoined, connectRelaySocket } from './relay-socket.js';
 import { createSfuPublisher, createSfuViewer } from './sfu.js';
 import { createPlaybackFeedback } from './playback-feedback.js';
 import { createAudience } from './audience.js';
-import { createViewControls } from './view-controls.js';
 import { createRoomState } from './room-state.js';
 import { createCaptureContinuity } from './capture-continuity.js';
 import { pageMode, captureSession, createShareLink } from './access.js';
@@ -17,6 +16,8 @@ import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js
 import { releasePlayback } from './watch-teardown.js';
 import { relayEncoderAction } from './relay-audience.js';
 import { createUsageReporter } from './usage-meter.js';
+import { CODES, codeForSessionError, withCode } from './diagnostic-code.js';
+import { applyVersion, fetchVersion } from './app-version.js';
 import { requestSession, resolveSession, sessionMessage } from './session-client.js';
 import './styles.css';
 
@@ -46,6 +47,7 @@ async function authenticateDiscord() {
 }
 
 function renderCapture(token) {
+  // The version comes from the running server, so it always matches what is deployed.
   const tabId = crypto.randomUUID();
   const tabChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('bigducks-stream-capture') : null;
   let activeStop = null;
@@ -57,7 +59,8 @@ function renderCapture(token) {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO</span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label>compartilhar áudio do sistema <input id="audio" title="${DEFAULT_AUDIO_TITLE}" type="checkbox" checked></label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span><span id="usage">Consumo do mês (estimado): —</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO <span class="app-version" data-app-version></span></span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label>compartilhar áudio do sistema <input id="audio" title="${DEFAULT_AUDIO_TITLE}" type="checkbox" checked></label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span><span id="usage">Consumo do mês (estimado): —</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  applyVersion(root, appVersion);
   const startButton = document.querySelector('#start');
   const stopButton = document.querySelector('#stop');
   const switchButton = document.querySelector('#switch-source');
@@ -319,7 +322,8 @@ function renderCapture(token) {
 }
 
 async function renderViewer() {
-  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><span class="eyebrow">BIG DUCKS · SEU CANAL</span><h1>Ao vivo com seus amigos</h1><p class="muted">Escolha uma live e entre. Sem sair do Discord.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams" aria-busy="true"></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span></header><footer class="watch-controls"><span class="live-caption">TRANSMISSÃO AO VIVO</span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button><input id="live-volume" aria-label="Volume da transmissão" type="range" min="0" max="100" value="100"></footer><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><span class="eyebrow">BIG DUCKS · SEU CANAL <span class="app-version" data-app-version></span></span><h1>Ao vivo com seus amigos</h1><p class="muted">Escolha uma live e entre. Sem sair do Discord.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams" aria-busy="true"></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span><span class="app-version" data-app-version></span></header><footer class="watch-controls"><span class="live-caption">TRANSMISSÃO AO VIVO</span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button><input id="live-volume" aria-label="Volume da transmissão" type="range" min="0" max="100" value="100"></footer><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
+  applyVersion(root, appVersion);
   let viewerUserId = '';
   const roomUi = createRoomState({ status: document.querySelector('#status'), container: document.querySelector('#streams'), publish: document.querySelector('#publish'), retry: () => location.reload() });
   const identityPromise = authenticateDiscord().then((identity) => { viewerUserId = identity.user; return identity; });
@@ -353,7 +357,6 @@ async function renderViewer() {
     browseView.hidden = true;
     watchView.hidden = false;
     viewerShell.classList.add('watching');
-    viewControls.reset();
   };
   const showBrowseView = () => { watchView.hidden = true; browseView.hidden = false; viewerShell.classList.remove('watching'); watchAudience.close(); };
   const canvas = document.createElement('canvas');
@@ -372,7 +375,6 @@ async function renderViewer() {
   };
   muteButton.onclick = () => { if (!playbackLocked) setPlaybackMuted(!muted, false); };
   document.querySelector('.stage').append(directVideo);
-  const viewControls = createViewControls(watchView, directVideo);
   const connectionPanel = createConnectionPanel(document.querySelector('.watch-controls'), () => retryWatch());
   const feedback = createPlaybackFeedback(watchView, directVideo, canvas, () => retryWatch());
   document.querySelector('#live-volume').oninput = (event) => {
@@ -441,7 +443,7 @@ async function renderViewer() {
           const stream = availableStreams.get(selectedSlot);
           if (stream) player.configure({ codec: stream.codec || 'avc1.64002a' });
           socket.send(JSON.stringify({ type: 'watch', slot: selectedSlot }));
-          connectionPanel.set('Relay WebSocket', null);
+          connectionPanel.set('Relay WebSocket', null, CODES.RELAY_ACTIVE);
           document.querySelector('#status').textContent = 'P2P interrompido; usando relay.';
         }
       };
@@ -457,7 +459,7 @@ async function renderViewer() {
         renderStreams();
       };
       document.querySelector('#back-to-streams').onclick = () => stopWatching();
-      socket.addEventListener('close', () => { stopWatching(); availableStreams.clear(); roomUi.fail('A conexão com a sala foi interrompida. Tente novamente para buscar as lives atuais.'); });
+      socket.addEventListener('close', () => { stopWatching(); availableStreams.clear(); roomUi.fail(withCode('A conexão com a sala foi interrompida. Tente novamente para buscar as lives atuais.', CODES.SOCKET_CLOSED)); });
       window.addEventListener('beforeunload', () => { stopWatching(); socket.close(); }, { once: true });
       const renderStreams = () => {
         const container = document.querySelector('#streams');
@@ -500,13 +502,14 @@ async function renderViewer() {
               canvas.style.display = 'none'; directVideo.style.display = 'block';
               document.querySelector('#status').textContent = `Conectando à transmissão de ${message.name} pela Cloudflare…`;
               let fallbackRequested = false;
-              const requestFallback = () => {
+              const requestFallback = (code = CODES.SFU_LOST) => {
                 if (fallbackRequested || !isCurrent()) return;
                 fallbackRequested = true;
+                connectionPanel.set('Relay de compatibilidade', null, code);
                 stopSfu();
                 directVideo.style.display = 'none'; canvas.style.display = 'block';
                 socket.send(JSON.stringify({ type: 'fallback-want', slot: message.slot }));
-                document.querySelector('#status').textContent = 'Ativando relay de compatibilidade…';
+                document.querySelector('#status').textContent = withCode('Ativando o relay de compatibilidade…', code);
               };
               try {
                 const iceServers = await fetchIceServers(apiBase, token).catch(() => [{ urls: 'stun:stun.cloudflare.com:3478' }]);
@@ -514,12 +517,12 @@ async function renderViewer() {
                 const viewed = await createSfuViewer({ mediaToken: message.mediaToken, video: directVideo, token, apiBase, iceServers, onDisconnect: requestFallback, isCurrent });
                 if (!isCurrent()) { viewed.close(); return; }
                 sfuViewer = viewed;
-                connectionPanel.set('Cloudflare SFU', viewed.peer);
+                connectionPanel.set('Cloudflare SFU', viewed.peer, CODES.SFU_ACTIVE);
                 watchForStall(videoBytes(viewed.peer), () => { if (isCurrent()) requestFallback(); });
                 document.querySelector('#status').textContent = `Assistindo ${message.name} pela Cloudflare SFU.`;
                 return;
               } catch {
-                requestFallback();
+                requestFallback(CODES.SFU_TIMEOUT);
                 return;
               }
             }
@@ -527,11 +530,11 @@ async function renderViewer() {
             player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
             player.configureAudio(message.audioConfig);
             relayFallbackActive = true;
-            connectionPanel.set('Relay WebSocket', null);
+            connectionPanel.set('Relay WebSocket', null, CODES.RELAY_ACTIVE);
             relayBytes = 0;
             watchForStall(async () => new Map([['relay', relayBytes]]), () => {
               if (selectedSlot === null || socket.readyState !== WebSocket.OPEN) return;
-              feedback.show('Recuperando a transmissão…');
+              feedback.show(withCode('Recuperando a transmissão…', CODES.RELAY_STALL));
               socket.send(JSON.stringify({ type: 'watch', slot: selectedSlot }));
               socket.send(JSON.stringify({ type: 'rtc-want', slot: selectedSlot }));
             });
@@ -604,11 +607,11 @@ async function renderViewer() {
           player.configure({ codec: message.codec || 'avc1.64002a', width: message.width || 1920, height: message.height || 1080 });
           player.configureAudio(message.audioConfig);
           relayFallbackActive = true;
-          connectionPanel.set('Relay WebSocket', null);
+          connectionPanel.set('Relay WebSocket', null, CODES.RELAY_ACTIVE);
           relayBytes = 0;
           watchForStall(async () => new Map([['relay', relayBytes]]), () => {
             if (selectedSlot === null || socket.readyState !== WebSocket.OPEN) return;
-            feedback.show('Recuperando a transmissão…');
+            feedback.show(withCode('Recuperando a transmissão…', CODES.RELAY_STALL));
             socket.send(JSON.stringify({ type: 'watch', slot: selectedSlot }));
           });
           socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
@@ -646,7 +649,7 @@ async function renderViewer() {
                 if (rtcActive || !directPeer) return;
                 rtcActive = true; clearTimeout(rtcTimer);
                 player.close(); canvas.style.display = 'none'; directVideo.style.display = 'block';
-                connectionPanel.set('Conexão direta P2P', directPeer);
+                connectionPanel.set('Conexão direta P2P', directPeer, CODES.P2P_ACTIVE);
                 watchForStall(videoBytes(directPeer), () => { if (directPeer) stopRtc({ resumeRelay: true }); });
                 socket.send(JSON.stringify({ type: 'rtc-active', slot: selectedSlot }));
                 document.querySelector('#status').textContent = 'Conexão direta P2P ativa.';
@@ -674,7 +677,7 @@ async function renderViewer() {
         } catch { stopRtc(); }
       });
       socket.send(JSON.stringify({ type: 'hello' }));
-    }).catch((error) => { roomUi.fail(sessionMessage(error)); });
+    }).catch((error) => { roomUi.fail(withCode(sessionMessage(error), codeForSessionError(error))); });
 }
 
 function renderAccessMessage(title, message) {
@@ -683,7 +686,10 @@ function renderAccessMessage(title, message) {
   root.querySelector('p').textContent = message;
 }
 
+let appVersion = '';
+
 async function boot() {
+  void fetchVersion({ apiBase }).then((version) => { appVersion = version; applyVersion(root, version); });
   if (mode === 'viewer') return renderViewer();
   if (mode !== 'capture') {
     renderAccessMessage('Abra pelo Discord', 'Entre no canal de voz do seu servidor e abra a Activity BIG DUCKS. As transmissões não são listadas neste endereço público.');

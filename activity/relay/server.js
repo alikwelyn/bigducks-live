@@ -12,6 +12,14 @@ import { createSfuGateway } from './sfu.js';
 import { updateAudience, audienceFor, clearAudience } from '../shared/sfu-audience.js';
 import { allowedOrigin, createLimiter, readJsonBody, safeRedirect, validRoomClaims } from './security.js';
 
+// The deployed version is what the UI shows; reading it from package.json keeps
+// one source of truth between the server and the bundle.
+const APP_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || '';
+  } catch { return ''; }
+})();
+
 function json(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
@@ -97,7 +105,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
         return fs.createReadStream(file).pipe(response);
       }
     }
-    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId, publicOrigin: origin, sfuEnabled: sfu.enabled, guildRestricted: Boolean(guildId) });
+    if (request.method === 'GET' && url.pathname === '/api/config') return json(response, 200, { clientId, publicOrigin: origin, sfuEnabled: sfu.enabled, guildRestricted: Boolean(guildId), version: APP_VERSION });
     if (request.method === 'POST' && ['/api/capture-session', '/api/share-link'].includes(url.pathname)) {
       const token = request.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
       let claims;

@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createConnectionPanel } from './connection-panel.js';
+import { CODES } from './diagnostic-code.js';
 class Element extends EventTarget {
   children = []; open = false;
   constructor(tag = 'div') { super(); this.tag = tag; }
@@ -17,6 +18,10 @@ it('shows actual transport, samples only while open and ignores late results fro
   const [details, retry] = container.children;
   const [summary, report] = details.children;
   expect(summary.textContent).toContain('Cloudflare SFU');
+  // The code has to travel with the transport so a friend can read it out loud.
+  panel.set('Cloudflare SFU', peer, CODES.SFU_LOST);
+  expect(summary.textContent).toContain('0x4');
+  panel.set('Cloudflare SFU', peer);
   expect(peer.getStats).not.toHaveBeenCalled();
   details.open = true; details.dispatchEvent(new Event('toggle'));
   expect(peer.getStats).toHaveBeenCalledOnce();
