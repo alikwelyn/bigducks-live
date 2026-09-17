@@ -16,6 +16,7 @@ import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js
 import { releasePlayback } from './watch-teardown.js';
 import { relayEncoderAction } from './relay-audience.js';
 import { createUsageReporter } from './usage-meter.js';
+import { createReconnecter } from './relay-reconnect.js';
 import { CODES, codeForSessionError, withCode } from './diagnostic-code.js';
 import { applyVersion, fetchVersion } from './app-version.js';
 import { requestSession, resolveSession, sessionMessage } from './session-client.js';
@@ -89,11 +90,14 @@ function renderCapture(token) {
       // Bounded handshake: a socket that dies here must fail loudly, not leave the studio stuck.
       const joined = awaitJoined(socket, { timeoutMs: 8000 });
       socket.send(JSON.stringify({ type: 'hello' }));
-      const { slot } = await joined;
+      let { slot } = await joined;
       const peers = new Map();
       let broadcaster;
       let relayStarting;
       let relayWanted = false;
+      // Declared early: stopBroadcast may run before the reconnect block below.
+      let closingIntentionally = false;
+      let reconnecter;
       let relayMedia;
       let sfuPublisher;
       let continuity;
@@ -123,8 +127,10 @@ function renderCapture(token) {
         captureAudience.close();
         activeStop = null;
         activeSwitch = null;
+        reconnecter?.stop();
         continuity?.close();
         clearInterval(thumbnailTimer);
+        closingIntentionally = true;
         try { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop', slot })); } catch { /* socket already unavailable */ }
         for (const track of stream.getTracks()) { try { track.enabled = false; track.stop(); } catch { /* track already stopped */ } }
         try { broadcaster?.stop(); } catch { /* encoder already closed */ }
@@ -132,7 +138,6 @@ function renderCapture(token) {
         for (const { peer } of peers.values()) { try { peer.close(); } catch { /* peer already closed */ } }
         try { socket.close(); } catch { /* socket already closed */ }
       };
-      socket.addEventListener('close', () => stopBroadcast(withCode('Conexão com a sala encerrada. Inicie a transmissão novamente.', CODES.SOCKET_CLOSED)));
       const ensureRelay = () => {
         if (broadcaster) return Promise.resolve(relayMedia);
         if (relayStarting) return relayStarting;
@@ -149,13 +154,14 @@ function renderCapture(token) {
           relayWanted = true;
           await ensureRelay();
           broadcaster?.requestKeyframe();
-          socket.send(JSON.stringify({ type: 'start', slot, transport: 'relay', ...relayMedia, waiting: continuity?.waiting }));
+          startPayload = { transport: 'relay', ...relayMedia };
+          sendStart();
           status.textContent = 'Conexão SFU caiu; transmitindo pelo relay de compatibilidade.';
         } catch {
           if (!stopped) status.textContent = withCode('A transmissão foi interrompida e não pôde ser retomada automaticamente. Clique em Parar e inicie de novo.', CODES.PUBLISH_FAILED);
         }
       };
-      socket.addEventListener('message', async (event) => {
+      const onControl = async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type === 'audience' && message.slot === slot) { captureAudience.update(message.viewers); return; }
@@ -208,7 +214,7 @@ function renderCapture(token) {
         socket.send(JSON.stringify({ type: 'rtc', viewer: message.viewer, slot, description: peer.localDescription }));
         offerSent = true;
         for (const candidate of outbound) socket.send(JSON.stringify({ type: 'rtc', viewer: message.viewer, slot, candidate }));
-      });
+      };
       continuity = createCaptureContinuity(stream, {
         onReplace: async (track) => {
           if (sfuPublisher) await sfuPublisher.replaceVideoTrack(track);
@@ -270,12 +276,14 @@ function renderCapture(token) {
       const audioConfig = audioSettings ? { codec: 'opus', sampleRate: audioSettings.sampleRate || 48_000, numberOfChannels: Math.max(1, Math.min(2, audioSettings.channelCount || 2)) } : null;
       const sfuSize = fitWithin(videoSettings.width || profile.width, videoSettings.height || profile.height, profile.width, profile.height);
       const media = sfuPublisher ? { codec: 'webrtc', ...sfuSize, fps: Math.min(videoSettings.frameRate || profile.fps, profile.fps), audioConfig } : relayMedia;
-      socket.send(JSON.stringify({ type: 'start', slot, transport: sfuPublisher ? 'sfu' : 'relay', mediaToken: sfuPublisher?.mediaToken, ...media, waiting: continuity.waiting }));
+      let startPayload = { transport: sfuPublisher ? 'sfu' : 'relay', mediaToken: sfuPublisher?.mediaToken, ...media };
+      const sendStart = () => socket.send(JSON.stringify({ type: 'start', slot, ...startPayload, waiting: continuity.waiting }));
+      sendStart();
       document.querySelector('#audio-state').textContent = media.audioConfig ? `Áudio da fonte: Opus ${media.audioConfig.numberOfChannels === 1 ? 'mono' : 'estéreo'}` : document.querySelector('#audio').checked ? 'Sem áudio: clique em Trocar monitor e autorize o áudio do sistema no seletor. O suporte depende do navegador.' : 'Áudio: desativado';
       document.querySelector('#source').textContent = `Fonte: ${media.width}×${media.height}`;
       document.querySelector('#fps').textContent = `${sfuPublisher ? 'Cloudflare SFU' : `Codec: ${media.codec}`} / ${Math.round(media.fps)} FPS`;
       document.querySelector('#bitrate').textContent = `Bitrate máximo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`;
-      socket.addEventListener('message', async (event) => {
+      const onMedia = async (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (message.type !== 'rtc') return;
@@ -289,6 +297,32 @@ function renderCapture(token) {
           if (entry.peer.remoteDescription) await entry.peer.addIceCandidate(message.candidate);
           else entry.pendingCandidates.push(message.candidate);
         }
+      };
+      const attach = (target) => {
+        target.addEventListener('message', onControl);
+        target.addEventListener('message', onMedia);
+      };
+      attach(socket);
+      reconnecter = createReconnecter({
+        connect: () => connectRelaySocket({ apiBase, token }),
+        onAttempt: (attempt) => { if (!stopped) status.textContent = withCode(`Reconectando à sala… tentativa ${attempt}`, CODES.SOCKET_CLOSED); },
+        onOpen: async (next) => {
+          // Capture and encoders are untouched: only the room socket is replaced.
+          socket = next;
+          attach(next);
+          next.send(JSON.stringify({ type: 'hello' }));
+          sendStart();
+          if (sfuAudience !== null) await updateAudience();
+          if (!stopped) status.textContent = 'Reconectado. Sua live continua.';
+        },
+        onGiveUp: () => { if (!stopped) stopBroadcast(withCode('Conexão com a sala encerrada. Inicie a transmissão novamente.', CODES.SOCKET_CLOSED)); },
+      });
+      socket.addEventListener('close', () => {
+        if (stopped || closingIntentionally) return;
+        // Cloudflare closes idle sockets and may restart servers; the room holds the
+        // slot for a while, so coming back is what saves the live for everyone.
+        status.textContent = withCode('Conexão caiu. Reconectando…', CODES.SOCKET_CLOSED);
+        reconnecter.start();
       });
       const preview = document.querySelector('#preview'); preview.srcObject = stream; preview.hidden = false;
       const thumbnailCanvas = document.createElement('canvas'); thumbnailCanvas.width = 320; thumbnailCanvas.height = 180;
@@ -394,12 +428,14 @@ async function renderViewer() {
   let rtcTimer;
   identityPromise.then((identity) => resolveSession({ apiBase, identity, role: 'viewer', room: identity.instance })).then(async ({ token }) => {
       roomUi.progress('Buscando as transmissões do canal…');
-      const socket = await connectRelaySocket({ apiBase, token });
+      let socket = await connectRelaySocket({ apiBase, token });
       if (roomUi.phase === 'error') { socket.close(); return; }
       const availableStreams = new Map();
       const audiences = new Map();
       let selectedSlot = null;
       let watchRevision = 0;
+      let intentionalClose = false;
+      let reconnecter;
       const stopStallWatch = () => stallWatch.stop();
       const usageReporter = createUsageReporter({
         sample: async () => {
@@ -451,6 +487,7 @@ async function renderViewer() {
         if (selectedSlot !== null && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'unwatch', slot: selectedSlot }));
         feedback.hide();
         stopStallWatch();
+        reconnecter.stop();
         usageReporter.stop();
         stopRtc(); stopSfu(); selectedSlot = null; player.close();
         document.querySelector('.stage').innerHTML = '<span class="muted">Carregando transmissão…</span>';
@@ -459,8 +496,8 @@ async function renderViewer() {
         renderStreams();
       };
       document.querySelector('#back-to-streams').onclick = () => stopWatching();
-      socket.addEventListener('close', () => { stopWatching(); availableStreams.clear(); roomUi.fail(withCode('A conexão com a sala foi interrompida. Tente novamente para buscar as lives atuais.', CODES.SOCKET_CLOSED)); });
-      window.addEventListener('beforeunload', () => { stopWatching(); socket.close(); }, { once: true });
+
+      window.addEventListener('beforeunload', () => { intentionalClose = true; reconnecter.stop(); stopWatching(); socket.close(); }, { once: true });
       const renderStreams = () => {
         const container = document.querySelector('#streams');
         if (!roomUi.render(availableStreams.size)) return;
@@ -551,7 +588,7 @@ async function renderViewer() {
         }));
         if (focusedSlot !== undefined) [...container.querySelectorAll('.stream-card')].find((card) => card.dataset.slot === focusedSlot)?.focus({ preventScroll: true });
       };
-      socket.onmessage = (event) => {
+      const onControl = (event) => {
         if (typeof event.data !== 'string') return;
         const message = JSON.parse(event.data);
         if (roomUi.phase === 'error') return;
@@ -641,7 +678,7 @@ async function renderViewer() {
         }
         if (message.type === 'start' || message.type === 'stop') renderStreams();
       };
-      socket.addEventListener('message', async (event) => {
+      const onMedia = async (event) => {
         if (typeof event.data !== 'string') { relayBytes += event.data.byteLength || 0; if (relayFallbackActive && !rtcActive) player.push(event.data); return; }
         const message = JSON.parse(event.data);
         if (message.type !== 'rtc' || message.slot !== selectedSlot) return;
@@ -682,6 +719,36 @@ async function renderViewer() {
             else directPending.push(message.candidate);
           }
         } catch { stopRtc(); }
+      };
+      const attach = (target) => {
+        target.onmessage = onControl;
+        target.addEventListener('message', onMedia);
+      };
+      attach(socket);
+      reconnecter = createReconnecter({
+        connect: () => connectRelaySocket({ apiBase, token }),
+        onAttempt: (attempt) => { document.querySelector('#status').textContent = withCode(`Reconectando à sala… tentativa ${attempt}`, CODES.SOCKET_CLOSED); },
+        onOpen: async (next) => {
+          // The room state lives outside the handlers on purpose, so a reconnect
+          // never loses the live the viewer had chosen.
+          socket = next;
+          attach(next);
+          next.send(JSON.stringify({ type: 'hello' }));
+          if (selectedSlot !== null) {
+            const stream = availableStreams.get(selectedSlot);
+            if (stream?.transport === 'sfu' && stream.mediaToken) next.send(JSON.stringify({ type: 'sfu-watch', slot: selectedSlot }));
+            else next.send(JSON.stringify({ type: 'watch', slot: selectedSlot }));
+          }
+          document.querySelector('#status').textContent = 'Reconectado à sala.';
+        },
+        onGiveUp: () => { stopWatching(); availableStreams.clear(); roomUi.fail(withCode('A conexão com a sala foi interrompida. Tente novamente para buscar as lives atuais.', CODES.SOCKET_CLOSED)); },
+      });
+      socket.addEventListener('close', () => {
+        if (intentionalClose) return;
+        // Cloudflare closes idle sockets and may restart servers, so dropping the
+        // connection is expected; only a failed reconnect ends the session.
+        document.querySelector('#status').textContent = withCode('Conexão caiu. Reconectando…', CODES.SOCKET_CLOSED);
+        reconnecter.start();
       });
       socket.send(JSON.stringify({ type: 'hello' }));
     }).catch((error) => { roomUi.fail(withCode(sessionMessage(error), codeForSessionError(error) ?? CODES.SESSION_UNKNOWN)); });
