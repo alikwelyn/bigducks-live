@@ -20,6 +20,7 @@ function json(response, status, body) {
 export function createRelayServer({ secret, origin = '', clientId = '', clientSecret = '', allowDevSessions = false, maxViewers = 25, maxPublishers = 3, turnKeyId = '', turnKeySecret = '', iceServers = [], sfuAppId = '', sfuAppSecret = '', sfuFetch = globalThis.fetch, guildId = '', discordFetch = globalThis.fetch, apiRateLimit = 600, sfuMaxRateKeys = 10_000 } = {}) {
   if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must have at least 32 characters');
   const rooms = new RoomRegistry({ maxViewers, maxPublishers });
+  const guildIdWellFormed = !guildId || /^\d{17,20}$/.test(guildId);
   const sfu = createSfuGateway({ appId: sfuAppId, appSecret: sfuAppSecret, secret, fetchImpl: sfuFetch, maxRateKeys: sfuMaxRateKeys });
   const apiAllowed = createLimiter({ limit: apiRateLimit });
   const guildCache = new Map();
@@ -40,7 +41,9 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
     } catch { verdict = 'unverifiable'; }
     if (guildCache.size >= 5000) for (const [id, entry] of guildCache) if (entry.expires <= Date.now()) guildCache.delete(id);
     if (guildCache.size >= 5000) guildCache.clear();
-    guildCache.set(userId, { verdict, expires: Date.now() + 60_000 });
+    // Only definitive answers are worth remembering. Caching 'unverifiable' would
+    // make the client's retry-with-consent hit the cache and fail again instantly.
+    if (verdict !== 'unverifiable') guildCache.set(userId, { verdict, expires: Date.now() + 60_000 });
     return verdict;
   };
   const shareAllowed = createLimiter({ limit: 10 });
@@ -198,6 +201,7 @@ export function createRelayServer({ secret, origin = '', clientId = '', clientSe
           name = discordUser.global_name || discordUser.username || discordUser.id;
           if (discordUser.avatar) avatar = `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`;
           // Authentication proves who the caller is; this proves they belong to the configured server.
+          if (guildId && !guildIdWellFormed) return json(response, 503, { error: 'DISCORD_GUILD_ID is not a Discord server id (expected 17-20 digits).', code: 'guild_unverifiable' });
           if (guildId) {
             const verdict = await guildMembership(user, bearer);
             if (verdict === 'unverifiable') return json(response, 503, { error: 'Could not verify your server membership; the guilds scope is missing. Ask the owner, or re-authorise the Activity.', code: 'guild_unverifiable' });

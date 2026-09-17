@@ -4,6 +4,8 @@ import { createRelayServer } from './server.js';
 import { issueToken } from './tokens.js';
 
 const secret = 'test-secret-012345678901234567890123';
+// Real guild ids are snowflakes; the server validates the shape to avoid a silent lockout.
+const GUILD = '123456789012345678';
 const servers = [];
 
 afterEach(async () => { await Promise.all(servers.splice(0).map((server) => server.close())); });
@@ -217,22 +219,22 @@ describe('discord server membership', () => {
 
   it('refuses a caller who is not in the configured server', async () => {
     const discordFetch = discord([{ id: 'outro-servidor' }]);
-    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const server = await start({ allowDevSessions: false, guildId: GUILD, discordFetch });
     const response = await session(`http://127.0.0.1:${server.port}`);
     expect(response.status).toBe(403);
     expect(await response.json()).not.toHaveProperty('token');
   });
 
   it('accepts a member and issues the session for the authenticated identity', async () => {
-    const discordFetch = discord([{ id: 'outro' }, { id: 'meu-servidor' }]);
-    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const discordFetch = discord([{ id: 'outro' }, { id: GUILD }]);
+    const server = await start({ allowDevSessions: false, guildId: GUILD, discordFetch });
     const response = await session(`http://127.0.0.1:${server.port}`);
     expect(response.status).toBe(200);
     expect(JSON.parse(Buffer.from((await response.json()).token.split('.')[0], 'base64url').toString()).user).toBe('u1');
   });
 
   it('refuses and says why when the guild list cannot be read, so a missing scope cannot silently open the room', async () => {
-    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch: discord({}, 403) });
+    const server = await start({ allowDevSessions: false, guildId: GUILD, discordFetch: discord({}, 403) });
     const response = await session(`http://127.0.0.1:${server.port}`);
     // Denied either way; the distinct code is what lets the client explain it and
     // re-ask Discord for consent instead of showing a generic failure.
@@ -248,8 +250,8 @@ describe('discord server membership', () => {
   });
 
   it('caches the membership answer per user instead of calling Discord on every open', async () => {
-    const discordFetch = discord([{ id: 'meu-servidor' }]);
-    const server = await start({ allowDevSessions: false, guildId: 'meu-servidor', discordFetch });
+    const discordFetch = discord([{ id: GUILD }]);
+    const server = await start({ allowDevSessions: false, guildId: GUILD, discordFetch });
     const base = `http://127.0.0.1:${server.port}`;
     await session(base); await session(base);
     expect(discordFetch.mock.calls.filter(([url]) => url.includes('/users/@me/guilds'))).toHaveLength(1);
@@ -263,30 +265,30 @@ describe('discord server membership edge cases', () => {
   const session = (base, role = 'viewer') => fetch(`${base}/api/session`, { method: 'POST', headers: { authorization: 'Bearer t' }, body: JSON.stringify({ room: 'r', user: 'spoofed', role }) });
 
   it('refuses a non-array guild body instead of treating it as membership', async () => {
-    const server = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => body('{}')) });
+    const server = await start({ allowDevSessions: false, guildId: GUILD, discordFetch: withGuilds(() => body('{}')) });
     const response = await session(`http://127.0.0.1:${server.port}`);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ code: 'guild_unverifiable' });
   });
 
   it('refuses a verified non-member with a distinct code, and an unreachable list as unverifiable', async () => {
-    const empty = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => body('[]')) });
+    const empty = await start({ allowDevSessions: false, guildId: GUILD, discordFetch: withGuilds(() => body('[]')) });
     const denied = await session(`http://127.0.0.1:${empty.port}`);
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ code: 'guild_required' });
-    const failing = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => { throw new Error('network'); }) });
+    const failing = await start({ allowDevSessions: false, guildId: GUILD, discordFetch: withGuilds(() => { throw new Error('network'); }) });
     expect((await session(`http://127.0.0.1:${failing.port}`)).status).toBe(503);
   });
 
   it('tells the client whether the room is restricted at all', async () => {
     const open = await start({ allowDevSessions: false });
-    const restricted = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: vi.fn(async () => new Response('[]', { status: 200 })) });
+    const restricted = await start({ allowDevSessions: false, guildId: GUILD, discordFetch: vi.fn(async () => new Response('[]', { status: 200 })) });
     expect(await (await fetch(`http://127.0.0.1:${open.port}/api/config`)).json()).toMatchObject({ guildRestricted: false });
     expect(await (await fetch(`http://127.0.0.1:${restricted.port}/api/config`)).json()).toMatchObject({ guildRestricted: true });
   });
 
   it('applies the same gate to a publisher request', async () => {
-    const server = await start({ allowDevSessions: false, guildId: 'g1', discordFetch: withGuilds(() => body('[{"id":"outro"}]')) });
+    const server = await start({ allowDevSessions: false, guildId: GUILD, discordFetch: withGuilds(() => body('[{"id":"outro"}]')) });
     expect((await session(`http://127.0.0.1:${server.port}`, 'publisher')).status).toBe(403);
   });
 
@@ -294,12 +296,38 @@ describe('discord server membership edge cases', () => {
     let current = 'u1';
     const discordFetch = vi.fn(async (url) => {
       if (url.endsWith('/users/@me')) return new Response(JSON.stringify({ id: current, username: current }), { status: 200 });
-      return new Response(current === 'u1' ? '[{"id":"g1"}]' : '[]', { status: 200 });
+      return new Response(JSON.stringify(current === 'u1' ? [{ id: GUILD }] : []), { status: 200 });
     });
-    const server = await start({ allowDevSessions: false, guildId: 'g1', discordFetch });
+    const server = await start({ allowDevSessions: false, guildId: GUILD, discordFetch });
     const base = `http://127.0.0.1:${server.port}`;
     expect((await session(base)).status).toBe(200);
     current = 'u2';
     expect((await session(base)).status).toBe(403);
   });
+});
+
+it('does not remember an inconclusive verdict, so the consent retry can succeed', async () => {
+  let tokenCanReadGuilds = false;
+  const discordFetch = vi.fn(async (url) => {
+    if (url.endsWith('/users/@me')) return new Response(JSON.stringify({ id: 'u1', username: 'ana' }), { status: 200 });
+    if (!tokenCanReadGuilds) return new Response('{}', { status: 403 });
+    return new Response(JSON.stringify([{ id: GUILD }]), { status: 200 });
+  });
+  const server = await start({ allowDevSessions: false, guildId: GUILD, discordFetch });
+  const base = `http://127.0.0.1:${server.port}`;
+  const call = () => fetch(`${base}/api/session`, { method: 'POST', headers: { authorization: 'Bearer t' }, body: JSON.stringify({ room: 'r', user: 'u', role: 'viewer' }) });
+  expect((await call()).status).toBe(503);
+  tokenCanReadGuilds = true;
+  // The client re-authorises and retries within seconds; a cached 503 would defeat it.
+  expect((await call()).status).toBe(200);
+});
+
+it('treats a malformed configured guild id as unverifiable instead of a non-member', async () => {
+  const discordFetch = vi.fn(async (url) => (url.endsWith('/users/@me')
+    ? new Response(JSON.stringify({ id: 'u1', username: 'ana' }), { status: 200 })
+    : new Response(JSON.stringify([{ id: GUILD }]), { status: 200 })));
+  const server = await start({ allowDevSessions: false, guildId: 'nao-e-um-id', discordFetch });
+  const response = await fetch(`http://127.0.0.1:${server.port}/api/session`, { method: 'POST', headers: { authorization: 'Bearer t' }, body: JSON.stringify({ room: 'r', user: 'u', role: 'viewer' }) });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ code: 'guild_unverifiable' });
 });

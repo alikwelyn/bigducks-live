@@ -17,7 +17,7 @@ import { applyCaptureControls, DEFAULT_AUDIO_TITLE } from './capture-controls.js
 import { releasePlayback } from './watch-teardown.js';
 import { relayEncoderAction } from './relay-audience.js';
 import { createUsageReporter } from './usage-meter.js';
-import { requestSession, sessionMessage, REAUTHORISE_CODES } from './session-client.js';
+import { requestSession, resolveSession, sessionMessage } from './session-client.js';
 import './styles.css';
 
 const root = document.querySelector('#app');
@@ -43,17 +43,6 @@ async function authenticateDiscord() {
   };
   const identity = await grant('none');
   return { ...identity, instance: sdk.instanceId || 'activity', sdk, publicOrigin: config.publicOrigin || location.origin, reauthorize: () => grant('consent') };
-}
-
-async function sessionFor(identity, role, room) {
-  try {
-    return await requestSession({ apiBase, identity, role, room });
-  } catch (error) {
-    if (!REAUTHORISE_CODES.has(error.code) || !identity?.reauthorize) throw error;
-    // The token predates the guilds scope, so ask Discord for consent and try once more.
-    Object.assign(identity, await identity.reauthorize());
-    return requestSession({ apiBase, identity, role, room });
-  }
 }
 
 function renderCapture(token) {
@@ -337,7 +326,7 @@ async function renderViewer() {
   document.querySelector('#publish').onclick = async () => {
     try {
       const identity = await identityPromise;
-      const { token } = await sessionFor(identity, 'publisher', identity.instance);
+      const { token } = await resolveSession({ apiBase, identity, role: 'publisher', room: identity.instance });
       const url = await createShareLink({ publicOrigin: identity.publicOrigin, apiBase, token });
       const result = await identity.sdk?.commands.openExternalLink({ url });
       if (!identity.sdk) window.open(url, '_blank', 'noopener');
@@ -401,7 +390,7 @@ async function renderViewer() {
   let rtcSlot = null;
   let rtcActive = false;
   let rtcTimer;
-  identityPromise.then((identity) => sessionFor(identity, 'viewer', identity.instance)).then(async ({ token }) => {
+  identityPromise.then((identity) => resolveSession({ apiBase, identity, role: 'viewer', room: identity.instance })).then(async ({ token }) => {
       roomUi.progress('Buscando as transmissões do canal…');
       const socket = await connectRelaySocket({ apiBase, token });
       if (roomUi.phase === 'error') { socket.close(); return; }
