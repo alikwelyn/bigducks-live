@@ -71,6 +71,7 @@ body{background:radial-gradient(ellipse at top,#142536 0,#090f19 65%)}
 .browse-view>.status::before{content:'';width:7px;height:7px;border-radius:50%;background:#53dca2;flex:none}
 .browse-view>.status[data-state=loading]::before{background:#77b9ff;box-shadow:0 0 0 4px #77b9ff15}
 .browse-view>.status[data-state=error]{color:#f4b6bd}.browse-view>.status[data-state=error]::before{background:#e67886}
+.capture-card .status[data-state=error]{color:#f4b6bd;border-color:#e67886;background:#1b1013}
 .room-state-panel,.room-loading{grid-column:1/-1;width:100%;padding:clamp(24px,5vw,64px);border:1px solid var(--border);border-radius:18px;background:#101925}
 .room-state-panel{text-align:center;display:grid;justify-items:center;align-content:center;min-height:300px}
 .room-state-icon{display:grid;place-items:center;width:76px;height:76px;border-radius:20px;background:#65dfae0d;color:#65dfae;margin-bottom:12px}.room-state-icon svg{width:44px;height:44px}

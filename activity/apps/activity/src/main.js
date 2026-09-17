@@ -20,6 +20,8 @@ import { createReconnecter } from './relay-reconnect.js';
 import { CODES, codeForSessionError, withCode } from './diagnostic-code.js';
 import { applyVersion, fetchVersion } from './app-version.js';
 import { watchRoster } from './channel-roster.js';
+import { createStatusView } from './status-view.js';
+import { qualityMarkup } from './quality-options.js';
 import { reportToActivityLog } from './activity-log.js';
 import { requestSession, resolveSession, sessionMessage } from './session-client.js';
 import './styles.css';
@@ -62,14 +64,14 @@ function renderCapture(token) {
     }
   });
   tabChannel?.postMessage({ type: 'replace', tabId });
-  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO <span class="app-version" data-app-version></span></span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality"><option value="adaptive">Automático — recomendado</option><option value="720p30">720p / 30 FPS (recomendado)</option><option value="720p60">720p / 60 FPS</option><option value="1080p30">1080p / 30 FPS</option><option value="1080p60">1080p / 60 FPS</option></select></label><label>compartilhar áudio do sistema <input id="audio" title="${DEFAULT_AUDIO_TITLE}" type="checkbox" checked></label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span><span id="usage">Consumo do mês (estimado): —</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
+  root.innerHTML = `<div class="shell capture-shell"><div class="card capture-card"><span class="eyebrow">BIG DUCKS · ESTÚDIO <span class="app-version" data-app-version></span></span><h1>Compartilhe com seu canal</h1><p class="muted">Compartilhe o monitor do jogo. Seus amigos assistem pelo Discord.</p><div class="toolbar"><div class="capture-actions"><button class="primary" id="start">Compartilhar tela inteira</button><button class="danger" id="stop" hidden>Parar transmissão</button><button id="switch-source" hidden>Trocar monitor</button></div><details class="capture-settings"><summary>Fonte, qualidade e áudio</summary><p>Compartilhamento de tela inteira</p><small>Selecione o monitor do jogo. A live acompanha a mudança entre o cliente e a partida do LoL. Todo o monitor fica visível; o som pode incluir outros aplicativos.</small><label class="field">Qualidade<select id="quality">${qualityMarkup()}</select></label><label>compartilhar áudio do sistema <input id="audio" title="${DEFAULT_AUDIO_TITLE}" type="checkbox" checked></label><small class="muted">Automático: até 720p/30. 1080p e 60 FPS consomem mais dados. Autorize o áudio também no seletor do navegador.</small></details></div><div id="status" class="status">Pronto para transmitir.</div><div class="metrics"><span id="source">Fonte: —</span><span id="fps">FPS: —</span><span id="bitrate">Bitrate: —</span><span id="audio-state">Áudio: aguardando</span><span id="usage">Consumo do mês (estimado): —</span></div><video id="preview" class="preview" autoplay muted playsinline hidden></video></div></div>`;
   applyVersion(root, appVersion);
   const startButton = document.querySelector('#start');
   const stopButton = document.querySelector('#stop');
   const switchButton = document.querySelector('#switch-source');
   const audioToggle = document.querySelector('#audio');
   const setControls = (state) => applyCaptureControls({ start: startButton, stop: stopButton, switch: switchButton, audio: audioToggle }, state);
-  const status = document.querySelector('#status');
+  const status = createStatusView(document.querySelector('#status'));
   const captureAudience = createAudience(document.querySelector('.capture-card'));
   let starting = false;
   const startCapture = async () => {
@@ -81,10 +83,10 @@ function renderCapture(token) {
     try {
       const quality = document.querySelector('#quality').value;
       const profile = { ...profileFor(quality === 'adaptive' ? '720p30' : quality), automatic: quality === 'adaptive' };
-      status.textContent = 'Selecione Tela inteira, escolha o monitor do jogo e autorize o áudio…';
+      status.set('Selecione Tela inteira, escolha o monitor do jogo e autorize o áudio…');
       let stream = await captureMonitor({ fps: profile.fps, audio: document.querySelector('#audio').checked });
       captured = stream;
-      status.textContent = 'Conectando sua transmissão…';
+      status.set('Conectando sua transmissão…');
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) videoTrack.contentHint = 'detail';
       const runtimeConfig = await fetch(apiUrl('/api/config')).then((response) => response.json()).catch(() => ({}));
@@ -110,10 +112,10 @@ function renderCapture(token) {
         try {
           await sfuPublisher.setAudience(count);
           if (stopped || count !== sfuAudience) return;
-          if (!continuity?.waiting) status.textContent = count === 0 ? 'Economia de banda ativa. Mantenha esta página aberta.' : 'Transmitindo. Mantenha esta página aberta.';
+          if (!continuity?.waiting) status.set(count === 0 ? 'Economia de banda ativa. Mantenha esta página aberta.' : 'Transmitindo. Mantenha esta página aberta.');
           document.querySelector('#bitrate').textContent = count === 0 ? 'Economia: vídeo até 40 kbps / 1 FPS' : `Bitrate máximo: ${(profile.bitrate / 1_000_000).toFixed(1)} Mbps`;
         } catch {
-          if (!stopped) status.textContent = 'Transmitindo; não foi possível ajustar a economia de banda neste navegador.';
+          if (!stopped) status.set('Transmitindo; não foi possível ajustar a economia de banda neste navegador.');
         }
       };
       let thumbnailTimer;
@@ -124,7 +126,7 @@ function renderCapture(token) {
         starting = false;
         setControls({ live: false });
         const preview = document.querySelector('#preview'); preview.srcObject = null; preview.hidden = true;
-        status.textContent = message;
+        status.set(message);
         captureAudience.update([]);
         captureAudience.close();
         activeStop = null;
@@ -150,7 +152,7 @@ function renderCapture(token) {
       };
       const publishViaRelay = async (reason) => {
         if (stopped || !sfuPublisher) return;
-        if (reason) status.textContent = reason;
+        if (reason) status.set(reason);
         try {
           sfuPublisher.close(); sfuPublisher = null;
           relayWanted = true;
@@ -158,9 +160,9 @@ function renderCapture(token) {
           broadcaster?.requestKeyframe();
           startPayload = { transport: 'relay', ...relayMedia };
           sendStart();
-          status.textContent = 'Conexão SFU caiu; transmitindo pelo relay de compatibilidade.';
+          status.set('Conexão SFU caiu; transmitindo pelo relay de compatibilidade.');
         } catch {
-          if (!stopped) status.textContent = withCode('A transmissão foi interrompida e não pôde ser retomada automaticamente. Clique em Parar e inicie de novo.', CODES.PUBLISH_FAILED);
+          if (!stopped) status.set(withCode('A transmissão foi interrompida e não pôde ser retomada automaticamente. Clique em Parar e inicie de novo.', CODES.PUBLISH_FAILED), 'error');
         }
       };
       const onControl = async (event) => {
@@ -226,7 +228,7 @@ function renderCapture(token) {
           }
         },
         onWaiting: () => {
-          status.textContent = 'O compartilhamento foi interrompido. Sua live continua: selecione o monitor novamente.';
+          status.set('O compartilhamento foi interrompido. Sua live continua: selecione o monitor novamente.');
           switchButton.textContent = 'Selecionar monitor';
           setControls({ live: true, switching: starting });
         },
@@ -246,9 +248,9 @@ function renderCapture(token) {
           document.querySelector('#preview').srcObject = stream;
           document.querySelector('#source').textContent = waiting ? 'Fonte: aguardando monitor' : `Fonte: ${size.width}×${size.height}`;
           document.querySelector('#audio-state').textContent = hasAudio ? 'Áudio do sistema: ativado' : 'Sem áudio do sistema. Para ativar, troque o monitor e autorize o áudio no seletor.';
-          if (!waiting) { status.textContent = 'Fonte atualizada. Seus amigos continuam na mesma live.'; switchButton.textContent = 'Trocar monitor'; }
+          if (!waiting) { status.set('Fonte atualizada. Seus amigos continuam na mesma live.'); switchButton.textContent = 'Trocar monitor'; }
         },
-        onError: () => { status.textContent = withCode('Não foi possível atualizar a fonte. Selecione o monitor novamente.', CODES.CAPTURE_FAILED); },
+        onError: () => { status.set(withCode('Não foi possível atualizar a fonte. Selecione o monitor novamente.', CODES.CAPTURE_FAILED), 'error'); },
       });
       stream = continuity.stream;
       activeSwitch = async () => {
@@ -258,9 +260,9 @@ function renderCapture(token) {
           const next = await captureMonitor({ fps: profile.fps, audio: document.querySelector('#audio').checked });
           await continuity.replace(next);
         } catch (error) {
-          if (!stopped) status.textContent = error?.name === 'NotAllowedError'
+          if (!stopped) status.set(error?.name === 'NotAllowedError'
             ? 'Seleção cancelada. A live foi mantida; você pode escolher outra fonte.'
-            : `Não foi possível trocar a fonte: ${error?.message || 'tente novamente'}`;
+            : withCode(`Não foi possível trocar a fonte: ${error?.message || 'tente novamente'}`, CODES.CAPTURE_FAILED));
         } finally { if (!stopped) setControls({ live: true, switching: false }); }
       };
       activeStop = stopBroadcast;
@@ -307,7 +309,7 @@ function renderCapture(token) {
       attach(socket);
       reconnecter = createReconnecter({
         connect: () => connectRelaySocket({ apiBase, token }),
-        onAttempt: (attempt) => { if (!stopped) status.textContent = withCode(`Reconectando à sala… tentativa ${attempt}`, CODES.SOCKET_CLOSED); },
+        onAttempt: (attempt) => { if (!stopped) status.set(withCode(`Reconectando à sala… tentativa ${attempt}`, CODES.SOCKET_CLOSED)); },
         onOpen: async (next) => {
           // Capture and encoders are untouched: only the room socket is replaced.
           socket = next;
@@ -315,7 +317,7 @@ function renderCapture(token) {
           next.send(JSON.stringify({ type: 'hello' }));
           sendStart();
           if (sfuAudience !== null) await updateAudience();
-          if (!stopped) status.textContent = 'Reconectado. Sua live continua.';
+          if (!stopped) status.set('Reconectado. Sua live continua.');
         },
         onGiveUp: () => { if (!stopped) stopBroadcast(withCode('Conexão com a sala encerrada. Inicie a transmissão novamente.', CODES.SOCKET_CLOSED)); },
       });
@@ -323,7 +325,7 @@ function renderCapture(token) {
         if (stopped || closingIntentionally) return;
         // Cloudflare closes idle sockets and may restart servers; the room holds the
         // slot for a while, so coming back is what saves the live for everyone.
-        status.textContent = withCode('Conexão caiu. Reconectando…', CODES.SOCKET_CLOSED);
+        status.set(withCode('Conexão caiu. Reconectando…', CODES.SOCKET_CLOSED), 'error');
         reconnecter.start();
       });
       const preview = document.querySelector('#preview'); preview.srcObject = stream; preview.hidden = false;
@@ -340,7 +342,7 @@ function renderCapture(token) {
       if (stopped) return;
       starting = false;
       setControls({ live: true });
-      status.textContent = continuity.waiting ? 'O compartilhamento foi interrompido. Selecione o monitor novamente.' : 'Transmitindo. Mantenha esta página aberta.';
+      status.set(continuity.waiting ? 'O compartilhamento foi interrompido. Selecione o monitor novamente.' : 'Transmitindo. Mantenha esta página aberta.');
       void updateAudience();
       window.addEventListener('beforeunload', () => stopBroadcast(), { once: true });
     } catch (error) {
@@ -349,7 +351,7 @@ function renderCapture(token) {
       captured?.getTracks().forEach((track) => track.stop());
       starting = false;
       setControls({ live: false });
-      status.textContent = error?.name === 'NotAllowedError' ? 'Permissão de captura cancelada.' : `Não foi possível iniciar: ${error?.message || 'erro desconhecido'}`;
+      status.set(error?.name === 'NotAllowedError' ? withCode('Permissão de captura cancelada.', CODES.CAPTURE_DENIED) : withCode(`Não foi possível iniciar: ${error?.message || 'erro desconhecido'}`, CODES.CAPTURE_FAILED), 'error');
     }
   };
   startButton.onclick = () => startCapture();
