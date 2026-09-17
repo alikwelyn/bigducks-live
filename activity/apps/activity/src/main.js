@@ -618,6 +618,12 @@ async function renderViewer() {
           socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
           document.querySelector('#status').textContent = 'Assistindo pelo relay de compatibilidade.';
         }
+        if (message.type === 'source-offline' && selectedSlot === message.slot) {
+          // The Durable Object holds the slot for a while and waits: the streamer
+          // may just have lost the connection, so do not tear the live down.
+          document.querySelector('#status').textContent = 'O streamer está reconectando. A live continua.';
+          feedback.show('O streamer está reconectando…');
+        }
         if (message.type === 'fallback-failed' && selectedSlot === message.slot) stopWatching(withCode('Não foi possível reproduzir esta transmissão.', CODES.RELAY_UNAVAILABLE));
         if (message.type === 'stop') {
           availableStreams.delete(message.slot);

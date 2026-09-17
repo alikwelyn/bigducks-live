@@ -3,6 +3,7 @@ import { verifyEdgeToken } from './token.js';
 import { updateStreamSource } from '../shared/source-update.js';
 import { updateAudience, audienceFor, clearAudience } from '../shared/sfu-audience.js';
 import { addUsage, clampReportedBytes, freshUsage, usageSummary, METER_MIN_INTERVAL_MS } from './usage.js';
+import { dropExpiredLeases, GRACE_MS, nextWakeAt, reclaimSlot, upsertLease } from './session-lease.js';
 
 const INTERNAL_CLAIMS = 'x-bigducks-edge-claims';
 const USAGE_PERSIST_MS = 60_000;
@@ -21,6 +22,28 @@ export class EdgeRoom {
     this.state = state;
     this.usage = freshUsage();
     this.usageLoaded = false;
+    this.leases = new Map();
+  }
+
+  // Cloudflare closes an idle WebSocket, so the room keeps traffic flowing itself.
+  async scheduleWake() {
+    const at = nextWakeAt({ leases: this.leases, hasSockets: this.state.getWebSockets().length > 0 });
+    try {
+      if (at === null) await this.state.storage?.deleteAlarm?.();
+      else await this.state.storage?.setAlarm?.(at);
+    } catch { /* the room still works without the wake */ }
+  }
+
+  async alarm() {
+    const now = Date.now();
+    const { kept, expired } = dropExpiredLeases(this.leases, now);
+    this.leases = kept;
+    for (const lease of expired) {
+      for (const viewer of this.sockets('viewer')) send(viewer, { type: 'stop', slot: lease.slot, name: lease.name });
+      this.clearAudience(lease.slot);
+    }
+    for (const socket of this.state.getWebSockets()) send(socket, { type: 'ping', at: now });
+    await this.scheduleWake();
   }
 
   // Accounting must never interfere with media: every storage access is optional
@@ -90,8 +113,11 @@ export class EdgeRoom {
     const viewers = this.sockets('viewer');
     let slot = null;
     if (claims.role === 'publisher') {
-      slot = allocatePublisherSlot(publishers.map((socket) => attachment(socket).slot));
+      const taken = publishers.map((socket) => attachment(socket).slot);
+      const { slot: picked, lease } = reclaimSlot({ leases: this.leases, taken, user: claims.user, allocate: allocatePublisherSlot });
+      slot = picked;
       if (slot === null) return new Response('Publisher limit reached', { status: 429 });
+      if (lease) this.leases.delete(String(lease.slot));
     } else if (viewers.length >= MAX_VIEWERS) return new Response('Viewer limit reached', { status: 429 });
 
     const pair = new WebSocketPair();
@@ -100,6 +126,7 @@ export class EdgeRoom {
     const member = { role: claims.role, user: claims.user, name: String(claims.name || claims.user).slice(0, 80), avatar: typeof claims.avatar === 'string' ? claims.avatar : '', slot, watched: null, stream: null };
     server.serializeAttachment(member);
     this.state.acceptWebSocket(server);
+    await this.scheduleWake();
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -156,7 +183,11 @@ export class EdgeRoom {
     if (member.role === 'publisher' && ['start', 'stop'].includes(control.type)) {
       const outgoing = { ...control, slot: member.slot, name: member.name, avatar: member.avatar, userId: member.user };
       member.stream = control.type === 'start' ? outgoing : null;
-      if (control.type === 'stop') this.clearAudience(member.slot);
+      if (control.type === 'stop') {
+        // A deliberate stop is not a dropped socket: end it now, with no lease left.
+        this.leases.delete(String(member.slot));
+        this.clearAudience(member.slot);
+      }
       socket.serializeAttachment(member);
       for (const viewer of this.sockets('viewer')) send(viewer, outgoing);
       this.notifyAudience();
@@ -235,8 +266,11 @@ export class EdgeRoom {
     const member = attachment(socket);
     if (member?.role === 'viewer') this.notifyAudience(socket);
     if (member?.role === 'publisher') {
-      this.clearAudience(member.slot);
-      for (const viewer of this.sockets('viewer')) send(viewer, { type: 'stop', slot: member.slot, name: member.name });
+      // A dropped socket is not proof the stream ended: hold the slot for a while,
+      // tell viewers to wait, and only end the stream if nobody comes back.
+      this.leases = upsertLease(this.leases, { user: member.user, slot: member.slot, name: member.name, until: Date.now() + GRACE_MS });
+      for (const viewer of this.sockets('viewer')) send(viewer, { type: 'source-offline', slot: member.slot, name: member.name });
+      await this.scheduleWake();
     }
   }
 
