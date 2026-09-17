@@ -8,6 +8,7 @@ it('keeps the published meaning of every code frozen', () => {
     SFU_TIMEOUT: 0x3, SFU_LOST: 0x4, RELAY_STALL: 0x5, SOCKET_CLOSED: 0x6, ROOM_TIMEOUT: 0x7,
     GUILD_REQUIRED: 0x8, GUILD_UNVERIFIABLE: 0x9, DISCORD_AUTH: 0xa,
     CAPTURE_DENIED: 0xb, CAPTURE_ENDED: 0xc, CAPTURE_FAILED: 0xd, PUBLISH_FAILED: 0xe, RELAY_UNAVAILABLE: 0xf,
+    SFU_FAILED: 0x10, SESSION_UNKNOWN: 0x11,
   });
   expect(new Set(Object.values(CODES)).size).toBe(Object.values(CODES).length);
 });
@@ -16,6 +17,7 @@ it('formats a code in the shape people will read out loud', () => {
   expect(codeLabel(0x0)).toBe('0x0');
   expect(codeLabel(0xf)).toBe('0xF');
   expect(codeLabel(0xb)).toBe('0xB');
+  expect(codeLabel(0x10)).toBe('0x10');
   expect(codeLabel(undefined)).toBe('');
   expect(codeLabel(1.5)).toBe('');
 });

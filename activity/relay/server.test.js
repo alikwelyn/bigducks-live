@@ -285,6 +285,10 @@ describe('discord server membership edge cases', () => {
     const restricted = await start({ allowDevSessions: false, guildId: GUILD, discordFetch: vi.fn(async () => new Response('[]', { status: 200 })) });
     expect(await (await fetch(`http://127.0.0.1:${open.port}/api/config`)).json()).toMatchObject({ guildRestricted: false });
     expect(await (await fetch(`http://127.0.0.1:${restricted.port}/api/config`)).json()).toMatchObject({ guildRestricted: true });
+    // The UI shows this value, so it has to be the deployed package version.
+    const { version } = await import('./config.js');
+    const config = await (await fetch(`http://127.0.0.1:${open.port}/api/config`)).json();
+    expect(config.version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   it('applies the same gate to a publisher request', async () => {

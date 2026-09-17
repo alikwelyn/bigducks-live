@@ -132,11 +132,11 @@ function renderCapture(token) {
         for (const { peer } of peers.values()) { try { peer.close(); } catch { /* peer already closed */ } }
         try { socket.close(); } catch { /* socket already closed */ }
       };
-      socket.addEventListener('close', () => stopBroadcast('Conexão com a sala encerrada. Inicie a transmissão novamente.'));
+      socket.addEventListener('close', () => stopBroadcast(withCode('Conexão com a sala encerrada. Inicie a transmissão novamente.', CODES.SOCKET_CLOSED)));
       const ensureRelay = () => {
         if (broadcaster) return Promise.resolve(relayMedia);
         if (relayStarting) return relayStarting;
-        relayStarting = createBroadcaster({ ws: socket, profile, audio: true, stream, slot, stopTracks: false, onStatus: (media) => { relayMedia = media; }, onEnd: (error) => { if (!sfuPublisher && !continuity?.waiting) stopBroadcast(error?.message || 'Captura encerrada.'); } })
+        relayStarting = createBroadcaster({ ws: socket, profile, audio: true, stream, slot, stopTracks: false, onStatus: (media) => { relayMedia = media; }, onEnd: (error) => { if (!sfuPublisher && !continuity?.waiting) stopBroadcast(withCode(error?.message || 'Captura encerrada.', CODES.CAPTURE_ENDED)); } })
           .then((value) => { if (stopped || !relayWanted) value.stop(); else broadcaster = value; return relayMedia; })
           .catch((error) => { relayStarting = null; throw error; });
         return relayStarting;
@@ -152,7 +152,7 @@ function renderCapture(token) {
           socket.send(JSON.stringify({ type: 'start', slot, transport: 'relay', ...relayMedia, waiting: continuity?.waiting }));
           status.textContent = 'Conexão SFU caiu; transmitindo pelo relay de compatibilidade.';
         } catch {
-          if (!stopped) status.textContent = 'A transmissão foi interrompida e não pôde ser retomada automaticamente. Clique em Parar e inicie de novo.';
+          if (!stopped) status.textContent = withCode('A transmissão foi interrompida e não pôde ser retomada automaticamente. Clique em Parar e inicie de novo.', CODES.PUBLISH_FAILED);
         }
       };
       socket.addEventListener('message', async (event) => {
@@ -240,7 +240,7 @@ function renderCapture(token) {
           document.querySelector('#audio-state').textContent = hasAudio ? 'Áudio do sistema: ativado' : 'Sem áudio do sistema. Para ativar, troque o monitor e autorize o áudio no seletor.';
           if (!waiting) { status.textContent = 'Fonte atualizada. Seus amigos continuam na mesma live.'; switchButton.textContent = 'Trocar monitor'; }
         },
-        onError: () => { status.textContent = 'Não foi possível atualizar a fonte. Selecione o monitor novamente.'; },
+        onError: () => { status.textContent = withCode('Não foi possível atualizar a fonte. Selecione o monitor novamente.', CODES.CAPTURE_FAILED); },
       });
       stream = continuity.stream;
       activeSwitch = async () => {
@@ -505,8 +505,9 @@ async function renderViewer() {
               const requestFallback = (code = CODES.SFU_LOST) => {
                 if (fallbackRequested || !isCurrent()) return;
                 fallbackRequested = true;
-                connectionPanel.set('Relay de compatibilidade', null, code);
+                // stopSfu() clears the panel, so the label and code go in afterwards.
                 stopSfu();
+                connectionPanel.set('Relay de compatibilidade', null, code);
                 directVideo.style.display = 'none'; canvas.style.display = 'block';
                 socket.send(JSON.stringify({ type: 'fallback-want', slot: message.slot }));
                 document.querySelector('#status').textContent = withCode('Ativando o relay de compatibilidade…', code);
@@ -522,7 +523,7 @@ async function renderViewer() {
                 document.querySelector('#status').textContent = `Assistindo ${message.name} pela Cloudflare SFU.`;
                 return;
               } catch {
-                requestFallback(CODES.SFU_TIMEOUT);
+                requestFallback(CODES.SFU_FAILED);
                 return;
               }
             }
@@ -617,7 +618,7 @@ async function renderViewer() {
           socket.send(JSON.stringify({ type: 'watch', slot: message.slot }));
           document.querySelector('#status').textContent = 'Assistindo pelo relay de compatibilidade.';
         }
-        if (message.type === 'fallback-failed' && selectedSlot === message.slot) stopWatching('Não foi possível reproduzir esta transmissão.');
+        if (message.type === 'fallback-failed' && selectedSlot === message.slot) stopWatching(withCode('Não foi possível reproduzir esta transmissão.', CODES.RELAY_UNAVAILABLE));
         if (message.type === 'stop') {
           availableStreams.delete(message.slot);
           audiences.delete(message.slot);
@@ -677,7 +678,7 @@ async function renderViewer() {
         } catch { stopRtc(); }
       });
       socket.send(JSON.stringify({ type: 'hello' }));
-    }).catch((error) => { roomUi.fail(withCode(sessionMessage(error), codeForSessionError(error))); });
+    }).catch((error) => { roomUi.fail(withCode(sessionMessage(error), codeForSessionError(error) ?? CODES.SESSION_UNKNOWN)); });
 }
 
 function renderAccessMessage(title, message) {

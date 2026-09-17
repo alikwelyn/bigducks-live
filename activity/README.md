@@ -32,7 +32,6 @@ Sem espectadores SFU, o publicador reduz o vídeo para até 320×180, 1 FPS e 40
 
 O áudio da fonte vem marcado por padrão; a autorização no seletor do navegador continua necessária. A prévia local permanece silenciada para evitar eco. Publique frontend, origin e Worker juntos e recarregue as Activities e páginas de captura para atualizar o protocolo de presença SFU. Valide em duas sessões reais: sem espectador, assistindo, voltando à lista e fechando a Activity. O fallback WebCodecs mantém seu comportamento anterior e não recebe esses limites SFU.
 
-O player ocupa a área disponível da Activity em desktop, retrato e paisagem, preservando a proporção original. “Ampliar legendas” alterna 100%, 125% e 150%, mantendo a parte inferior da imagem como referência; a ampliação pode cortar as laterais. Legendas embutidas continuam sendo pixels do vídeo. “Tela cheia” usa o suporte do navegador; se o Discord bloquear a API no iframe, o player orienta usar o controle de tela cheia do próprio Discord. A identificação fica acima da imagem e os controles abaixo, em áreas separadas do vídeo.
 
 A captura e o player mostram a lista de pessoas que abriram a live, com nome e avatar autenticados; os cards mostram a quantidade. A lista acompanha SFU, relay e P2P, mudanças de live, saída e desconexão, e não inclui pessoas que apenas estão na sala. Indica intenção de assistir, não confirmação de reprodução de cada frame. A mesma identidade é exibida uma vez, mesmo com mais de uma conexão.
 
