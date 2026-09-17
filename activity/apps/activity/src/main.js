@@ -19,6 +19,8 @@ import { createUsageReporter } from './usage-meter.js';
 import { createReconnecter } from './relay-reconnect.js';
 import { CODES, codeForSessionError, withCode } from './diagnostic-code.js';
 import { applyVersion, fetchVersion } from './app-version.js';
+import { watchRoster } from './channel-roster.js';
+import { reportToActivityLog } from './activity-log.js';
 import { requestSession, resolveSession, sessionMessage } from './session-client.js';
 import './styles.css';
 
@@ -356,11 +358,25 @@ function renderCapture(token) {
 }
 
 async function renderViewer() {
-  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><span class="eyebrow">BIG DUCKS · SEU CANAL <span class="app-version" data-app-version></span></span><h1>Ao vivo com seus amigos</h1><p class="muted">Escolha uma live e entre. Sem sair do Discord.</p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams" aria-busy="true"></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span><span class="app-version" data-app-version></span></header><footer class="watch-controls"><span class="live-caption">TRANSMISSÃO AO VIVO</span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button><input id="live-volume" aria-label="Volume da transmissão" type="range" min="0" max="100" value="100"></footer><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
+  root.innerHTML = `<div class="shell"><div class="card viewer-shell"><section id="browse-view" class="browse-view"><header class="viewer-heading"><div><span class="eyebrow">BIG DUCKS · SEU CANAL <span class="app-version" data-app-version></span></span><h1>Ao vivo com seus amigos</h1><p class="muted">Escolha uma live e entre. Sem sair do Discord.</p><p class="muted channel-roster" data-channel-roster hidden></p></div><button id="publish" class="primary">Transmitir minha tela</button></header><div id="status" class="status">Conectando à sala…</div><div class="streams" id="streams" aria-busy="true"></div></section><section id="watch-view" class="watch-view" hidden><header class="watch-header"><button id="back-to-streams" class="back-button" type="button">← Voltar</button><span class="live-badge watch-live">AO VIVO</span><img id="watch-avatar" class="avatar" alt=""><strong id="watch-name">Transmissão</strong><span class="watch-spacer"></span><span class="app-version" data-app-version></span></header><footer class="watch-controls"><span class="live-caption">TRANSMISSÃO AO VIVO</span><button id="mute-live" class="player-action" type="button">🔊 Áudio</button><input id="live-volume" aria-label="Volume da transmissão" type="range" min="0" max="100" value="100"></footer><div class="stage"><span class="muted">Carregando transmissão…</span></div></section></div></div>`;
   applyVersion(root, appVersion);
   let viewerUserId = '';
+  let discordSdk = null;
+  let stopRoster = () => {};
+  const showRoster = (text) => {
+    const node = document.querySelector('[data-channel-roster]');
+    if (!node) return;
+    node.hidden = !text;
+    node.textContent = text;
+  };
   const roomUi = createRoomState({ status: document.querySelector('#status'), container: document.querySelector('#streams'), publish: document.querySelector('#publish'), retry: () => location.reload() });
-  const identityPromise = authenticateDiscord().then((identity) => { viewerUserId = identity.user; return identity; });
+  const identityPromise = authenticateDiscord().then((identity) => {
+    viewerUserId = identity.user;
+    discordSdk = identity.sdk ?? null;
+    // Real presence from Discord: who is in the voice channel right now.
+    void watchRoster({ sdk: identity.sdk, onChange: showRoster }).then((stop) => { stopRoster = stop; });
+    return identity;
+  });
   document.querySelector('#publish').onclick = async () => {
     try {
       const identity = await identityPromise;
@@ -497,7 +513,7 @@ async function renderViewer() {
       };
       document.querySelector('#back-to-streams').onclick = () => stopWatching();
 
-      window.addEventListener('beforeunload', () => { intentionalClose = true; reconnecter.stop(); stopWatching(); socket.close(); }, { once: true });
+      window.addEventListener('beforeunload', () => { intentionalClose = true; reconnecter.stop(); stopRoster(); stopWatching(); socket.close(); }, { once: true });
       const renderStreams = () => {
         const container = document.querySelector('#streams');
         if (!roomUi.render(availableStreams.size)) return;
@@ -751,7 +767,11 @@ async function renderViewer() {
         reconnecter.start();
       });
       socket.send(JSON.stringify({ type: 'hello' }));
-    }).catch((error) => { roomUi.fail(withCode(sessionMessage(error), codeForSessionError(error) ?? CODES.SESSION_UNKNOWN)); });
+    }).catch((error) => {
+      const code = codeForSessionError(error) ?? CODES.SESSION_UNKNOWN;
+      reportToActivityLog(discordSdk, code, sessionMessage(error));
+      roomUi.fail(withCode(sessionMessage(error), code));
+    });
 }
 
 function renderAccessMessage(title, message) {

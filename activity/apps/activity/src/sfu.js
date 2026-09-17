@@ -59,6 +59,32 @@ function videoEncoding(track, profile) {
   return { maxBitrate: profile.bitrate, maxFramerate: profile.fps, scaleResolutionDownBy };
 }
 
+// Simulcast lets the SFU hand each viewer the layer their connection can carry,
+// instead of degrading the single stream for everybody. The publisher pays for it
+// with upload: three layers instead of one.
+export const SIMULCAST_LAYERS = [
+  { rid: 'h', bitrateScale: 1, scaleFactor: 1, fpsScale: 1 },
+  { rid: 'm', bitrateScale: 0.5, scaleFactor: 2, fpsScale: 1 },
+  { rid: 'l', bitrateScale: 0.25, scaleFactor: 4, fpsScale: 0.6 },
+];
+
+export function videoEncodings(track, profile, { simulcast = true } = {}) {
+  const base = videoEncoding(track, profile);
+  if (!simulcast) return [base];
+  return SIMULCAST_LAYERS.map(({ rid, bitrateScale, scaleFactor, fpsScale }) => ({
+    rid,
+    maxBitrate: Math.max(40_000, Math.round(base.maxBitrate * bitrateScale)),
+    maxFramerate: Math.max(1, Math.round(base.maxFramerate * fpsScale)),
+    scaleResolutionDownBy: base.scaleResolutionDownBy * scaleFactor,
+  }));
+}
+
+// setParameters must not carry rid, and each layer keeps its own budget.
+function applyEncoding(encoding, wanted) {
+  const { rid, ...rest } = wanted;
+  Object.assign(encoding, rest);
+}
+
 async function limitVideoSender(sender, profile) {
   if (!sender?.setParameters) return;
   const parameters = sender.getParameters?.() || {};
@@ -69,13 +95,15 @@ async function limitVideoSender(sender, profile) {
   try { await sender.setParameters(parameters); } catch { /* browser applies its own congestion control */ }
 }
 
-export async function createSfuPublisher({ stream, profile, token, apiBase = '', iceServers = [], fetchImpl = globalThis.fetch, RTCPeerConnectionClass = RTCPeerConnection, timeoutMs, onDisconnect } = {}) {
+export async function createSfuPublisher({ stream, profile, token, apiBase = '', iceServers = [], fetchImpl = globalThis.fetch, RTCPeerConnectionClass = RTCPeerConnection, timeoutMs, onDisconnect, simulcast = true } = {}) {
   const { sessionId } = await sfuRequest({ apiBase, token, operation: 'session', fetchImpl });
   const peer = createPeer(RTCPeerConnectionClass, iceServers);
+  const encodingsFor = (track, shape) => (track.kind === 'video' ? videoEncodings(track, shape, { simulcast }) : undefined);
   try {
-    const transceivers = stream.getTracks().map((track) => peer.addTransceiver(track, track.kind === 'video'
-      ? { direction: 'sendonly', sendEncodings: [videoEncoding(track, profile)] }
-      : { direction: 'sendonly' }));
+    const transceivers = stream.getTracks().map((track) => {
+      const sendEncodings = encodingsFor(track, profile);
+      return peer.addTransceiver(track, sendEncodings ? { direction: 'sendonly', sendEncodings } : { direction: 'sendonly' });
+    });
     for (const { sender } of transceivers) if (sender.track?.kind === 'video') await limitVideoSender(sender, profile);
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
@@ -84,7 +112,7 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
     await peer.setRemoteDescription(published.sessionDescription);
     await waitForConnection(peer, timeoutMs);
     const stopMonitoring = monitorConnection(peer, onDisconnect);
-    let stopQuality = profile.automatic ? monitorQuality(peer, profile) : () => {};
+    let stopQuality = profile.automatic && !simulcast ? monitorQuality(peer, profile) : () => {};
     let closed = false;
     let audienceRevision = 0;
     let audienceMode;
@@ -116,14 +144,17 @@ export async function createSfuPublisher({ stream, profile, token, apiBase = '',
           if (closed || revision !== audienceRevision) return false;
           if (!parameters.encodings?.length) throw new Error('Sender encodings unavailable');
           const idle = count === 0;
-          for (const encoding of parameters.encodings) {
-            if (sender.track.kind === 'video') {
-              Object.assign(encoding, videoEncoding(sender.track, idle
-                ? { width: 320, height: 180, bitrate: 40_000, fps: 1 } : profile));
-            } else encoding.maxBitrate = idle ? 6_000 : 96_000;
+          const wanted = sender.track.kind === 'video'
+            ? videoEncodings(sender.track, idle ? { width: 320, height: 180, bitrate: 40_000, fps: 1 } : profile, { simulcast })
+            : null;
+          for (const [index, encoding] of parameters.encodings.entries()) {
+            if (wanted) applyEncoding(encoding, wanted[index] ?? wanted[wanted.length - 1]);
+            else encoding.maxBitrate = idle ? 6_000 : 96_000;
           }
         }))).then(() => {
-          if (!closed && revision === audienceRevision && active && profile.automatic) stopQuality = monitorQuality(peer, profile);
+          // With simulcast the SFU already picks a layer per viewer; pinning sender
+          // parameters here would flatten the layers it chooses between.
+          if (!closed && revision === audienceRevision && active && profile.automatic && !simulcast) stopQuality = monitorQuality(peer, profile);
         }).catch((error) => {
           if (revision === audienceRevision) audienceMode = undefined;
           throw error;
