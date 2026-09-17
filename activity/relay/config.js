@@ -11,7 +11,7 @@ export function loadConfig(env = process.env) {
     origin: env.PUBLIC_ORIGIN || '',
     clientId: env.DISCORD_CLIENT_ID || '',
     clientSecret: env.DISCORD_CLIENT_SECRET || '',
-    guildId: env.DISCORD_GUILD_ID || '',
+    guildId: String(env.DISCORD_GUILD_ID || '').trim(),
     allowDevSessions: env.ALLOW_DEV_SESSIONS === 'true' && env.NODE_ENV !== 'production',
     maxViewers: Number(env.MAX_VIEWERS || 25),
     turnKeyId: env.CLOUDFLARE_TURN_KEY_ID || '',

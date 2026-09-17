@@ -28,3 +28,21 @@ export function sessionMessage(error) {
     default: return 'Não foi possível carregar a sala. Tente novamente.';
   }
 }
+
+// A token minted before the `guilds` scope existed cannot prove membership, so that
+// single refusal is worth retrying once after asking Discord for consent.
+export async function resolveSession({ requester = requestSession, apiBase = '', identity, role, room }) {
+  const call = () => requester({ apiBase, identity, role, room });
+  try {
+    return await call();
+  } catch (error) {
+    if (!REAUTHORISE_CODES.has(error.code) || !identity?.reauthorize) throw error;
+    try {
+      Object.assign(identity, await identity.reauthorize());
+    } catch {
+      // Consent was dismissed or failed: keep the original, actionable reason.
+      throw error;
+    }
+    return call();
+  }
+}
