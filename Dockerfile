@@ -21,7 +21,8 @@ RUN apt-get update \
       pkg-config clang libclang-dev \
       libxcb1-dev libxrandr-dev libdbus-1-dev \
       libwayland-dev libxkbcommon-dev \
-      libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev libgl1-mesa-dev \
+      libpipewire-0.3-dev libspa-0.2-dev \
+      libdrm-dev libgbm-dev libegl1-mesa-dev libgl1-mesa-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
