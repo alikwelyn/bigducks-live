@@ -98558,6 +98558,10 @@ if (!global.__discordStreamBridgeLoaded) {
     webpackCache: null,
     disposed: false,
     rescanned: false,
+    srcObjectHook: false,
+    viewerOverride: false,
+    viewerStream: null,
+    viewerSwaps: 0,
     goLivePatched: false,
     goLiveError: "",
     enginePatched: false,
@@ -99399,8 +99403,103 @@ if (!global.__discordStreamBridgeLoaded) {
     return summary();
   }
 
+  function makeTestStream() {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1280;
+      canvas.height = 720;
+      const ctx = canvas.getContext("2d");
+      const bars = ["#ffffff", "#ffff00", "#00ffff", "#00ff00", "#ff00ff", "#ff0000", "#0000ff", "#181818"];
+      let frame = 0;
+      const draw = () => {
+        if (state.disposed || !state.viewerOverride) {
+          return;
+        }
+        const w = canvas.width;
+        const h = canvas.height;
+        const bw = w / bars.length;
+        for (let i = 0; i < bars.length; i++) {
+          ctx.fillStyle = bars[i];
+          ctx.fillRect(i * bw, 0, bw + 1, h);
+        }
+        ctx.fillStyle = "#5865f2";
+        ctx.fillRect(0, (h >> 1) - 4, w, 8);
+        ctx.fillStyle = "#000000";
+        ctx.font = "48px monospace";
+        ctx.fillText("BIG DUCKS " + frame, 40, h - 40);
+        frame += 1;
+        requestAnimationFrame(draw);
+      };
+      draw();
+      return canvas.captureStream ? canvas.captureStream(30) : null;
+    } catch (error) {
+      state.lastError = String(error);
+      return null;
+    }
+  }
+
+  // Discord's desktop viewer uses a native DirectVideo path: it creates a
+  // <video> and assigns srcObject. Swapping that MediaStream lets us feed the
+  // viewer from our own transport even when the native video pipeline is
+  // blocked.
+  function installSrcObjectHook() {
+    if (state.srcObjectHook) {
+      return true;
+    }
+    const proto = globalThis.HTMLMediaElement && globalThis.HTMLMediaElement.prototype;
+    if (!proto) {
+      return false;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "srcObject");
+    if (!descriptor || typeof descriptor.get !== "function" || typeof descriptor.set !== "function") {
+      return false;
+    }
+    state.originals.srcObject = descriptor;
+    Object.defineProperty(proto, "srcObject", {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get: function () {
+        return descriptor.get.call(this);
+      },
+      set: function (value) {
+        if (state.viewerOverride && state.viewerStream && this && this.tagName === "VIDEO") {
+          state.viewerSwaps += 1;
+          return descriptor.set.call(this, state.viewerStream);
+        }
+        return descriptor.set.call(this, value);
+      }
+    });
+    state.srcObjectHook = true;
+    return true;
+  }
+
+  function injectTestStream() {
+    const hook = installSrcObjectHook();
+    state.viewerOverride = true;
+    if (!state.viewerStream) {
+      state.viewerStream = makeTestStream();
+    }
+    let swapped = 0;
+    try {
+      for (const video of document.querySelectorAll("video")) {
+        if (video.srcObject) {
+          video.srcObject = video.srcObject;
+          swapped += 1;
+        }
+      }
+    } catch (_) {}
+    return { ok: !!state.viewerStream, hook: hook, swaps: state.viewerSwaps, existing: swapped };
+  }
+
+  function stopTestStream() {
+    state.viewerOverride = false;
+    state.viewerStream = null;
+    return { ok: true, swaps: state.viewerSwaps };
+  }
+
   function install() {
     installPutImageDataHook();
+    installSrcObjectHook();
     const voice = acquireEngine();
     if (voice) {
       installEngineHooks(voice);
@@ -99437,6 +99536,13 @@ if (!global.__discordStreamBridgeLoaded) {
 
   function dispose() {
     state.disposed = true;
+    state.viewerOverride = false;
+    try {
+      const mediaProto = globalThis.HTMLMediaElement && globalThis.HTMLMediaElement.prototype;
+      if (mediaProto && state.originals.srcObject) {
+        Object.defineProperty(mediaProto, "srcObject", state.originals.srcObject);
+      }
+    } catch (_) {}
     try {
       const proto = globalThis.CanvasRenderingContext2D && globalThis.CanvasRenderingContext2D.prototype;
       if (proto && typeof state.originals.putImageData === "function") {
@@ -99516,6 +99622,9 @@ if (!global.__discordStreamBridgeLoaded) {
       moduleKeys: moduleKeys(),
       engineKeys: engineKeys(),
       stores: Object.keys(findStores()),
+      srcObjectHook: state.srcObjectHook,
+      viewerOverride: state.viewerOverride,
+      viewerSwaps: state.viewerSwaps,
       goLivePatched: state.goLivePatched,
       goLiveError: state.goLiveError,
       enginePatched: state.enginePatched,
@@ -99559,6 +99668,8 @@ if (!global.__discordStreamBridgeLoaded) {
     experimentNames: experimentNames,
     rtcStats: rtcStats,
     setVideoCodec: setVideoCodec,
+    injectTestStream: injectTestStream,
+    stopTestStream: stopTestStream,
     forceGoLive: forceGoLive,
     store: () => findMediaStore(),
     engine: () => {
