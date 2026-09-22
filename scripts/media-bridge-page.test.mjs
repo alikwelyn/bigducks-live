@@ -85,7 +85,7 @@ const i18nProxy = new Proxy({}, {
   }
 });
 const engineConnections = new Set();
-const realEngine = { connections: engineConnections, connectionsEmpty: () => engineConnections.size === 0 };
+const realEngine = { connections: engineConnections, connectionsEmpty: () => engineConnections.size === 0, supports() { return false; } };
 class FakeMediaEngineStore {
   getGoLiveSource() { return null; }
   getMediaEngine() { return realEngine; }
@@ -147,6 +147,8 @@ if (realStore.supportsInApp("DESKTOP_CAPTURE") !== true) throw new Error("forceG
 if (realStore.supports("VIDEO") !== true) throw new Error("forceGoLive did not unlock supports(VIDEO)");
 if (realStore.supportsInApp("NOISE_SUPPRESSION") !== false) throw new Error("forceGoLive leaked to unrelated features");
 if (media.status().configPatched !== true) throw new Error("config store was not patched");
+if (media.status().enginePatched !== true) throw new Error("native engine was not patched");
+if (realEngine.supports("VIDEO") !== true) throw new Error("engine supports(VIDEO) was not forced");
 if (realConfigStore.getConfig({ location: "handleScreenshareUnavailable" }).videoEnabled !== true) {
   throw new Error("forceGoLive did not unlock config videoEnabled");
 }

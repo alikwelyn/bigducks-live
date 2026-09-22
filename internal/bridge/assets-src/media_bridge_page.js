@@ -45,8 +45,10 @@
     stores: null,
     webpackCache: null,
     disposed: false,
+    rescanned: false,
     goLivePatched: false,
     goLiveError: "",
+    enginePatched: false,
     configPatched: false,
     forceGoLive: false,
     forceCodec: null,
@@ -343,6 +345,12 @@
 
   function storeName(value) {
     try {
+      const proto = Object.getPrototypeOf(value);
+      const hasOwnName = !!proto && Object.getOwnPropertyNames(proto).indexOf("getName") !== -1;
+      const looksLikeStore = value && value.constructor && typeof value.constructor.name === "string" && /Store$/.test(value.constructor.name);
+      if (!hasOwnName && !looksLikeStore) {
+        return null;
+      }
       return typeof value.getName === "function" ? value.getName() : null;
     } catch (_) {
       return null;
@@ -672,9 +680,13 @@
   }
 
   function findCodecPrototype() {
-    try {
+    let connection = findStores().CodecConnection;
+    if (!connection && !state.rescanned) {
+      state.rescanned = true;
       rescanStores();
-      const connection = findStores().CodecConnection;
+      connection = findStores().CodecConnection;
+    }
+    try {
       if (connection) {
         const proto = typeof connection === "function" ? connection.prototype : Object.getPrototypeOf(connection);
         if (proto && typeof proto.getCodecOptions === "function") {
@@ -823,9 +835,42 @@
     return true;
   }
 
+  // The native media engine keeps its own appSupported set. Forcing the JS
+  // store is not always enough: the encoder pipeline asks the engine too.
+  function patchMediaEngine() {
+    if (state.enginePatched) {
+      return true;
+    }
+    const store = findStores().MediaEngineStore;
+    const engine = store ? store.getMediaEngine() : null;
+    if (!engine) {
+      return false;
+    }
+    let patched = false;
+    for (const method of ["supports", "supportsInApp"]) {
+      try {
+        if (typeof engine[method] !== "function") {
+          continue;
+        }
+        const original = engine[method];
+        state.originals["engine." + method] = { target: engine, original: original };
+        engine[method] = function (feature) {
+          if (state.forceGoLive && GOLIVE_FEATURES.indexOf(feature) !== -1) {
+            return true;
+          }
+          return original.apply(this, arguments);
+        };
+        patched = true;
+      } catch (_) {}
+    }
+    state.enginePatched = patched;
+    return patched;
+  }
+
   function forceGoLive(enabled) {
     state.forceGoLive = enabled !== false;
     patchMediaEngineStore();
+    patchMediaEngine();
     patchConfigStore();
     try {
       const config = findStores().AppConfigStore;
@@ -849,6 +894,7 @@
       installEngineHooks(voice);
     }
     patchMediaEngineStore();
+    patchMediaEngine();
     patchConfigStore();
     ensureRepaintLoop();
     if (!state.engine && !state.retryTimer) {
@@ -895,6 +941,14 @@
         } catch (_) {}
       }
     }
+    try {
+      for (const key of ["engine.supports", "engine.supportsInApp"]) {
+        const record = state.originals[key];
+        if (record && record.target) {
+          record.target[key.split(".")[1]] = record.original;
+        }
+      }
+    } catch (_) {}
     try {
       const codecOriginal = state.originals.getCodecOptions;
       const proto = findCodecPrototype();
@@ -952,6 +1006,7 @@
       stores: Object.keys(findStores()),
       goLivePatched: state.goLivePatched,
       goLiveError: state.goLiveError,
+      enginePatched: state.enginePatched,
       configPatched: state.configPatched,
       forceGoLive: state.forceGoLive,
       webpack: scanWebpack(),
