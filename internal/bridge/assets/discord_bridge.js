@@ -99091,6 +99091,32 @@ if (!global.__discordStreamBridgeLoaded) {
     return out;
   }
 
+  function experimentNames() {
+    const out = {};
+    try {
+      const store = findStores().ExperimentStore;
+      if (!store) {
+        return out;
+      }
+      const assignments = store.getAllExperimentAssignments() || {};
+      let registered = {};
+      try {
+        registered = store.getRegisteredExperiments() || {};
+      } catch (_) {}
+      for (const id of Object.keys(assignments)) {
+        const descriptor = registered[id] || {};
+        out[id] = {
+          bucket: assignments[id],
+          name: descriptor.name || descriptor.description || null,
+          kind: descriptor.kind || null
+        };
+      }
+    } catch (error) {
+      state.lastError = String(error);
+    }
+    return out;
+  }
+
   function scanWebpack() {
     if (state.webpackCache) {
       return state.webpackCache;
@@ -99220,6 +99246,7 @@ if (!global.__discordStreamBridgeLoaded) {
     dispose: dispose,
     stores: () => Object.keys(findStores()),
     experiments: experiments,
+    experimentNames: experimentNames,
     store: () => findMediaStore(),
     engine: () => {
       try {
