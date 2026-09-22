@@ -53,6 +53,7 @@
     auto: true,
     autoApplied: false,
     disableDave: true,
+    davePatched: false,
     xhrHook: false,
     experimentRewrites: 0,
     experimentRefetch: 0,
@@ -836,6 +837,19 @@
     }
     state.goLivePatched = patched;
     state.goLiveError = patched ? "" : "supports methods not found on prototype";
+    try {
+      if (typeof proto.getSupportedSecureFramesProtocolVersion === "function" && !state.originals.getSupportedSecureFramesProtocolVersion) {
+        const originalDave = proto.getSupportedSecureFramesProtocolVersion;
+        state.originals.getSupportedSecureFramesProtocolVersion = originalDave;
+        proto.getSupportedSecureFramesProtocolVersion = function () {
+          if (state.disableDave) {
+            return 0;
+          }
+          return originalDave.apply(this, arguments);
+        };
+        state.davePatched = true;
+      }
+    } catch (_) {}
     return patched;
   }
 
@@ -899,6 +913,19 @@
       } catch (_) {}
     }
     state.enginePatched = patched;
+    try {
+      if (typeof engine.getSupportedSecureFramesProtocolVersion === "function" && !state.originals["engine.supportedSecureFrames"]) {
+        const originalDave = engine.getSupportedSecureFramesProtocolVersion;
+        state.originals["engine.supportedSecureFrames"] = { target: engine, original: originalDave };
+        engine.getSupportedSecureFramesProtocolVersion = function () {
+          if (state.disableDave) {
+            return 0;
+          }
+          return originalDave.apply(this, arguments);
+        };
+        state.davePatched = true;
+      }
+    } catch (_) {}
     return patched;
   }
 
@@ -1344,6 +1371,19 @@
       }
     }
     try {
+      const daveOriginal = state.originals.getSupportedSecureFramesProtocolVersion;
+      const storeProto = (function () { try { const s = findStores().MediaEngineStore; return s ? Object.getPrototypeOf(s) : null; } catch (_) { return null; } })();
+      if (storeProto && typeof daveOriginal === "function") {
+        storeProto.getSupportedSecureFramesProtocolVersion = daveOriginal;
+      }
+    } catch (_) {}
+    try {
+      const engineDave = state.originals["engine.supportedSecureFrames"];
+      if (engineDave && engineDave.target) {
+        engineDave.target.getSupportedSecureFramesProtocolVersion = engineDave.original;
+      }
+    } catch (_) {}
+    try {
       for (const key of Object.keys(state.originals)) {
         if (key.indexOf("wv.") === 0) {
           const record = state.originals[key];
@@ -1424,6 +1464,7 @@
       dispatcherFound: state.dispatcherFound,
       incomingVideoForced: state.incomingVideoForced === true,
       disableDave: state.disableDave === true,
+      davePatched: state.davePatched === true,
       xhrHook: state.xhrHook === true,
       experimentRewrites: state.experimentRewrites,
       experimentRefetch: state.experimentRefetch,
