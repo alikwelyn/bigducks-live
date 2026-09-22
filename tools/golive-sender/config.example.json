@@ -1,0 +1,14 @@
+{
+  "token": "SEU_TOKEN_AQUI",
+  "guildId": "ID_DO_SERVIDOR",
+  "channelId": "ID_DO_CANAL_DE_VOZ",
+  "userId": "",
+  "source": "screen",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "bitrateKbps": 2500,
+  "maxBitrateKbps": 5000,
+  "encoder": "software",
+  "debug": false
+}

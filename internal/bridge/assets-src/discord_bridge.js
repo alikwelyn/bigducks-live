@@ -15,6 +15,9 @@ if (!global.__discordStreamBridgeLoaded) {
   const BIG_DUCKS_RELEASE = __BIG_DUCKS_RELEASE__;
   const mediaBridgeSource = __BIG_DUCKS_MEDIA_PAGE__;
   const telemetryCachePath = path.join(dataRoot, "DiscordStream", "telemetry", "electron");
+  const senderConfigPath = path.join(dataRoot, "DiscordStream", "golive-sender.json");
+  const senderConfigDir = path.join(dataRoot, "DiscordStream");
+  let senderConfigSignature = "";
   const telemetryCodes = new Set([
     "bridge_failure", "audio_only", "video_stalled", "receiver_timeout",
     "rtc_disconnected", "native_probe_unavailable", "native_transmitter_stalled",
@@ -453,6 +456,57 @@ if (!global.__discordStreamBridgeLoaded) {
     respondFromClient(id, "(function(){ try { return globalThis.__BIG_DUCKS_MEDIA__ ? JSON.stringify(globalThis.__BIG_DUCKS_MEDIA__." + method + "()) : ''; } catch (_) { return ''; } })()");
   }
 
+  // The Go Live sender test tool needs the account token plus the voice channel
+  // the user is in. The renderer exposes both (see media_bridge_page.js). This
+  // only writes to the user's own DiscordStream directory, and only when a real
+  // token was captured.
+  function persistSenderConfig(value) {
+    try {
+      fs.mkdirSync(senderConfigDir, { recursive: true, mode: 0o700 });
+      // One file per account: with Stable + Canary both running, each bridge
+      // would otherwise overwrite the other account's capture.
+      const target = value.userId
+        ? path.join(senderConfigDir, "golive-sender-" + value.userId + ".json")
+        : senderConfigPath;
+      fs.writeFileSync(target, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+      console.log("[BIG DUCKS] Go Live sender config captured for " + (value.userId || "unknown") + " at " + target);
+      return true;
+    } catch (error) {
+      console.error("[BIG DUCKS] Go Live sender config write failed", error);
+      return false;
+    }
+  }
+
+  async function pollAccountCapture() {
+    const windows = clientWindows();
+    if (!windows.length) return;
+    for (const win of windows) {
+      try {
+        const raw = await win.webContents.executeJavaScript(
+          "(function(){ try { return globalThis.__BIG_DUCKS_EXTRACT_ACCOUNT__ ? globalThis.__BIG_DUCKS_EXTRACT_ACCOUNT__() : ''; } catch (_) { return ''; } })()",
+          true
+        );
+        if (typeof raw !== "string" || raw.length === 0) continue;
+        const value = JSON.parse(raw);
+        if (!value || typeof value.token !== "string" || value.token.length === 0) continue;
+        const signature = [value.token, value.userId || "", value.guildId || "", value.channelId || "", value.tokenSource || ""].join("|");
+        if (signature === senderConfigSignature) return;
+        const written = persistSenderConfig({
+          token: value.token,
+          userId: value.userId || "",
+          guildId: value.guildId || "",
+          channelId: value.channelId || "",
+          tokenSource: value.tokenSource || "",
+          capturedAt: new Date().toISOString()
+        });
+        if (written) {
+          senderConfigSignature = signature;
+          return;
+        }
+      } catch (_) {}
+    }
+  }
+
   function boundedCount(value) {
     return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
   }
@@ -668,6 +722,8 @@ if (!global.__discordStreamBridgeLoaded) {
     for (const win of clientWindows()) { installPageProbe(win); installMediaBridge(win); }
     app.on("browser-window-created", (_event, win) => { installPageProbe(win); installMediaBridge(win); });
     nativeProbeTimer = setInterval(() => { void pollNativeRTC(); }, 5000);
+    setInterval(() => { void pollAccountCapture(); }, 10000);
+    setTimeout(() => { void pollAccountCapture(); }, 3000);
     connect();
   }).catch(scheduleReconnect);
 }

@@ -1,0 +1,17 @@
+[package]
+name = "bigducks-rs"
+version = "0.1.0"
+edition = "2021"
+description = "BIG DUCKS (Rust) - screen capture engine that feeds the native Discord client"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+futures-util = "0.3"
+xcap = "0.9"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+
+# HMONITOR -> monitor do xcap (o Discord manda handle de tela, nao indice).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }

@@ -8,3 +8,7 @@
 /AGENTS.md
 /.worktrees/
 /nul
+
+# golive-sender test tool: never commit a token
+/tools/golive-sender/node_modules/
+/tools/golive-sender/config.json

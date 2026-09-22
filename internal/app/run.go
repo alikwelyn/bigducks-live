@@ -406,6 +406,7 @@ func Run(ctx context.Context, options RunOptions) error {
 			return launchErr
 		}
 		logger.Printf("Discord started with protected routing during recovery")
+		injectCompanionBridges(config, bridgeReady, logger)
 		for _, companionErr := range discord.LaunchCompanions(config.DiscordRoot, pacURL, fullProxyURL) {
 			logger.Printf("could not start a secondary Discord install: %v", companionErr)
 		}
@@ -597,6 +598,32 @@ func runtimeAddress(port int, dynamic bool) string {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 }
 
+// injectCompanionBridges installs the reload bridge into every secondary Discord
+// install (Canary/PTB) so a client used as the Go Live viewer also runs the
+// automatic video-guard unlock and experiment refetch. The injection metadata
+// keeps one record per resources directory, so this does not disturb the primary
+// install.
+func injectCompanionBridges(config Config, bridgeReady bool, logger *logging.Logger) {
+	if !bridgeReady {
+		return
+	}
+	for _, root := range discord.CompanionRoots(config.DiscordRoot) {
+		path, findErr := discord.FindLatestFor(root, filepath.Base(root)+".exe")
+		if findErr != nil {
+			continue
+		}
+		resources := filepath.Join(filepath.Dir(path), "resources")
+		result, injectionErr := ensureInjectionWithRetry(4, func() (injection.Result, error) {
+			return injection.Ensure(resources, config.DataDir, bridge.Script())
+		})
+		if injectionErr != nil {
+			logger.Printf("could not install the reload bridge into %s: %v", filepath.Base(root), injectionErr)
+			continue
+		}
+		logger.Printf("%s injection state: %s%s", filepath.Base(root), result.State, reasonSuffix(result.Reason))
+	}
+}
+
 func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL string, dryRun, attach, preserveDiscord, bridgeReady bool, statusStore *runtimeStatusStore, logger *logging.Logger) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -671,6 +698,7 @@ func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL stri
 	} else if pacURL != "" {
 		logger.Printf("Discord started with gateway-only PAC routing")
 	}
+	injectCompanionBridges(config, bridgeReady, logger)
 	for _, companionErr := range discord.LaunchCompanions(config.DiscordRoot, pacURL, fullProxyURL) {
 		logger.Printf("could not start a secondary Discord install: %v", companionErr)
 	}

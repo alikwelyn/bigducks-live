@@ -1,0 +1,11 @@
+# O contexto do Dokploy e' a raiz do repo - sem isto ele manda tudo pro daemon,
+# incluindo target/ (centenas de MB) e os backups do Discord.
+**
+!rs/bigducks-rs/Cargo.toml
+!rs/bigducks-rs/Cargo.lock
+!rs/bigducks-rs/src/**
+!rs/bigducks-rs/web/**
+
+rs/bigducks-rs/target
+**/node_modules
+**/.git
