@@ -123,6 +123,10 @@ new Function(source)();
 const media = globalThis.__BIG_DUCKS_MEDIA__;
 if (!media) throw new Error("media bridge did not install");
 
+// Auto mode unlocks on install; turn it off to test the gate explicitly.
+media.setAuto(false);
+media.forceGoLive(false);
+
 const initial = media.summary();
 if (initial.engine !== true) throw new Error("engine acquisition failed: " + JSON.stringify(initial));
 if (initial.sinkHook !== true) throw new Error("addVideoOutputSink was not hooked");

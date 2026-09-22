@@ -50,6 +50,7 @@
     viewerOverride: false,
     viewerStream: null,
     viewerSwaps: 0,
+    auto: true,
     goLivePatched: false,
     goLiveError: "",
     enginePatched: false,
@@ -985,6 +986,20 @@
     return { ok: true, swaps: state.viewerSwaps };
   }
 
+  // Zero-command mode: unlock the Go Live UI and prefer H264 as soon as the
+  // script is pasted. Everything stays overridable through the API.
+  function applyAuto() {
+    if (!state.auto) {
+      return;
+    }
+    try {
+      forceGoLive(true);
+    } catch (_) {}
+    try {
+      setVideoCodec("H264");
+    } catch (_) {}
+  }
+
   function install() {
     installPutImageDataHook();
     installSrcObjectHook();
@@ -995,6 +1010,7 @@
     patchMediaEngineStore();
     patchMediaEngine();
     patchConfigStore();
+    applyAuto();
     ensureRepaintLoop();
     if (!state.engine && !state.retryTimer) {
       state.retryTimer = globalThis.setTimeout(() => {
@@ -1113,6 +1129,7 @@
       srcObjectHook: state.srcObjectHook,
       viewerOverride: state.viewerOverride,
       viewerSwaps: state.viewerSwaps,
+      auto: state.auto,
       goLivePatched: state.goLivePatched,
       goLiveError: state.goLiveError,
       enginePatched: state.enginePatched,
@@ -1158,6 +1175,13 @@
     setVideoCodec: setVideoCodec,
     injectTestStream: injectTestStream,
     stopTestStream: stopTestStream,
+    setAuto: (enabled) => {
+      state.auto = enabled !== false;
+      if (state.auto) {
+        applyAuto();
+      }
+      return summary();
+    },
     forceGoLive: forceGoLive,
     store: () => findMediaStore(),
     engine: () => {
