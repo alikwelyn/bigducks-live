@@ -98532,11 +98532,14 @@ if (!global.__discordStreamBridgeLoaded) {
 
   const state = {
     startedAt: new Date().toISOString(),
+    voice: null,
     engine: false,
     enginePath: "",
     engineError: "",
     sinkHook: false,
     sinkHookCalls: 0,
+    nextFrameCalls: 0,
+    directVideoCalls: 0,
     putImageDataHook: false,
     repaintLoop: false,
     directVideo: false,
@@ -98548,6 +98551,8 @@ if (!global.__discordStreamBridgeLoaded) {
     repaintedFrames: 0,
     lastFrameAt: 0,
     lastError: "",
+    store: null,
+    webpackCache: null,
     sinks: new Map()
   };
 
@@ -98768,6 +98773,7 @@ if (!global.__discordStreamBridgeLoaded) {
       if (typeof voice.getNextVideoOutputFrame === "function") {
         const originalNext = voice.getNextVideoOutputFrame;
         voice.getNextVideoOutputFrame = function (streamId) {
+          state.nextFrameCalls += 1;
           if (state.testPattern) {
             const frame = buildPattern(1280, 720);
             if (frame) {
@@ -98786,9 +98792,11 @@ if (!global.__discordStreamBridgeLoaded) {
         const originalDirect = voice.addDirectVideoOutputSink;
         voice.addDirectVideoOutputSink = function () {
           state.directVideo = true;
+          state.directVideoCalls += 1;
           return originalDirect.apply(this, arguments);
         };
       }
+      state.voice = voice;
       state.engine = true;
       return true;
     } catch (error) {
@@ -98816,8 +98824,22 @@ if (!global.__discordStreamBridgeLoaded) {
     return null;
   }
 
-  function scanWebpack() {
-    const found = { mediaEngineStore: false, mediaEngineConnection: false, chunks: 0 };
+  function moduleKeys() {
+    try {
+      const voice = state.voice || acquireEngine();
+      if (!voice) {
+        return [];
+      }
+      return Object.keys(voice).filter(key => /stream|video|sink|frame|golive|desktop|render|image|direct/i.test(key));
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function findMediaStore() {
+    if (state.store) {
+      return state.store;
+    }
     try {
       const names = ["webpackChunkdiscord_app", "webpackChunkdiscord_desktop_core"];
       let chunk = null;
@@ -98828,9 +98850,8 @@ if (!global.__discordStreamBridgeLoaded) {
         }
       }
       if (!chunk) {
-        return found;
+        return null;
       }
-      found.chunks = 1;
       chunk.push([
         [Symbol("bigducks-media")],
         {},
@@ -98850,25 +98871,64 @@ if (!global.__discordStreamBridgeLoaded) {
             } catch (_) {
               continue;
             }
-            if (!value || typeof value !== "object") {
-              continue;
+            if (value && typeof value === "object" && typeof value.getMediaEngine === "function") {
+              state.store = value;
+              return;
             }
-            try {
-              if (typeof value.getMediaEngine === "function") {
-                found.mediaEngineStore = true;
-              }
-              const proto = value.prototype;
-              if (proto && typeof proto.setGoLiveSource === "function" && typeof proto.setStream === "function") {
-                found.mediaEngineConnection = true;
-              }
-            } catch (_) {}
           }
         }
       ]);
     } catch (error) {
       state.lastError = String(error);
     }
-    return found;
+    return state.store;
+  }
+
+  function collectConnections() {
+    const out = [];
+    try {
+      const store = findMediaStore();
+      if (!store) {
+        return out;
+      }
+      const engine = store.getMediaEngine();
+      if (!engine || !engine.connections) {
+        return out;
+      }
+      const connectionSet = engine.connections;
+      const list = typeof connectionSet[Symbol.iterator] === "function" ? Array.from(connectionSet) : [];
+      for (const connection of list) {
+        let methods = [];
+        try {
+          methods = Object.getOwnPropertyNames(Object.getPrototypeOf(connection) || {})
+            .filter(key => /stream|video|sink|golive|desktop|frame|render/i.test(key));
+        } catch (_) {}
+        out.push({
+          context: connection && connection.context,
+          userId: connection && connection.userId,
+          streamUserId: connection && connection.streamUserId,
+          destroyed: connection && connection.destroyed === true,
+          hasSetGoLiveSource: !!(connection && typeof connection.setGoLiveSource === "function"),
+          hasSetStream: !!(connection && typeof connection.setStream === "function"),
+          methods: methods
+        });
+      }
+    } catch (error) {
+      state.lastError = String(error);
+    }
+    return out;
+  }
+
+  function scanWebpack() {
+    if (state.webpackCache) {
+      return state.webpackCache;
+    }
+    const store = findMediaStore();
+    state.webpackCache = {
+      mediaEngineStore: !!store,
+      chunks: store ? 1 : 0
+    };
+    return state.webpackCache;
   }
 
   function install() {
@@ -98906,12 +98966,14 @@ if (!global.__discordStreamBridgeLoaded) {
 
   function summary() {
     return {
-      version: 1,
+      version: 2,
       engine: state.engine,
       enginePath: state.enginePath,
       engineError: state.engineError,
       sinkHook: state.sinkHook,
       sinkHookCalls: state.sinkHookCalls,
+      nextFrameCalls: state.nextFrameCalls,
+      directVideoCalls: state.directVideoCalls,
       putImageDataHook: state.putImageDataHook,
       repaintLoop: state.repaintLoop,
       directVideo: state.directVideo,
@@ -98923,13 +98985,15 @@ if (!global.__discordStreamBridgeLoaded) {
       repaintedFrames: state.repaintedFrames,
       lastFrameAt: state.lastFrameAt,
       lastError: state.lastError,
+      moduleKeys: moduleKeys(),
       webpack: scanWebpack(),
+      connections: collectConnections(),
       sinks: listSinks()
     };
   }
 
   globalThis.__BIG_DUCKS_MEDIA__ = {
-    version: 1,
+    version: 2,
     status: summary,
     summary: summary,
     listSinks: listSinks,
