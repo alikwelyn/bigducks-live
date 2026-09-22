@@ -63,6 +63,11 @@
         if (typeof originalPush !== "function") return;
         value.push = function (chunk) {
           try {
+            // Captura as FABRICAS antes de serem registradas/executadas (mesma
+            // tecnica do plugins.js / HANDOFF 6.4): a store de stream e a do
+            // canal de voz sao chunks LAZY, podem nascer depois de qualquer
+            // varredura do cache.
+            try { captureFactories(chunk && chunk[1]); } catch {}
             if (!wreq && Array.isArray(chunk) && typeof chunk[2] === "function") {
               const originalCallback = chunk[2];
               chunk[2] = function (require) {
@@ -118,6 +123,11 @@
       for (const value of values) {
         try {
           if (value && typeof value === "object" && typeof value.dispatch === "function" && typeof value.subscribe === "function") return value;
+          // Shape alternativo (o que o unlock manual acha no note): o dispatcher
+          // real tem _actionHandlers._orderedActionHandlers - e existe casos
+          // (minificado/lazy) em que o subscribe nao aparece como function.
+          if (value && typeof value === "object" && typeof value.dispatch === "function"
+            && value._actionHandlers && value._actionHandlers._orderedActionHandlers) return value;
         } catch {}
       }
       for (const candidate of [exports, exports.default]) {
@@ -251,15 +261,21 @@
     const dispatcher = findDispatcher();
     if (!dispatcher) return false;
     let ok = false;
+    // variantId 0 E -1: o teste manual no note liberou com -1 (sem variante) -
+    // e ha caminho (cache de experimento ja carregado com variante bloqueada)
+    // em que 0 nao pega. Mandar os dois tipos com os dois valores custa nada
+    // e cobre os dois caminhos.
     for (const type of ['APEX_EXPERIMENT_SESSION_OVERRIDE_CREATE', 'APEX_EXPERIMENT_OVERRIDE_CREATE']) {
-      try {
-        dispatcher.dispatch({ type, experimentName: VIDEO_GUARD, variantId: 0 });
-        ok = true;
-      } catch {}
+      for (const variantId of [0, -1]) {
+        try {
+          dispatcher.dispatch({ type, experimentName: VIDEO_GUARD, variantId });
+          ok = true;
+        } catch {}
+      }
     }
     if (ok) {
       unlocked = true;
-      report('unlock', { tries: unlockTries });
+      report('unlock', { tries: unlockTries, via: 'dispatch' });
       log('botao Go Live liberado (override do experimento)');
     }
     return ok;
@@ -512,6 +528,10 @@
         set(value) {
           try {
             if (receiving && this && this.tagName === "VIDEO") {
+              // O video do NOSSO painel fallback: o hook nunca mexe nele -
+              // trocar o srcObject dele gerava hidePanel -> ensurePanel -> hide
+              // em LOOP (o spam de panel-hidden que inundava o hub).
+              if (this === videoEl) return originalSet.call(this, value);
               const isStream = typeof MediaStream !== "undefined" && value instanceof MediaStream;
               const isClearing = value === null || value === undefined;
               // Troca o stream do Discord pelo nosso; deixa o "limpar" passar.
@@ -617,7 +637,10 @@
     panel.remove();
     panel = null;
     videoEl = null;
-    report("panel-hidden", {});
+    // reportOnce: o caminho antigo reportava TODA chamada - com o ciclo de vida
+    // reaberto o hide entrava em loop e o spam enchia o broadcast do hub
+    // (buffer 64), derrubando answer/ICE reais por lag.
+    reportOnce("panel-hidden", {});
   }
 
   function showPanel(stream) {
@@ -785,27 +808,188 @@
     return null;
   }
 
+  // ---- captura as FABRICAS do webpack (o modulo pode nascer DEPOIS) ---------
+  //
+  // A varredura do cache (require.c) so enxerga modulos JA EXECUTADOS. A store
+  // de stream ativo e um chunk LAZY: numa rodada real o boot viu 69 modulos
+  // ("engine-scan scanned:69") e a store nunca apareceu - porque ela so e
+  // carregada quando a UI de call abre, muito depois do scan de boot. Entao,
+  // alem de varrer o cache A CADA poll (sem cachear o "nao achei"), a gente
+  // REUSA o mecanismo que ja funciona no plugins.js (HANDOFF 6.4): um gancho no
+  // push do webpack, instalado antes dos chunks rodarem. Quando chega uma fabrica
+  // cujo codigo cita a assinatura, ela e EMBRULHADA - e no momento em que executa
+  // a gente guarda os exports. Assim o objeto fica acessivel mesmo sem aparecer
+  // na varredura.
+  const STORE_SIGNATURE = "getCurrentUserActiveStream";
+  const VOICE_SIGNATURE = "getVoiceChannelId";
+
+  function capture() {
+    try {
+      return globalThis.__bdCapture || (globalThis.__bdCapture = {
+        store: { ids: [], candidates: [] },
+        voice: { ids: [], candidates: [] },
+      });
+    } catch { return null; }
+  }
+
+  // Acha a store de stream ativo dentro de um namespace webpack. `trusted` =
+  // veio de uma fabrica que CITA a assinatura: pula o filtro de proxy, porque a
+  // store real pode vir embrulhada e o isProxyLike a descartaria.
+  function findStoreIn(value, depth, trusted) {
+    if (!value || typeof value !== "object" || depth > 2) return null;
+    if (!trusted && isProxyLike(value)) return null;
+    try {
+      if (typeof value.getCurrentUserActiveStream === "function"
+        && typeof value.getAllActiveStreams === "function") return value;
+    } catch {}
+    let values;
+    try { values = [value.default].concat(Object.values(value)); } catch { values = []; }
+    for (const child of values) {
+      if (!child || typeof child !== "object") continue;
+      const hit = findStoreIn(child, depth + 1, trusted);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  // Idem para a store do canal de voz (o id que vira a SALA do relay).
+  function findVoiceIn(value, depth, trusted) {
+    if (!value || typeof value !== "object" || depth > 2) return null;
+    if (!trusted && isProxyLike(value)) return null;
+    try {
+      if (typeof value.getVoiceChannelId === "function") return value;
+      if (typeof value.getCurrentVoiceChannelId === "function") return value;
+    } catch {}
+    let values;
+    try { values = [value.default].concat(Object.values(value)); } catch { values = []; }
+    for (const child of values) {
+      if (!child || typeof child !== "object") continue;
+      const hit = findVoiceIn(child, depth + 1, trusted);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  // Roda no PUSH, ANTES de o modulo ser registrado e executado.
+  function captureFactories(modules) {
+    if (!modules || typeof modules !== "object") return;
+    const reg = capture();
+    if (!reg) return;
+    for (const id of Object.keys(modules)) {
+      const factory = modules[id];
+      if (typeof factory !== "function" || factory.__bdCaptured) continue;
+      let source;
+      try { source = Function.prototype.toString.call(factory); } catch { continue; }
+      const wantsStore = source.indexOf(STORE_SIGNATURE) !== -1;
+      const wantsVoice = source.indexOf(VOICE_SIGNATURE) !== -1;
+      if (!wantsStore && !wantsVoice) continue;
+
+      if (wantsStore && reg.store.ids.indexOf(id) === -1) reg.store.ids.push(id);
+      if (wantsVoice && reg.voice.ids.indexOf(id) === -1) reg.voice.ids.push(id);
+      report("store-factory", { module: String(id), store: wantsStore, voice: wantsVoice });
+
+      // Embrulha mantendo a assinatura (module, exports, require): no retorno a
+      // gente le os exports NA HORA da execucao da fabrica.
+      try {
+        modules[id] = function (module, exports, require) {
+          const result = factory.apply(this, arguments);
+          try {
+            if (wantsStore) {
+              const hit = findStoreIn(exports, 0, true) || findStoreIn(result, 0, true);
+              if (hit && reg.store.candidates.indexOf(hit) === -1) {
+                reg.store.candidates.push(hit);
+                report("store-captured", { module: String(id), via: "execucao" });
+              }
+            }
+            if (wantsVoice) {
+              const hit = findVoiceIn(exports, 0, true) || findVoiceIn(result, 0, true);
+              if (hit && reg.voice.candidates.indexOf(hit) === -1) {
+                reg.voice.candidates.push(hit);
+                report("voice-captured", { module: String(id), via: "execucao" });
+              }
+            }
+          } catch {}
+          return result;
+        };
+        modules[id].__bdCaptured = true;
+      } catch {}
+    }
+  }
+
+  let lastStoreScan = { scanned: 0, cache: 0, ids: 0, captured: 0, found: false, error: "" };
+  let lastStoreScanAt = 0;
+
+  // (a) NAO ha cache aqui: e re-rodada a CADA poll. (b) os candidatos capturados
+  // na execucao da fabrica vem primeiro; se nada, varre o cache executado.
   function findStreamStore() {
+    lastStoreScanAt = Date.now();
+    lastStoreScan = { scanned: 0, cache: 0, ids: 0, captured: 0, found: false, error: "" };
+
+    const reg = capture();
+    if (reg) {
+      lastStoreScan.ids = reg.store.ids.length;
+      lastStoreScan.captured = reg.store.candidates.length;
+      for (const candidate of reg.store.candidates) {
+        const hit = findStoreIn(candidate, 0, true);
+        if (hit) { lastStoreScan.found = true; return hit; }
+      }
+    }
+
     const require = webpackRequire();
-    if (!require || !require.c) return null;
-    for (const id of Object.keys(require.c)) {
+    if (!require || !require.c) { lastStoreScan.error = "no-webpack"; return null; }
+    const ids = Object.keys(require.c);
+    lastStoreScan.cache = ids.length;
+    for (const id of ids) {
       let exports;
       try { exports = require.c[id] && require.c[id].exports; } catch { continue; }
       if (!exports || typeof exports !== "object") continue;
       if (isProxyLike(exports)) continue;
-      let values;
-      try { values = [exports, exports.default].concat(Object.values(exports)); } catch { continue; }
-      for (const candidate of values) {
-        if (!candidate || typeof candidate !== "object") continue;
-        if (isProxyLike(candidate)) continue;
+      lastStoreScan.scanned += 1;
+      const hit = findStoreIn(exports, 0, false);
+      if (hit) { lastStoreScan.found = true; return hit; }
+    }
+    // (c) ultimo recurso: os ids vistos no push - o modulo pode ter executado
+    // entre a varredura e agora.
+    if (reg && reg.store.ids.length) {
+      for (const id of reg.store.ids) {
         try {
-          if (typeof candidate.getCurrentUserActiveStream !== "function") continue;
-          if (typeof candidate.getAllActiveStreams !== "function") continue;
-          return candidate;
+          const mod = require.c && require.c[id];
+          const hit = mod && findStoreIn(mod.exports, 0, true);
+          if (hit) { lastStoreScan.found = true; return hit; }
         } catch {}
       }
     }
     return null;
+  }
+
+  // (c) resumo do que foi procurado e visto - pra falha ser diagnosticavel pelo
+  // log do motor sozinho (antes era um "no-store" mudo).
+  function storeScanSummary() {
+    const s = lastStoreScan;
+    return "scanned=" + s.scanned + " cache=" + s.cache + " fabricas=" + s.ids
+      + " capturados=" + s.captured + " found=" + s.found + (s.error ? " err=" + s.error : "");
+  }
+
+  // (a)+(c): garante uma varredura por poll mesmo quando o tryNativeCapture sai
+  // cedo, e reporta o resumo - na mudanca de estado e, enquanto NAO achar, a cada
+  // 10s (pra uma falha ser diagnosticavel so pelo log do motor).
+  let lastStoreDiagAt = 0;
+  let lastStoreFound = false;
+  function pollStore() {
+    // Se o tryNativeCapture varreu agora, aproveita; senao varre aqui.
+    if (Date.now() - lastStoreScanAt > 2500) { try { findStreamStore(); } catch {} }
+    const found = lastStoreScan.found;
+    const now = Date.now();
+    if (found !== lastStoreFound) {
+      lastStoreFound = found;
+      lastStoreDiagAt = now;
+      report("store-scan", { summary: storeScanSummary(), publishingNative });
+      return;
+    }
+    if (!found && now - lastStoreDiagAt >= 10000) {
+      lastStoreDiagAt = now;
+      report("store-scan", { summary: storeScanSummary(), publishingNative });
+    }
   }
 
   // Modulo nativo de voz do Discord (a MESMA engine que o cliente usa).
@@ -852,23 +1036,19 @@
   // compartilhar de novo sem reiniciar o Discord.
   function checkStreamStopped() {
     if (!publishingNative) return;
+    // SEM STORE NAO HA DECISAO: store ausente (o caso conhecido) e diferente de
+    // "live encerrada". O bug anterior tratava stream=null como fim de live e
+    // MATAVA o publicador 2s depois do handshake (o native-stopped do log -
+    // exatamente quando a store nunca e achada). So para quando a store EXISTE
+    // e diz explicitamente que nao ha stream ativo.
+    let store = null;
+    try { store = findStreamStore(); } catch { return; }
+    if (!store) return;
     let stream = null;
-    try {
-      const store = findStreamStore();
-      stream = store ? store.getCurrentUserActiveStream() : null;
-    } catch {
-      return; // erro de leitura: nao decide nada
-    }
+    try { stream = store.getCurrentUserActiveStream(); } catch { return; }
     if (stream) return;
-    publishingNative = false;
-    feedPublishing = false;
-    publishing = null;
-    lastSourceSent = "";
-    try { if (peer) peer.close(); } catch {}
-    peer = null;
-    try { if (feedSocket) feedSocket.close(); } catch {}
-    feedSocket = null;
-    report("native-stopped", {});
+    forceStopPublishing();
+    report("native-stopped", { via: "store" });
   }
 
   // ------------------------------------------------- fonte escolhida ------
@@ -1310,7 +1490,7 @@
     lastNativeTry = now;
 
     const store = findStreamStore();
-    if (!store) { notePoll("no-store"); return; }
+    if (!store) { notePoll("no-store " + storeScanSummary()); return; }
     // eslint-disable-next-line no-unused-vars
     let stream = null;
     try { stream = store.getCurrentUserActiveStream(); } catch (error) { notePoll("stream-error:" + (error && error.message)); return; }
@@ -1402,7 +1582,7 @@
   function activeStreamInfo() {
     try {
       const store = findStreamStore();
-      if (!store) return "no-store";
+      if (!store) return "no-store " + storeScanSummary();
       const stream = store.getCurrentUserActiveStream();
       if (!stream) return "no-stream";
       return Object.keys(stream).slice(0, 14).join(",");
@@ -1479,30 +1659,69 @@
   // Bitrate da live. O painel de qualidade do Discord manda o valor (preload ->
   // motor -> hub) e a gente aplica no sender, ao vivo.
   let streamBitrate = 12_000_000;
+  let streamFps = 30;
 
-  async function applyBitrate(bitrate) {
+  async function applyBitrate(bitrate, fps) {
     if (!bitrate || bitrate < 100_000) return;
     streamBitrate = bitrate;
+    if (fps && fps > 0) streamFps = Math.min(120, Math.round(fps));
     try {
       if (!peer || typeof peer.getSenders !== "function") return;
       for (const sender of peer.getSenders()) {
         if (!sender.track || sender.track.kind !== "video") continue;
         const params = sender.getParameters();
         if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-        params.encodings[0].maxBitrate = bitrate;
-        params.encodings[0].maxFramerate = 30;
+        params.encodings[0].maxBitrate = streamBitrate;
+        // O fps vem do painel/UI (era fixo em 30 aqui - prendia o 60).
+        params.encodings[0].maxFramerate = streamFps;
         params.degradationPreference = "maintain-resolution";
         await sender.setParameters(params);
       }
-      report("bitrate", { bitrate });
+      report("bitrate", { bitrate: streamBitrate, fps: streamFps });
     } catch (error) {
+      // Transitorio (sender ainda sem getParameters): a proxima settings message
+      // reaplica. Nao e fatal - os encodings ja nascem certos na oferta.
       reportOnce("bitrate-failed", { error: String(error && error.message).slice(0, 120) });
     }
   }
 
+  // Um stream-start/stop com o NOSSO pid e o ciclo de vida da live SEM a store:
+  // o preload ve a fonte escolhida (setDesktopSourceWithOptions) e o reset
+  // (encodingVideoWidth=0), o motor roteia e so a janela certa age.
+  function isMyLifecycle(message) {
+    return String(message.data || "") !== ""
+      && String(message.data) === String(globalThis.__bdWinPid || "");
+  }
+
+  function forceStopPublishing() {
+    if (!publishingNative && !publishing) return;
+    publishingNative = false;
+    feedPublishing = false;
+    publishing = null;
+    try { if (peer) peer.close(); } catch {}
+    peer = null;
+    try { if (feedSocket) feedSocket.close(); } catch {}
+    feedSocket = null;
+    report('native-stopped', { via: 'lifecycle' });
+  }
+
   async function onHub(message) {
+    if (message.type === 'stream-start') {
+      if (isMyLifecycle(message)) { report('lifecycle-accepted', 'start'); void publishFeed(); }
+      return;
+    }
+    if (message.type === 'stream-stop') {
+      if (isMyLifecycle(message)) { report('lifecycle-accepted', 'stop'); forceStopPublishing(); }
+      return;
+    }
+    if (message.type === 'remote-ready') {
+      // A ponte pro relay (re)conectou. Se nao estou publicando, peco a oferta
+      // de novo - a anterior pode ter morrido dentro do tunel morto.
+      if (!publishing) send({ type: 'request-offer' });
+      return;
+    }
     if (message.type === 'settings') {
-      await applyBitrate(message.bitrate);
+      await applyBitrate(message.bitrate, message.fps);
       return;
     }
     if (message.type === 'offer') {
@@ -1560,10 +1779,23 @@
         // Tela e conteudo de detalhe: evita o encoder "borrar" para economizar.
         if (track.kind === "video") track.contentHint = "detail";
       } catch {}
-      peer.addTrack(track, stream);
+      // Video entra por addTransceiver com os ENCODINGS na OFERTA - o
+      // applyBitrate pos-negociacao falhava ("getParameters() has never been
+      // called") quando chegava antes da negociação (o bitrate-failed do log).
+      if (track.kind === "video") {
+        try {
+          peer.addTransceiver(track, {
+            direction: "sendonly",
+            streams: [stream],
+            sendEncodings: [{ maxBitrate: streamBitrate, maxFramerate: Math.min(120, streamFps || 30) }],
+          });
+        } catch { peer.addTrack(track, stream); }
+      } else {
+        peer.addTrack(track, stream);
+      }
     }
     // O padrao do WebRTC e ~2 Mbps: fica horrivel em 720p/1080p.
-    await applyBitrate(streamBitrate);
+    await applyBitrate(streamBitrate, streamFps);
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
     send({ type: 'offer', sdp: peer.localDescription.sdp });
@@ -1715,35 +1947,115 @@
   // esta na mesma call cai na mesma sala, sem configurar nada. O preload le
   // isto (globalThis.__bdRoom) e monta a URL do relay.
   let voiceStore = null;
+  let voiceScan = { scanned: 0, cache: 0, ids: 0, captured: 0, error: "" };
+  // Um id de canal do Discord e sempre um snowflake numerico. Exigir isso evita
+  // aceitar lixo (um Proxy devolve "function ..." pra qualquer chave, por ex.).
+  const SNOWFLAKE = /^\d{5,25}$/;
 
+  function voiceMethodOf(store) {
+    for (const name of ["getVoiceChannelId", "getCurrentVoiceChannelId"]) {
+      try { if (typeof store[name] === "function") return name; } catch (_) {}
+    }
+    return "";
+  }
+  function voiceIdOf(store) {
+    const method = voiceMethodOf(store);
+    if (!method) return null;
+    try { return { method, id: String(store[method]() || "") }; }
+    catch (_) { return null; }
+  }
+
+  // O modulo do canal de voz e um chunk LAZY (igual a store de stream): captura
+  // na execucao da fabrica, depois cache, depois varredura - e PREFERE uma store
+  // que de fato devolve um canal (senao a primeira que aparecesse podia ser uma
+  // que sempre responde vazio, e a sala nunca subia).
   function findVoiceChannelStore() {
-    if (voiceStore) return voiceStore;
+    voiceScan = { scanned: 0, cache: 0, ids: 0, captured: 0, error: "" };
+    let fallback = null;
+
+    const consider = (hit) => {
+      if (!hit) return null;
+      const probe = voiceIdOf(hit);
+      if (probe && SNOWFLAKE.test(probe.id)) { voiceStore = hit; return hit; }
+      if (!fallback) fallback = hit;
+      return null;
+    };
+
+    const reg = capture();
+    if (reg) {
+      voiceScan.ids = reg.voice.ids.length;
+      voiceScan.captured = reg.voice.candidates.length;
+      for (const candidate of reg.voice.candidates) {
+        const hit = consider(findVoiceIn(candidate, 0, true));
+        if (hit) return hit;
+      }
+    }
+    // Cache so vale enquanto ele ainda reporta sala; senao deixa achar outra.
+    if (voiceStore) {
+      const probe = voiceIdOf(voiceStore);
+      if (probe && SNOWFLAKE.test(probe.id)) return voiceStore;
+    }
+
     const require = webpackRequire();
-    if (!require || !require.c) return null;
+    if (!require || !require.c) { voiceScan.error = "no-webpack"; return fallback; }
+    voiceScan.cache = Object.keys(require.c).length;
     for (const id of Object.keys(require.c)) {
       let exports;
       try { exports = require.c[id] && require.c[id].exports; } catch (_) { continue; }
       if (!exports || typeof exports !== "object") continue;
-      for (const candidate of exportValues(exports)) {
-        if (!candidate || typeof candidate !== "object" || isProxyLike(candidate)) continue;
+      if (isProxyLike(exports)) continue;
+      voiceScan.scanned += 1;
+      const hit = consider(findVoiceIn(exports, 0, false));
+      if (hit) return hit;
+    }
+    if (reg && reg.voice.ids.length) {
+      for (const id of reg.voice.ids) {
         try {
-          if (typeof candidate.getVoiceChannelId === "function") {
-            voiceStore = candidate;
-            return candidate;
-          }
+          const mod = require.c && require.c[id];
+          const hit = consider(mod && findVoiceIn(mod.exports, 0, true));
+          if (hit) return hit;
         } catch (_) {}
       }
     }
-    return null;
+    if (fallback) voiceStore = fallback;
+    return fallback;
+  }
+
+  // Publica globalThis.__bdRoom (o preload le daqui) e NUNCA falha em silencio:
+  // grava tambem __bdRoomDiag com o que foi procurado, pra quando der errado.
+  let lastRoomDiag = "";
+  let lastRoomDiagAt = 0;
+  function reportRoomDiag(diag) {
+    const now = Date.now();
+    if (diag === lastRoomDiag && now - lastRoomDiagAt < 15000) return;
+    lastRoomDiag = diag;
+    lastRoomDiagAt = now;
+    report("voice-room-diag", { diag });
   }
 
   function publishRoom() {
     try {
       const store = findVoiceChannelStore();
-      if (!store) return;
-      const id = String(store.getVoiceChannelId() || "");
-      if (globalThis.__bdRoom !== id) globalThis.__bdRoom = id;
-    } catch (_) {}
+      if (!store) {
+        const diag = "store ausente | scanned=" + voiceScan.scanned + " cache=" + voiceScan.cache
+          + " fabricas=" + voiceScan.ids + " capturados=" + voiceScan.captured
+          + (voiceScan.error ? " err=" + voiceScan.error : "");
+        if (globalThis.__bdRoomDiag !== diag) globalThis.__bdRoomDiag = diag;
+        reportRoomDiag(diag);
+        return;
+      }
+      const probe = voiceIdOf(store);
+      if (!probe || !probe.method) { reportRoomDiag("store achada sem metodo de canal"); return; }
+      // So publica se for um snowflake de verdade - string vazia = fora da call.
+      const id = SNOWFLAKE.test(probe.id) ? probe.id : "";
+      if (globalThis.__bdRoom !== id) {
+        globalThis.__bdRoom = id;
+        report("voice-room", { room: id || "(vazio)", method: probe.method, raw: probe.id.slice(0, 40) });
+      }
+      globalThis.__bdRoomDiag = id ? (probe.method + " -> " + id) : (probe.method + " -> vazio");
+    } catch (error) {
+      reportOnce("voice-room-erro", { error: String((error && error.message) || error).slice(0, 120) });
+    }
   }
 
   function boot() {
@@ -1774,7 +2086,10 @@
       })
       .catch(() => {});
     // O dispatcher so aparece depois que o Discord carrega; tenta algumas vezes
-    // e para. O override em si acontece UMA vez.
+    // e para. O override em si acontece UMA vez. No note o dispatcher demorou
+    // mais que 12x2.5s pra nascer (o usuario precisou colar na mao) - agora sao
+    // 60 tentativas de 2.5s (2.5 min), e mesmo depois do fim do loop o poll de
+    // 2s chama unlock de novo enquanto unlocked=false.
     let bootTries = 0;
     const timer = setInterval(() => {
       wrapRequireModule();
@@ -1783,7 +2098,7 @@
       wrapDispatch();
       wrapVoiceModule();
       bootTries += 1;
-      if ((unlocked && requireModuleWrapped && mediaEngineWrapped && dispatchWrapped) || bootTries >= 12) { clearInterval(timer); return; }
+      if ((unlocked && requireModuleWrapped && mediaEngineWrapped && dispatchWrapped) || bootTries >= 60) { clearInterval(timer); return; }
       unlock();
     }, 2500);
     unlock();
@@ -1802,15 +2117,35 @@
   // cresceram (janela redimensionada) e escoa os avisos "uma vez so" que
   // ficaram na fila esperando o socket do hub.
   setInterval(() => { positionCover(); retryPendingVideos(); flushOnce(); }, 1200);
+  // O erro 2012 ("nao foi possivel transmitir") e renderizado PELO Discord
+  // DEPOIS da injecao - esconder so no momento do hook nao basta. Enquanto
+  // existir stream ativo, limpa o aviso continuamente: o video que fica por
+  // baixo e o nosso (P2P), o aviso e lixo do envio nativo que falhou no
+  // servidor - irrelevante por design.
+  setInterval(() => {
+    if (!receiving) return;
+    try {
+      const video = (injectedVideo && injectedVideo.isConnected) ? injectedVideo : findStreamVideo();
+      if (video) hideStreamError(video);
+      for (const video of pendingVideos) {
+        if (video.isConnected) hideStreamError(video);
+      }
+    } catch {}
+  }, 2000);
   // Enquanto o usuario estiver com uma live ativa, pega a propria trilha e publica.
   setInterval(() => {
     try {
       publishRoom();
       checkStreamStopped();
       tryNativeCapture();
+      // Sem dispatcher/unlock ate agora? Segue tentando - no note o dispatcher
+      // nasceu tarde demais e o botao nunca destravou sozinho.
+      if (!unlocked) unlock();
     } catch (error) {
       reportOnce("native-poll-error", { error: String((error && (error.stack || error.message)) || error).slice(0, 200) });
     }
+    // (a) varredura da store por poll + resumo periodico no log do motor.
+    try { pollStore(); } catch (_) {}
   }, 2000);
 
   if (document.readyState === 'complete' || document.readyState === 'interactive') boot();

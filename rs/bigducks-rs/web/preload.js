@@ -106,8 +106,71 @@ function extractSettings(object, depth, out) {
   return result;
 }
 
+// ---------------------------------------------------------------- ciclo de vida da live ----
+//
+// A store de stream do Discord nao e capturavel nessa build (getCurrentUserActiveStream
+// nao esta nos exports - "capturados=0" no log). Entao o gatilho de publicar/parar o
+// P2P passa a ser o que o PRELOAD ja ve de graca:
+//
+//   START: setDesktopSourceWithOptions com id nao-vazio (a fonte foi escolhida no modal)
+//   STOP : setTransportOptions com encodingVideoWidth=0 (o Discord zera a live)
+//
+// O motor roteia a mensagem pra janela certa (data = pid do renderer): so a janela
+// que transmite publica, e o loop de P2P inteiro funciona SEM a store.
+
+let lastSeenEncWidth = -1;
+let lifecycleStarted = false;
+let pendingStop = null;
+
+function streamLifecycle(state) {
+  lifecycleStarted = state === "start" ? true : (state === "stop" ? false : lifecycleStarted);
+  try {
+    const request = http.get(
+      "http://127.0.0.1:" + PORT + "/bridge-event?name=stream-" + state + "&data=" + encodeURIComponent(String(process.pid)),
+      (response) => response.resume()
+    );
+    request.on("error", () => {});
+    request.setTimeout(1500, () => request.destroy());
+  } catch (_) {}
+  report("stream-lifecycle", state);
+}
+
+function detectStreamLifecycle(object, label) {
+  try {
+    if (!object || typeof object !== "object" || label !== "setTransportOptions") return;
+    for (const key of Object.keys(object)) {
+      if (!/^encodingvideowidth$/i.test(key)) continue;
+      const width = Number(object[key]);
+      if (!Number.isFinite(width)) return;
+      const was = lastSeenEncWidth;
+      lastSeenEncWidth = width;
+      if (width > 0) {
+        // RENEGOCIACAO: o Discord zera e reconfigura em seguida (medido no log:
+        // width=0 com fps=120, e logo depois as opcoes reais). Cancela qualquer
+        // stop pendente - so e "fim de live" se o 0 PERSISTIR.
+        if (pendingStop) { clearTimeout(pendingStop); pendingStop = null; }
+        if (width !== was && lifecycleStarted) {
+          // reconfiguracao mudou o tamanho: nada a fazer, o start ja saiu.
+        }
+        return;
+      }
+      // width=0: so e stop se a live JA comecou - e mesmo assim aguarda
+      // CONFIRMACAO (3s sem volta de width>0). O zero da negociacao chega
+      // seguido de reconfiguracao em menos de um segundo.
+      if (was > 0 && lifecycleStarted && !pendingStop) {
+        pendingStop = setTimeout(() => {
+          pendingStop = null;
+          streamLifecycle("stop");
+        }, 3000);
+      }
+      return;
+    }
+  } catch (_) {}
+}
+
 function sendSettings(object, label) {
   try {
+    detectStreamLifecycle(object, label);
     const found = extractSettings(object, 0);
     const keys = Object.keys(found);
     if (!keys.length) return;
@@ -166,6 +229,8 @@ function decorateConnection(connection) {
         report("setDesktopSourceWithOptions", brief(options));
         sendSource(sourceValue(id, options && options.type));
         sendSettings(options, "captura");
+        // START do ciclo de vida: a fonte foi escolhida no modal (id nao-vazio).
+        if (id != null && String(id) !== "") streamLifecycle("start");
         return original.apply(this, arguments);
       };
       connection.__bdOptions = true;
@@ -387,6 +452,132 @@ try {
   installEarlyPatch();
 } catch (_) {}
 
+// ---------------------------------------------------------- WS manual ----
+//
+// O WebSocket do CHROMIUM falha ao abrir o wss:// do relay nos DOIS PCs
+// (silencioso: onerror engolido, onclose com retry mudo) - enquanto o cliente
+// do NODE conecta de primeira. Causa provavel: pilha de rede do Chromium contra
+// o Cloudflare. A saida: handshake WS manual com o modulo https do Node - o
+// mesmo modulo que o report() ja usa com sucesso no preload.
+// Suporta: text frames (com masking client->server), ping->pong, close,
+// continuation (mensagens fragmentadas) e payload de 16/64 bits.
+function nodeWebSocket(url) {
+  const crypto = require("crypto");
+  const https = require("https");
+  const u = new URL(url);
+  const api = {
+    onopen: null, onmessage: null, onclose: null, onerror: null,
+    _socket: null, _buf: Buffer.alloc(0), _frag: null, open: false,
+    _ping: null,
+    // readyState no formato Chromium: os senders da ponte testam
+    // `readyState === 1` - sem isto, undefined === 1 = false e o send NUNCA
+    // e chamado (o bug que as bridge-stats revelaram: hub->ponte:55,
+    // ponte->remoto:0 - mensagem nenhuma saia, sem erro nenhum).
+    get readyState() { return this.open ? 1 : 3; },
+    send(text) {
+      if (!this.open || !this._socket) return;
+      this._socket.write(encodeFrame(0x1, Buffer.from(text, "utf8")));
+    },
+    close() {
+      try { if (this._ping) clearInterval(this._ping); } catch (_) {}
+      if (this._socket) { try { this._socket.end(); } catch (_) {} }
+      this.open = false;
+    },
+  };
+  // KEEPALIVE: proxys (Cloudflare) matam WebSocket IDLE em ~100s. A ponte fica
+  // quieta do boot ate a live comecar - e escrever em socket morto PERDE a
+  // mensagem (half-open: sem erro no write). WS-ping a cada 25s mantem o tunel:
+  // o servidor axum responde pong sozinho (RFC), e ping nao e Text - nao polui
+  // o log do motor.
+  api._ping = setInterval(() => {
+    try { if (api.open && api._socket) api._socket.write(encodeFrame(0x9, Buffer.alloc(0))); } catch (_) {}
+  }, 25000);
+
+  function encodeFrame(opcode, payload) {
+    const mask = crypto.randomBytes(4);
+    const len = payload.length;
+    let header;
+    if (len < 126) {
+      header = Buffer.alloc(2);
+      header[1] = len | 0x80;
+    } else if (len < 65536) {
+      header = Buffer.alloc(4);
+      header[1] = 126 | 0x80;
+      header.writeUInt16BE(len, 2);
+    } else {
+      header = Buffer.alloc(10);
+      header[1] = 127 | 0x80;
+      header.writeBigUInt64BE(BigInt(len), 2);
+    }
+    header[0] = 0x80 | opcode;
+    const masked = Buffer.alloc(len);
+    for (let i = 0; i < len; i++) masked[i] = payload[i] ^ mask[i & 3];
+    return Buffer.concat([header, mask, masked]);
+  }
+
+  function consume() {
+    let buf = api._buf;
+    while (buf.length >= 2) {
+      const fin = (buf[0] & 0x80) !== 0;
+      const opcode = buf[0] & 0x0f;
+      let len = buf[1] & 0x7f;
+      let off = 2;
+      if (len === 126) { if (buf.length < 4) break; len = buf.readUInt16BE(2); off = 4; }
+      else if (len === 127) { if (buf.length < 10) break; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+      if ((buf[1] & 0x80) !== 0) off += 4; // mask do cliente (server nao manda, mas por seguranca)
+      if (buf.length < off + len) break;
+      let payload = buf.slice(off, off + len);
+      buf = api._buf = buf.slice(off + len);
+      if (opcode === 0x9) { try { api._socket.write(encodeFrame(0xA, payload)); } catch (_) {} continue; }
+      if (opcode === 0x8) {
+        api.open = false;
+        try { api._socket.end(); } catch (_) {}
+        api.onclose && api.onclose({ code: 1000 });
+        return;
+      }
+      if (opcode === 0x1 || opcode === 0x2 || opcode === 0x0) {
+        if (!fin || opcode === 0x0) {
+          api._frag = api._frag ? Buffer.concat([api._frag, payload]) : payload;
+          if (!fin) continue;
+          payload = api._frag;
+          api._frag = null;
+        }
+        api.onmessage && api.onmessage({ data: payload.toString("utf8") });
+      }
+    }
+  }
+
+  const key = crypto.randomBytes(16).toString("base64");
+  const req = https.request({
+    hostname: u.hostname,
+    port: u.port || 443,
+    path: u.pathname + u.search,
+    headers: {
+      Host: u.host,
+      Connection: "Upgrade",
+      Upgrade: "websocket",
+      "Sec-WebSocket-Key": key,
+      "Sec-WebSocket-Version": "13",
+    },
+    setHost: true,
+  });
+  req.on("upgrade", (res, socket, head) => {
+    api._socket = socket;
+    api.open = true;
+    if (head && head.length) { api._buf = Buffer.concat([api._buf, head]); consume(); }
+    socket.on("data", (chunk) => { api._buf = Buffer.concat([api._buf, chunk]); consume(); });
+    socket.on("close", () => { const was = api.open; api.open = false; api.onclose && was && api.onclose({ code: 1006 }); });
+    socket.on("error", (e) => { api.open = false; api.onerror && api.onerror(e); });
+    api.onopen && api.onopen();
+  });
+  req.on("response", (res) => {
+    api.onerror && api.onerror(new Error("handshake recusado: HTTP " + res.statusCode));
+  });
+  req.on("error", (e) => api.onerror && api.onerror(e));
+  req.end();
+  return api;
+}
+
 // ------------------------------------------------- hub remoto (Fase 1) -----
 //
 // Le `DiscordStream/remote-hub.txt`: uma linha `<url> <sala>`, por exemplo
@@ -425,9 +616,17 @@ function bridgeRemoteHub() {
   const parts = line.split(/\s+/);
   const hubUrl = parts[0];
   const secret = parts[1] || "";
+  // Linha 2 do arquivo (opcional): SALA FIXA. Com ela o relay funciona mesmo
+  // quando a store do canal de voz nao e achada (o caso conhecido) - grupo de
+  // amigos numa sala combinada. Se o renderer achar o canal de voz, ele ganha.
+  let roomFixed = "";
+  try {
+    roomFixed = String(fs.readFileSync(path.join(__dirname, "remote-hub.txt"), "utf8").split(/\r?\n/)[1] || "").trim();
+  } catch (_) {}
   const localUrl = "ws://127.0.0.1:" + PORT + "/hub";
 
   let local = null;
+  let localFailed = false;
   let remote = null;
   let seq = 0;
   let room = "";
@@ -438,13 +637,35 @@ function bridgeRemoteHub() {
   let webFrame = null;
   try { webFrame = require("electron/renderer").webFrame; } catch (_) {}
   if (!webFrame) { try { webFrame = require("electron").webFrame; } catch (_) {} }
+  // Se o webFrame nao existir, NUNCA vamos ler a sala - e o sintoma ia ser
+  // "sem canal de voz" pra sempre, sem pista nenhuma. Fala uma vez e segue.
+  let warnedWebFrame = false;
   const readRoom = () => {
-    if (!webFrame || typeof webFrame.executeJavaScript !== "function") return Promise.resolve("");
-    return webFrame.executeJavaScript("globalThis.__bdRoom || ''").then((v) => String(v || "")).catch(() => "");
+    if (!webFrame || typeof webFrame.executeJavaScript !== "function") {
+      if (!warnedWebFrame) {
+        warnedWebFrame = true;
+        report("hub-remoto-erro", "webFrame indisponivel - nao consigo ler o canal de voz");
+      }
+      return Promise.resolve({ room: "", had: false, diag: "webFrame indisponivel" });
+    }
+    // Le a sala (globalThis.__bdRoom, publicado pelo renderer) E o diagnostico
+    // (globalThis.__bdRoomDiag), pra quando falhar a gente dizer POR QUE.
+    return webFrame.executeJavaScript(
+      "(function(){try{return {room:String(globalThis.__bdRoom||''),"
+      + "had:('__bdRoom' in globalThis),diag:String(globalThis.__bdRoomDiag||'')};}"
+      + "catch(e){return {room:'',had:false,diag:'erro: '+e.message}}})()"
+    ).then((v) => {
+      if (v && typeof v === "object") {
+        return { room: String(v.room || ""), had: !!v.had, diag: String(v.diag || "") };
+      }
+      return { room: String(v || ""), had: false, diag: "" };
+    }).catch(() => ({ room: "", had: false, diag: "executeJavaScript falhou" }));
   };
   const remoteUrl = () => {
-    if (!room) return "";
-    return hubUrl + "/" + encodeURIComponent(room) + (secret ? "?secret=" + encodeURIComponent(secret) : "");
+    // Prioridade: canal de voz do Discord (dinamico) -> sala fixa do arquivo.
+    const effective = room || roomFixed;
+    if (!effective) return "";
+    return hubUrl + "/" + encodeURIComponent(effective) + (secret ? "?secret=" + encodeURIComponent(secret) : "");
   };
 
   const sendLocal = (text) => { try { if (local && local.readyState === 1) local.send(text); } catch (_) {} };
@@ -453,53 +674,152 @@ function bridgeRemoteHub() {
   const connectLocal = () => {
     try {
       local = new WebSocket(localUrl);
-    } catch (_) {
+    } catch (error) {
+      if (!localFailed) {
+        localFailed = true;
+        report("hub-remoto-erro", "new WebSocket falhou: " + String((error && error.message) || error));
+      }
       setTimeout(connectLocal, 3000);
       return;
     }
-    local.onopen = () => report("hub-remoto", "local conectado | relay: " + hubUrl);
+    local.onopen = () => {
+      localFailed = false;
+      report("hub-remoto", "local conectado | relay: " + hubUrl);
+    };
     local.onmessage = (event) => {
       const text = String(event.data || "");
-      // 900000+ = veio do remoto; nao devolve pro remoto (evita eco infinito)
-      if (/"from":9\d{5},/.test(text)) return;
+      // remote-ready NAO atravessa: e sinal interno (id 900000 e fixo da ponte).
+      if (text.indexOf('"remote-ready"') !== -1) return;
+      bridgeStats.fromHub += 1;
       sendRemote(text);
     };
     local.onclose = () => setTimeout(connectLocal, 3000);
-    local.onerror = () => {};
+    local.onerror = () => {
+      if (localFailed) return;
+      localFailed = true;
+      report("hub-remoto-erro", "socket local nao conectou em " + localUrl + " (motor rodando?)");
+    };
+  };
+
+  // Estatisticas da ponte: sem elas, "a mensagem sumiu" e indistinguível de
+  // "nunca foi mandada". Reporta a cada 30s e em cada queda.
+  const bridgeStats = { fromHub: 0, toRemote: 0, fromRemote: 0, toHub: 0, welcome: false };
+  const reportStats = (why) =>
+    report("bridge-stats", why + " | hub->ponte:" + bridgeStats.fromHub
+      + " ponte->remoto:" + bridgeStats.toRemote
+      + " remoto->ponte:" + bridgeStats.fromRemote
+      + " ponte->hub:" + bridgeStats.toHub);
+  setInterval(() => reportStats("periodico"), 30000);
+
+  let remoteRetries = 0;
+  let remoteVia = "";
+  let welcomeTimer = null;
+
+  const wireRemote = (socket, via) => {
+    remote = socket;
+    remoteVia = via;
+    socket.onopen = () => {
+      remoteRetries = 0;
+      report("hub-remoto", "remoto conectado via " + via + " (sala " + room + ")");
+      // Prova de receive: o relay manda welcome ao conectar. Sem welcome em 8s
+      // = o SEND pode ate funcionar mas o RECEIVE nao - troca de via.
+      welcomeTimer = setTimeout(() => {
+        if (!bridgeStats.welcome) {
+          report("hub-remoto-erro", "via " + via + ": sem welcome em 8s (receive morto) - trocando de via");
+          try { socket.close(); } catch (_) {}
+        }
+      }, 8000);
+      // BRIDGE-HELLO: aparece nos logs do RELAY (Dokploy) - prova que esta
+      // ponte esta viva e mandando na sala.
+      socket.send(JSON.stringify({ from: 0, type: "bridge-hello", via }));
+      // REMOTE-READY: quando a ponte (re)abre, o renderer local precisa saber -
+      // senao a offer anterior, que morreu no socket morto, nunca e re-pedida.
+      sendLocal('{"from":900000,"type":"remote-ready"}');
+    };
+    socket.onmessage = (event) => {
+      const text = String(event.data || "");
+      if (text.indexOf('"welcome"') !== -1) {
+        bridgeStats.welcome = true;
+        if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = null; }
+        report("hub-remoto", "welcome recebido via " + via + " (receive OK)");
+        return;
+      }
+      bridgeStats.fromRemote += 1;
+      seq += 1;
+      const rewritten = text.replace(/^\{"from":\d+,/, '{"from":' + (900000 + seq) + ",");
+      bridgeStats.toHub += 1;
+      sendLocal(rewritten);
+    };
+    socket.onclose = (e) => {
+      if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = null; }
+      remoteRetries += 1;
+      reportStats("queda via " + via);
+      report("hub-remoto-erro", "remoto caiu (code " + ((e && e.code) || "?") + ") via " + via + " - retry 5s");
+      setTimeout(() => { if (remoteUrl()) connectRemote(); }, 5000);
+    };
+    socket.onerror = (e) => {
+      report("hub-remoto-erro", "remoto via " + via + ": " + String((e && e.message) || "erro desconhecido"));
+    };
   };
 
   const connectRemote = () => {
     const url = remoteUrl();
     if (!url) return;
+    // DUAL-STACK com prova de vida: o WS manual do Node funcionou no node.exe
+    // puro mas nunca foi PROVADO dentro do Electron; o do Chromium falhou em
+    // silencio (erros engolidos - hoje nem sabemos se falhou). Comeca pelo
+    // manual; se o welcome nao chegar em 8s, o timer acima fecha e o proximo
+    // connectRemote vai pelo Chromium. Cada via loga o nome dela.
+    const useChromium = remoteRetries > 0 && remoteRetries % 2 === 0;
     try {
-      remote = new WebSocket(url);
-    } catch (_) {
+      if (useChromium) {
+        report("hub-remoto", "tentando via chromium-websocket");
+        const s = new WebSocket(url);
+        wireRemote(s, "chromium-websocket");
+      } else {
+        report("hub-remoto", "tentando via node-manual");
+        wireRemote(nodeWebSocket(url), "node-manual");
+      }
+    } catch (error) {
+      remoteRetries += 1;
+      report("hub-remoto-erro", "new WS falhou: " + String((error && error.message) || error));
       setTimeout(connectRemote, 5000);
-      return;
     }
-    remote.onopen = () => report("hub-remoto", "remoto conectado (sala " + room + ")");
-    remote.onmessage = (event) => {
-      const text = String(event.data || "");
-      seq += 1;
-      const rewritten = text.replace(/^\{"from":\d+,/, '{"from":' + (900000 + seq) + ",");
-      sendLocal(rewritten);
-    };
-    remote.onclose = () => setTimeout(() => { if (remoteUrl()) connectRemote(); }, 5000);
-    remote.onerror = () => {};
   };
 
+  // Sem canal de voz nao ha relay. O primeiro estado vazio TAMBEM tem que ser
+  // reportado - senao "canal vazio" e "bridge nem subiu" ficam identicos no log.
+  // E quando ficar vazio, reporta o DIAGNOSTICO (o que o renderer procurou).
+  let reportedEmpty = false;
+  let lastEmptyAt = 0;
+  const describeEmpty = (info) =>
+    "set=" + (info.had ? "sim" : "nao") + (info.diag ? " | " + info.diag : "");
   const syncRoom = () => {
-    readRoom().then((id) => {
-      if (id === room) return;
+    readRoom().then((info) => {
+      const id = info.room || roomFixed;
+      if (id === room) {
+        if (!room) {
+          const now = Date.now();
+          if (!reportedEmpty || now - lastEmptyAt >= 15000) {
+            reportedEmpty = true;
+            lastEmptyAt = now;
+            report("hub-remoto", "sem canal de voz - relay parado | " + describeEmpty(info));
+          }
+        }
+        return;
+      }
+      reportedEmpty = false;
       room = id;
       if (!room) {
-        report("hub-remoto", "sem canal de voz - relay parado");
+        report("hub-remoto", "sem canal de voz - relay parado | " + describeEmpty(info));
         try { if (remote) remote.close(); } catch (_) {}
         remote = null;
         return;
       }
-      report("hub-remoto", "entrou na sala " + room);
+      report("hub-remoto", "entrou na sala " + room + (info.room ? " (canal de voz)" : " (fixa do arquivo)"));
       connectRemote();
+    }).catch((error) => {
+      report("hub-remoto-erro", "syncRoom: " + String((error && error.message) || error));
     });
   };
 
@@ -510,7 +830,11 @@ function bridgeRemoteHub() {
 
 try {
   bridgeRemoteHub();
-} catch (_) {}
+} catch (error) {
+  // NAO engolir: sem isto um erro aqui dentro some e o sintoma vira "nao
+  // aconteceu nada" - foi exatamente o que aconteceu no primeiro teste remoto.
+  report("hub-remoto-erro", "nao subiu: " + String((error && error.message) || error));
+}
 
 // ------------------------------------------------- esconder o banner --------
 //
@@ -522,11 +846,42 @@ try {
 function hideNitroBanner() {
   try {
     const TEXTS = ["Transmita em resolu", "Stream in HD", "Unlock 4k", "Obter o Nitro", "Get Nitro"];
+    // O MODAL de upsell ("Desbloqueie a transmissao em HD 4k a 60 fps") e outra peca:
+    // esconder um pedaco nao fecha o backdrop que bloqueia a UI. Aqui a jogada e
+    // FECHAR o dialog (botao fechar ou ESC). Ancora: "Desbloqueie"/"Unlock" + Nitro
+    // no mesmo dialog - o banner do picker nao tem "Desbloqueie".
+    const CLOSE_MODAL = ["Desbloqueie", "Unlock", "Desbloquear"];
+    let lastCloseAt = 0;
+    const closeModal = function (dialog) {
+      const now = Date.now();
+      if (now - lastCloseAt < 600) return;
+      lastCloseAt = now;
+      try {
+        const closeBtn = dialog.querySelector('[aria-label="Fechar"],[aria-label="Close"]');
+        if (closeBtn) { closeBtn.click(); return; }
+      } catch (_) {}
+      try {
+        for (const type of ["keydown", "keyup"]) {
+          document.dispatchEvent(new KeyboardEvent(type, { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+        }
+      } catch (_) {}
+      try { report("upsell-modal-fechado", ""); } catch (_) {}
+    };
     const observer = new MutationObserver(function () {
       try {
         // Procura apenas dentro de modais e dialogs (onde o picker de stream vive)
         const dialogs = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="layer"]');
         for (const dialog of dialogs) {
+          // Modal de upsell inteiro? Fecha. Antes de esconder pedacos: um dialog
+          // pequeno cujo conteudo e so o upsell nao pode ficar na frente da UI.
+          try {
+            const own = dialog.textContent || "";
+            const isModal = dialog.getAttribute && dialog.getAttribute("role") === "dialog";
+            if (isModal && CLOSE_MODAL.some((t) => own.includes(t)) && /nitro/i.test(own) && own.length < 900) {
+              closeModal(dialog);
+              continue;
+            }
+          } catch (_) {}
           const walker = document.createTreeWalker(dialog, NodeFilter.SHOW_TEXT);
           let node;
           while ((node = walker.nextNode())) {
@@ -578,7 +933,11 @@ try {
   if (webFrame && typeof webFrame.executeJavaScript === "function") {
     const rendererPath = path.join(__dirname, "bigducks_rs_renderer.js");
     const source = fs.readFileSync(rendererPath, "utf8");
-    webFrame.executeJavaScript(source).catch((error) => {
+    // O renderer precisa saber o pid da PROPRIA janela: e assim que ele
+    // reconhece que o stream-start/start-stop e dele (as mensagens do ciclo de
+    // vida viajam com o pid no data). Cada janela tem um processo = pid unico.
+    const preamble = "globalThis.__bdWinPid = " + JSON.stringify(String(process.pid)) + ";\n";
+    webFrame.executeJavaScript(preamble + source).catch((error) => {
       console.error("[bigducks-rs] renderer inject falhou:", error && error.message);
     });
     // Plugins opcionais (--nitro). Vem por aqui de proposito: o fetch da PAGINA

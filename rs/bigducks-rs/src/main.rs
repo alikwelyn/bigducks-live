@@ -41,6 +41,10 @@ static NEXT_HUB_ID: AtomicU64 = AtomicU64::new(1);
 const DEFAULT_RELAY: &str = "wss://desjanjador.skillup.com.br/hub";
 /// Troque por um valor seu: o relay so aceita quem apresentar o mesmo segredo.
 const DEFAULT_SECRET: &str = "troque-este-segredo-por-um-seu";
+/// Sala fixa (linha 2 do remote-hub.txt): o relay funciona mesmo sem a store do
+/// canal de voz (o caso conhecido). O grupo inteiro usa a mesma - e se o
+/// renderer achar o canal de voz, a sala dinamica dele tem prioridade.
+const DEFAULT_ROOM: &str = "bigducks";
 
 /// O bridge do renderer servido pelo exe (o mesmo arquivo vai embutido no
 /// instalador, que o coloca em DiscordStream/bigducks_rs_renderer.js).
@@ -122,6 +126,8 @@ fn start_capture(state: &AppState) {
             }
         };
         let mut announced = (0u32, 0u32, 0u32);
+        let mut consecutive_errors: u32 = 0;
+        let mut last_error_log: Option<Instant> = None;
         loop {
             let started = Instant::now();
             let settings = state_settings
@@ -150,8 +156,33 @@ fn start_capture(state: &AppState) {
                         data,
                     }));
                 }
-                Err(error) => eprintln!("capture failed: {error}"),
+                Err(error) => {
+                    consecutive_errors += 1;
+                    // Backoff + log limitado: display sumiu (monitor desligado,
+                    // janela fechada, container sem tela) nao pode virar 60
+                    // erros/segundo eternos (era o log do relay no Dokploy).
+                    let should_log = last_error_log
+                        .map(|last| last.elapsed() >= Duration::from_secs(10))
+                        .unwrap_or(true);
+                    if should_log {
+                        last_error_log = Some(Instant::now());
+                        eprintln!(
+                            "capture failed (x{}): {error}",
+                            consecutive_errors
+                        );
+                    }
+                    let backoff = Duration::from_millis(
+                        (200u64 * consecutive_errors as u64).min(3_000),
+                    );
+                    std::thread::sleep(backoff);
+                    // Sempre `continue`: o contador de erros NAO pode ser zerado
+                    // aqui, senao ele volta pra 1 a cada volta do loop e o
+                    // backoff nunca cresce (era o caso: 15 erros/s eternos no
+                    // relay do Dokploy). Ele so zera quando um frame SAI.
+                    continue;
+                }
             }
+            consecutive_errors = 0;
             let elapsed = started.elapsed();
             if elapsed < interval {
                 std::thread::sleep(interval - elapsed);
@@ -159,16 +190,26 @@ fn start_capture(state: &AppState) {
         }
     });
 }
-
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("\n[ERRO] {err:#}");
+        eprintln!();
+        eprintln!("Pressione Enter para fechar...");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     let mut width = 1280u32;
     let mut height = 720u32;
-    let mut fps = 15u32;
+    let mut fps = 30u32;
     let mut port = 8791u16;
     let mut install_only = false;
     let mut uninstall = false;
-    let mut nitro = false;
+    let mut nitro = true;
     let mut relay = false;
     let mut max_width = 1920u32;
     let mut max_height = 1080u32;
@@ -203,6 +244,11 @@ async fn main() -> anyhow::Result<()> {
             }
             "--nitro" => {
                 nitro = true;
+                i += 1;
+            }
+            // Desliga so os patches de UI/qualidade. O bridge de video continua.
+            "--no-nitro" => {
+                nitro = false;
                 i += 1;
             }
             // Modo RELAY: so sinalizacao. Escuta em 0.0.0.0 e nao captura nada -
@@ -249,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (tx, _rx) = broadcast::channel::<Arc<Frame>>(2);
-    let (hub_tx, _hub_rx) = broadcast::channel::<Arc<HubMessage>>(64);
+    let (hub_tx, _hub_rx) = broadcast::channel::<Arc<HubMessage>>(512);
     let state = AppState {
         frames: tx.clone(),
         hub: hub_tx,
@@ -275,8 +321,19 @@ async fn main() -> anyhow::Result<()> {
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("remote-hub.txt");
         if !file.exists() {
-            let _ = std::fs::write(&file, format!("{DEFAULT_RELAY} {DEFAULT_SECRET}\n"));
-            println!("relay configurado: {DEFAULT_RELAY} (sala = canal de voz do Discord)");
+            let _ = std::fs::write(
+                &file,
+                format!("{DEFAULT_RELAY} {DEFAULT_SECRET}\n{DEFAULT_ROOM}\n"),
+            );
+            println!("relay configurado: {DEFAULT_RELAY} (sala fixa '{DEFAULT_ROOM}' - o canal de voz tem prioridade quando e achado)");
+        } else {
+            // Arquivo antigo (uma linha so): acrescenta a sala fixa, uma vez.
+            let contents = std::fs::read_to_string(&file).unwrap_or_default();
+            if contents.lines().count() < 2 {
+                let trimmed = contents.trim_end();
+                let separator = if trimmed.ends_with('\n') { "" } else { "\n" };
+                let _ = std::fs::write(&file, format!("{trimmed}{separator}{DEFAULT_ROOM}\n"));
+            }
         }
     }
 
@@ -284,7 +341,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(page))
         .route("/ws", get(ws_handler))
         .route("/hub", get(hub_handler))
-        .route("/hub/{room}", get(hub_handler))
+        .route("/hub/{room}", get(hub_room_handler))
         .route("/bridge.js", get(bridge_js))
         .route("/plugins.js", get(plugins_js))
         .route("/test-publish", get(test_publish))
@@ -306,12 +363,24 @@ async fn main() -> anyhow::Result<()> {
     println!("  captura:   ws://127.0.0.1:{port}/ws");
     println!("  hub P2P:   ws://127.0.0.1:{port}/hub");
     println!("  bridge:    http://127.0.0.1:{port}/bridge.js");
+    if nitro {
+        println!("  qualidade: patches de UI LIGADOS (1080p/60 na UI nativa). --no-nitro desliga");
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn page() -> Html<&'static str> {
-    Html(PAGE)
+async fn page(State(state): State<AppState>) -> impl IntoResponse {
+    // RELAY: pagina de status simples - o painel de canvas so existe no motor.
+    // Abrir o painel do relay disparava o /ws e o loop de captura morria a
+    // 60fps dentro do container (sem display nenhum) - era o "capture failed:
+    // Connection closed" em loop nos logs do Dokploy.
+    if state.relay {
+        return Html(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>bigducks relay</title></head><body style=\"font:14px system-ui;background:#0b0b0b;color:#57f287;padding:40px\">RELAY de sinalizacao ativo. Nenhuma midia passa por aqui.</body></html>",
+        ).into_response();
+    }
+    Html(PAGE).into_response()
 }
 
 async fn bridge_js() -> impl IntoResponse {
@@ -321,8 +390,9 @@ async fn bridge_js() -> impl IntoResponse {
     )
 }
 
-/// Plugins opcionais: so existe com `--nitro`. Sem a flag responde 404 e o
-/// renderer nao carrega nada - o bridge de video segue sem nenhum patch extra.
+/// Plugins de UI/qualidade: vem LIGADOS por padrao (quem recebe so o .exe nao
+/// tem como passar flag). `--no-nitro` responde 404 e o renderer nao carrega
+/// nada - o bridge de video segue sem nenhum patch extra.
 async fn plugins_js(State(state): State<AppState>) -> axum::response::Response {
     use axum::response::IntoResponse as _;
     if state.nitro {
@@ -384,14 +454,27 @@ struct SourceQuery {
     pid: Option<String>,
 }
 
-/// O preload (processo de renderizacao) reporta aqui o que ele ve - inclusive a
-/// fonte escolhida no modal do Discord. Assim tudo aparece no log do motor.
-async fn bridge_event(Query(query): Query<EventQuery>) -> impl IntoResponse {
-    println!(
-        "preload: {} {}",
-        query.name.unwrap_or_default(),
-        query.data.unwrap_or_default()
-    );
+/// O preload reporta aqui o que ele ve - inclusive a fonte escolhida no modal do
+/// Discord. Assim tudo aparece no log do motor.
+///
+/// stream-start/stream-stop sao o CICLO DE VIDA da live sem a store: o preload
+/// ve a fonte escolhida e o reset, e aqui a mensagem vira broadcast no hub -
+/// o renderer da janela certa (data = pid) publica/para o P2P.
+async fn bridge_event(
+    State(state): State<AppState>,
+    Query(query): Query<EventQuery>,
+) -> impl IntoResponse {
+    let name = query.name.unwrap_or_default();
+    let data = query.data.unwrap_or_default();
+    if matches!(name.as_str(), "stream-start" | "stream-stop") && !data.is_empty() {
+        let message = format!("{{\"type\":\"{name}\",\"data\":\"{data}\"}}");
+        let _ = state.hub.send(Arc::new(HubMessage {
+            from: 0,
+            text: message,
+            room: String::new(),
+        }));
+    }
+    println!("preload: {} {}", name, data);
     (
         [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         "ok",
@@ -460,8 +543,14 @@ async fn set_settings(
         bitrate_changed = current.bitrate != before.bitrate;
     }
 
-    if bitrate_changed {
-        let message = format!("{{\"type\":\"settings\",\"bitrate\":{}}}", current.bitrate);
+    if bitrate_changed || changed {
+        // Mensagem completa (nao so o bitrate): o renderer precisa do fps pra
+        // maxFramerate do sender (era fixo em 30 e prendia o 60) e da resolucao
+        // pra o viewer saber o que vem pela frente.
+        let message = format!(
+            "{{\"type\":\"settings\",\"bitrate\":{},\"fps\":{},\"width\":{},\"height\":{}}}",
+            current.bitrate, current.fps, current.width, current.height
+        );
         let _ = state.hub.send(Arc::new(HubMessage {
             from: 0,
             text: message,
@@ -487,7 +576,11 @@ struct TestPublishQuery {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    // RELAY nao captura nada (nem tem display): recusa o feed antes do upgrade.
+    if state.relay {
+        return (axum::http::StatusCode::NOT_FOUND, "relay: sem feed").into_response();
+    }
+    ws.on_upgrade(move |socket| handle_socket(socket, state)).into_response()
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
@@ -523,11 +616,21 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     }
 }
 
-/// Hub local (`/hub`) e relay por sala (`/hub/<sala>?secret=...`).
+/// Hub LOCAL (`/hub`, mesma maquina): sem sala e sem segredo.
+///
+/// Nao pode ser o mesmo handler da sala: a rota `/hub` nao tem `{room}`, entao
+/// um `Path<String>` ali faz o axum recusar a extracao e derrubar a conexao
+/// ANTES do upgrade - foi o que quebrou o P2P inteiro quando as salas entraram.
+async fn hub_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_hub(socket, state, String::new()))
+        .into_response()
+}
+
+/// Relay por sala (`/hub/<sala>?secret=...`).
 ///
 /// No modo relay o segredo e' obrigatorio: sem ele o servidor recusa a conexao.
 /// A sala vem do PATH (e o cliente a deriva do canal de voz do Discord).
-async fn hub_handler(
+async fn hub_room_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path(room): Path<String>,
@@ -613,13 +716,45 @@ async fn handle_hub(mut socket: WebSocket, state: AppState, room: String) {
 
 const PAGE: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>bigducks-rs</title>
-<style>html,body{margin:0;height:100%;background:#0b0b0b}canvas{display:block;width:100vw;height:100vh;object-fit:contain}</style>
+<style>html,body{margin:0;height:100%;background:#0b0b0b;overflow:hidden}
+canvas{display:block;width:100vw;height:100vh;object-fit:contain}
+#bar{position:fixed;top:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:6px 10px;background:rgba(20,21,26,.92);font:12px/1 system-ui,sans-serif;color:#dbdee1;z-index:9}
+#bar button{all:unset;cursor:pointer;padding:5px 10px;border-radius:6px;background:#2b2d31;color:#dbdee1;font:12px system-ui,sans-serif}
+#bar button:hover{background:#3c4270}
+#bar button.on{background:#5865f2;color:#fff}
+#state{margin-left:auto;color:#949ba4}
+</style>
 </head><body>
+<div id="bar">
+  <span>qualidade da captura:</span>
+  <button data-w="1280" data-h="720"  data-fps="30" data-b="2500000">720p30</button>
+  <button data-w="1280" data-h="720"  data-fps="60" data-b="5000000">720p60</button>
+  <button data-w="1920" data-h="1080" data-fps="30" data-b="6000000">1080p30</button>
+  <button data-w="1920" data-h="1080" data-fps="60" data-b="9000000">1080p60</button>
+  <button data-w="2560" data-h="1440" data-fps="60" data-b="12000000">1440p60</button>
+  <span id="state">(a UI do Discord muda isso ao vivo quando voce mexe no painel dela)</span>
+</div>
 <canvas id="screen"></canvas>
 <script>
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d', { alpha: false });
 let decoding = false;
+
+// Presets: mandam pro /settings e viram a qualidade da captura E do P2P
+// (bitrate via hub). Funciona mesmo quando a UI do Discord trava/modal.
+const state = document.getElementById('state');
+for (const b of document.querySelectorAll('#bar button')) {
+  b.onclick = async () => {
+    const q = `width=${b.dataset.w}&height=${b.dataset.h}&fps=${b.dataset.fps}&bitrate=${b.dataset.b}`;
+    try {
+      await fetch('/settings?' + q);
+      document.querySelectorAll('#bar button').forEach((x) => x.classList.remove('on'));
+      b.classList.add('on');
+      state.textContent = 'aplicado: ' + b.textContent;
+    } catch (e) { state.textContent = 'falhou: ' + e; }
+  };
+}
+
 const socket = new WebSocket(`ws://${location.host}/ws`);
 socket.binaryType = 'arraybuffer';
 socket.onmessage = (event) => {
