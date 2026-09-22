@@ -98564,6 +98564,7 @@ if (!global.__discordStreamBridgeLoaded) {
     viewerSwaps: 0,
     auto: true,
     autoApplied: false,
+    disableDave: true,
     incomingVideoForced: false,
     videoGuardCleared: false,
     dispatcherFound: false,
@@ -98823,6 +98824,26 @@ if (!global.__discordStreamBridgeLoaded) {
           state.directVideoCalls += 1;
           return originalDirect.apply(this, arguments);
         };
+      }
+      // DAVE (E2EE) is the last blocker for stream video: the sender encodes and
+      // encrypts frames but the receiver has no cryptor, so video never arrives
+      // and the 20s receiver timeout fires. Advertise protocol version 0 on new
+      // voice/stream connections so media flows without E2EE.
+      if (typeof voice.createVoiceConnectionWithOptions === "function") {
+        const originalCreate = voice.createVoiceConnectionWithOptions;
+        state.originals.createVoiceConnectionWithOptions = originalCreate;
+        const createWrapper = function (userId, options, callback) {
+          if (state.disableDave && options && typeof options === "object") {
+            try {
+              options.max_dave_protocol_version = 0;
+            } catch (_) {}
+          }
+          return originalCreate.apply(this, arguments);
+        };
+        voice.createVoiceConnectionWithOptions = createWrapper;
+        if (typeof voice.createOwnStreamConnectionWithOptions === "function") {
+          voice.createOwnStreamConnectionWithOptions = createWrapper;
+        }
       }
       state.voice = voice;
       state.engine = true;
@@ -99674,7 +99695,7 @@ if (!global.__discordStreamBridgeLoaded) {
     } catch (_) {}
     const voice = state.voice;
     if (voice) {
-      for (const name of ["addVideoOutputSink", "getNextVideoOutputFrame", "addDirectVideoOutputSink"]) {
+      for (const name of ["addVideoOutputSink", "getNextVideoOutputFrame", "addDirectVideoOutputSink", "createVoiceConnectionWithOptions"]) {
         try {
           if (typeof state.originals[name] === "function") {
             voice[name] = state.originals[name];
@@ -99762,6 +99783,7 @@ if (!global.__discordStreamBridgeLoaded) {
       videoGuardCleared: state.videoGuardCleared,
       dispatcherFound: state.dispatcherFound,
       incomingVideoForced: state.incomingVideoForced === true,
+      disableDave: state.disableDave === true,
       goLivePatched: state.goLivePatched,
       goLiveError: state.goLiveError,
       enginePatched: state.enginePatched,
@@ -99809,6 +99831,10 @@ if (!global.__discordStreamBridgeLoaded) {
     stopTestStream: stopTestStream,
     neutralizeVideoGuard: neutralizeVideoGuard,
     forceIncomingVideo: forceIncomingVideo,
+    setDisableDave: (enabled) => {
+      state.disableDave = enabled !== false;
+      return summary();
+    },
     setAuto: (enabled) => {
       state.auto = enabled !== false;
       if (state.auto) {
