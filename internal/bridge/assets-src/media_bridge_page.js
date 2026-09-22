@@ -53,6 +53,8 @@
     auto: true,
     autoApplied: false,
     disableDave: true,
+    xhrHook: false,
+    experimentRewrites: 0,
     incomingVideoForced: false,
     videoGuardCleared: false,
     dispatcherFound: false,
@@ -1054,6 +1056,75 @@
     return null;
   }
 
+  // The block ships as an Apex experiment fetched over HTTP:
+  //   GET /apex/experiments  ->  { installation, "2026-08-video-guard": {variantId: 2}, ... }
+  // Rewriting the response at the transport level neutralizes it before any
+  // consumer (JS store and native media engine) reads the assignment.
+  function rewriteApexExperiments(text) {
+    if (!text) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object") {
+        return null;
+      }
+      if (!("2026-08-video-guard" in parsed)) {
+        return null;
+      }
+      parsed["2026-08-video-guard"] = { variantId: 0 };
+      state.experimentRewrites += 1;
+      return JSON.stringify(parsed);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function installExperimentsRewrite() {
+    if (state.xhrHook) {
+      return true;
+    }
+    const Original = globalThis.XMLHttpRequest;
+    if (!Original) {
+      return false;
+    }
+    function BigDucksXHR() {
+      const xhr = new Original();
+      try {
+        let url = "";
+        const open = xhr.open;
+        xhr.open = function (method, target) {
+          url = String(target);
+          return open.apply(this, arguments);
+        };
+        xhr.addEventListener("readystatechange", function () {
+          if (xhr.readyState !== 4) {
+            return;
+          }
+          if (!/\/apex\/experiments(\?|$)/.test(url)) {
+            return;
+          }
+          try {
+            const rewritten = rewriteApexExperiments(xhr.responseText);
+            if (rewritten != null) {
+              Object.defineProperty(xhr, "responseText", { configurable: true, get: function () { return rewritten; } });
+              Object.defineProperty(xhr, "response", { configurable: true, get: function () { return rewritten; } });
+            }
+          } catch (_) {}
+        });
+      } catch (_) {}
+      return xhr;
+    }
+    BigDucksXHR.prototype = Original.prototype;
+    try {
+      Object.setPrototypeOf(BigDucksXHR, Original);
+    } catch (_) {}
+    globalThis.XMLHttpRequest = BigDucksXHR;
+    state.originals.XMLHttpRequest = Original;
+    state.xhrHook = true;
+    return true;
+  }
+
   function neutralizeVideoGuard() {
     try {
       const dispatcher = state.dispatcher || findFluxDispatcher();
@@ -1114,6 +1185,9 @@
       neutralizeVideoGuard();
     } catch (_) {}
     try {
+      installExperimentsRewrite();
+    } catch (_) {}
+    try {
       forceIncomingVideo();
     } catch (_) {}
     try {
@@ -1135,6 +1209,7 @@
     patchMediaEngine();
     patchConfigStore();
     neutralizeVideoGuard();
+    installExperimentsRewrite();
     if (!state.autoApplied) {
       state.autoApplied = true;
       applyAuto();
@@ -1169,6 +1244,11 @@
   function dispose() {
     state.disposed = true;
     state.viewerOverride = false;
+    try {
+      if (state.originals.XMLHttpRequest) {
+        globalThis.XMLHttpRequest = state.originals.XMLHttpRequest;
+      }
+    } catch (_) {}
     try {
       const mediaProto = globalThis.HTMLMediaElement && globalThis.HTMLMediaElement.prototype;
       if (mediaProto && state.originals.srcObject) {
@@ -1272,6 +1352,8 @@
       dispatcherFound: state.dispatcherFound,
       incomingVideoForced: state.incomingVideoForced === true,
       disableDave: state.disableDave === true,
+      xhrHook: state.xhrHook === true,
+      experimentRewrites: state.experimentRewrites,
       goLivePatched: state.goLivePatched,
       goLiveError: state.goLiveError,
       enginePatched: state.enginePatched,
@@ -1319,6 +1401,7 @@
     stopTestStream: stopTestStream,
     neutralizeVideoGuard: neutralizeVideoGuard,
     forceIncomingVideo: forceIncomingVideo,
+    rewriteExperiments: installExperimentsRewrite,
     setDisableDave: (enabled) => {
       state.disableDave = enabled !== false;
       return summary();
