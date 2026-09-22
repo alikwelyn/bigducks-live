@@ -45,6 +45,8 @@
     stores: null,
     webpackCache: null,
     disposed: false,
+    goLivePatched: false,
+    forceGoLive: false,
     originals: {},
     sinks: new Map()
   };
@@ -617,12 +619,66 @@
     return state.webpackCache;
   }
 
+  const GOLIVE_FEATURES = ["VIDEO", "DESKTOP_CAPTURE", "HYBRID_VIDEO", "ELECTRON_VIDEO"];
+
+  // The Go Live button is gated by
+  //   canGoLive = supportsInApp(VIDEO) && supportsInApp(DESKTOP_CAPTURE)
+  // and supportsInApp(VIDEO) resolves to the remote-config
+  //   getConfig({ location: "MediaEngineStore.supportsInApp" }).videoEnabled
+  // plus the engine's appSupported flags. Forcing those two methods to report
+  // support for the video features is the whole client-side unlock.
+  function patchMediaEngineStore() {
+    if (state.goLivePatched) {
+      return true;
+    }
+    const store = findStores().MediaEngineStore;
+    if (!store) {
+      return false;
+    }
+    const proto = Object.getPrototypeOf(store);
+    if (!proto) {
+      return false;
+    }
+    let patched = false;
+    for (const method of ["supports", "supportsInApp"]) {
+      try {
+        const original = proto[method];
+        if (typeof original !== "function") {
+          continue;
+        }
+        state.originals[method] = original;
+        proto[method] = function (feature) {
+          if (state.forceGoLive && GOLIVE_FEATURES.indexOf(feature) !== -1) {
+            return true;
+          }
+          return original.apply(this, arguments);
+        };
+        patched = true;
+      } catch (_) {}
+    }
+    state.goLivePatched = patched;
+    return patched;
+  }
+
+  function forceGoLive(enabled) {
+    state.forceGoLive = enabled !== false;
+    patchMediaEngineStore();
+    try {
+      const store = findStores().MediaEngineStore;
+      if (store && typeof store.emitChange === "function") {
+        store.emitChange();
+      }
+    } catch (_) {}
+    return summary();
+  }
+
   function install() {
     installPutImageDataHook();
     const voice = acquireEngine();
     if (voice) {
       installEngineHooks(voice);
     }
+    patchMediaEngineStore();
     ensureRepaintLoop();
     if (!state.engine && !state.retryTimer) {
       state.retryTimer = globalThis.setTimeout(() => {
@@ -669,6 +725,17 @@
       }
     }
     try {
+      const store = findStores().MediaEngineStore;
+      const proto = store ? Object.getPrototypeOf(store) : null;
+      if (proto) {
+        for (const method of ["supports", "supportsInApp"]) {
+          if (typeof state.originals[method] === "function") {
+            proto[method] = state.originals[method];
+          }
+        }
+      }
+    } catch (_) {}
+    try {
       delete globalThis.__BIG_DUCKS_MEDIA__;
       delete globalThis.__BIG_DUCKS_MEDIA_SUMMARY__;
     } catch (_) {}
@@ -699,6 +766,8 @@
       moduleKeys: moduleKeys(),
       engineKeys: engineKeys(),
       stores: Object.keys(findStores()),
+      goLivePatched: state.goLivePatched,
+      forceGoLive: state.forceGoLive,
       webpack: scanWebpack(),
       connections: collectConnections(),
       sinks: listSinks()
@@ -735,6 +804,7 @@
     stores: () => Object.keys(findStores()),
     experiments: experiments,
     experimentNames: experimentNames,
+    forceGoLive: forceGoLive,
     store: () => findMediaStore(),
     engine: () => {
       try {

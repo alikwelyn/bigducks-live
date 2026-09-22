@@ -86,11 +86,15 @@ const i18nProxy = new Proxy({}, {
 });
 const engineConnections = new Set();
 const realEngine = { connections: engineConnections, connectionsEmpty: () => engineConnections.size === 0 };
-const realStore = {
-  getName: () => "MediaEngineStore",
-  getGoLiveSource: () => null,
-  getMediaEngine: () => realEngine
-};
+class FakeMediaEngineStore {
+  getName() { return "MediaEngineStore"; }
+  getGoLiveSource() { return null; }
+  getMediaEngine() { return realEngine; }
+  supports() { return false; }
+  supportsInApp() { return false; }
+  emitChange() {}
+}
+const realStore = new FakeMediaEngineStore();
 const realExperimentStore = {
   getName: () => "ExperimentStore",
   getAllExperimentAssignments: () => ({ "exp-a": 1, "exp-b": 0 }),
@@ -124,6 +128,18 @@ const foundExperiments = media.experiments();
 if (foundExperiments.found !== true || foundExperiments.user["exp-a"] !== 1) {
   throw new Error("experiments() failed: " + JSON.stringify(foundExperiments));
 }
+
+// The Go Live unlock: canGoLive is supportsInApp(VIDEO) && supportsInApp(DESKTOP_CAPTURE).
+if (media.status().goLivePatched !== true) throw new Error("Go Live gate was not patched");
+if (realStore.supportsInApp("VIDEO") !== false) throw new Error("precondition failed: gate already open");
+media.forceGoLive(true);
+if (realStore.supportsInApp("VIDEO") !== true) throw new Error("forceGoLive did not unlock VIDEO");
+if (realStore.supportsInApp("DESKTOP_CAPTURE") !== true) throw new Error("forceGoLive did not unlock DESKTOP_CAPTURE");
+if (realStore.supports("VIDEO") !== true) throw new Error("forceGoLive did not unlock supports(VIDEO)");
+if (realStore.supportsInApp("NOISE_SUPPRESSION") !== false) throw new Error("forceGoLive leaked to unrelated features");
+if (media.status().forceGoLive !== true) throw new Error("forceGoLive flag not reported");
+media.forceGoLive(false);
+if (realStore.supportsInApp("VIDEO") !== false) throw new Error("forceGoLive(false) did not restore the gate");
 
 // Simulate Discord registering the sink for a remote stream, then drawing a
 // decoded frame. The bridge must have marked the canvas and must substitute it.
