@@ -49,6 +49,7 @@
     goLiveError: "",
     configPatched: false,
     forceGoLive: false,
+    forceCodec: null,
     originals: {},
     sinks: new Map()
   };
@@ -437,6 +438,7 @@
       }
     },
     { name: "VoiceStateStore", match: function (value) { return storeName(value) === "VoiceStateStore"; } },
+    { name: "CodecConnection", match: function (value) { try { const proto = Object.getPrototypeOf(value); return !!proto && typeof proto.getCodecOptions === "function"; } catch (_) { return false; } } },
     { name: "AppConfigStore", match: function (value) { return typeof value.useConfig === "function" && safeCall(value, "getConfig", { location: "handleScreenshareUnavailable" }).ok; } },
     { name: "UserStore", match: function (value) { return storeName(value) === "UserStore"; } }
   ];
@@ -688,6 +690,47 @@
     return out;
   }
 
+  function setVideoCodec(name) {
+    state.forceCodec = name || null;
+    const out = { requested: state.forceCodec, settings: null, codecHook: false };
+    try {
+      const store = findStores().MediaEngineStore;
+      if (store) {
+        if (state.forceCodec === "H264") {
+          if (typeof store.setH265Enabled === "function") store.setH265Enabled(false);
+          if (typeof store.setH264Enabled === "function") store.setH264Enabled(true);
+          out.settings = "H264";
+        } else if (state.forceCodec === "H265") {
+          if (typeof store.setH265Enabled === "function") store.setH265Enabled(true);
+          out.settings = "H265";
+        }
+      }
+    } catch (_) {}
+    try {
+      const connection = findStores().CodecConnection;
+      const proto = connection ? Object.getPrototypeOf(connection) : null;
+      if (proto && typeof proto.getCodecOptions === "function") {
+        if (!state.originals.getCodecOptions) {
+          state.originals.getCodecOptions = proto.getCodecOptions;
+          proto.getCodecOptions = function () {
+            const result = state.originals.getCodecOptions.apply(this, arguments);
+            try {
+              if (state.forceCodec && result && Array.isArray(result.videoDecoders)) {
+                const match = result.videoDecoders.find(function (codec) {
+                  return codec && (codec.name === state.forceCodec || codec.codec === state.forceCodec);
+                });
+                if (match) result.videoEncoder = match;
+              }
+            } catch (_) {}
+            return result;
+          };
+        }
+        out.codecHook = true;
+      }
+    } catch (_) {}
+    return out;
+  }
+
   function scanWebpack() {
     if (state.webpackCache) {
       return state.webpackCache;
@@ -848,6 +891,14 @@
       }
     }
     try {
+      const codecOriginal = state.originals.getCodecOptions;
+      const connection = findStores().CodecConnection;
+      const proto = connection ? Object.getPrototypeOf(connection) : null;
+      if (proto && typeof codecOriginal === "function") {
+        proto.getCodecOptions = codecOriginal;
+      }
+    } catch (_) {}
+    try {
       const configOriginal = state.originals.configGetConfig;
       if (configOriginal && configOriginal.holder) {
         configOriginal.holder.getConfig = configOriginal.original;
@@ -936,6 +987,7 @@
     experiments: experiments,
     experimentNames: experimentNames,
     rtcStats: rtcStats,
+    setVideoCodec: setVideoCodec,
     forceGoLive: forceGoLive,
     store: () => findMediaStore(),
     engine: () => {
