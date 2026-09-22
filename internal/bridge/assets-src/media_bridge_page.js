@@ -52,7 +52,7 @@
     viewerSwaps: 0,
     auto: true,
     autoApplied: false,
-    disableDave: true,
+    disableDave: false,
     davePatched: false,
     xhrHook: false,
     experimentRewrites: 0,
