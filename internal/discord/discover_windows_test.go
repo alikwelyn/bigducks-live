@@ -41,3 +41,24 @@ func TestFindLatestReturnsErrorWhenNoExecutableExists(t *testing.T) {
 		t.Fatal("expected missing Discord error")
 	}
 }
+
+func TestFindLatestForCanaryExecutable(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "app-1.0.1187", "DiscordCanary.exe")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("canary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := discord.FindLatestFor(root, "DiscordCanary.exe")
+	if err != nil {
+		t.Fatalf("FindLatestFor() error = %v", err)
+	}
+	if got != path {
+		t.Fatalf("FindLatestFor() = %q, want %q", got, path)
+	}
+	if _, err := discord.FindLatest(root); err == nil {
+		t.Fatal("FindLatest() must not match a Canary-only install")
+	}
+}

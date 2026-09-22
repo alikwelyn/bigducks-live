@@ -42,7 +42,7 @@ func CompanionRoots(primaryRoot string) []string {
 func LaunchCompanions(primaryRoot, pacURL, fullProxyURL string) []error {
 	var errs []error
 	for _, root := range CompanionRoots(primaryRoot) {
-		path, err := FindLatest(root)
+		path, err := FindLatestFor(root, filepath.Base(root)+".exe")
 		if err != nil {
 			continue
 		}

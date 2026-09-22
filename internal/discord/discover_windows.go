@@ -3,7 +3,6 @@
 package discord
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +11,13 @@ import (
 )
 
 func FindLatest(root string) (string, error) {
+	return FindLatestFor(root, "Discord.exe")
+}
+
+// FindLatestFor is FindLatest for a specific flavor executable: Canary ships
+// DiscordCanary.exe, PTB ships DiscordPTB.exe, Development ships
+// DiscordDevelopment.exe. The app-version directory layout is identical.
+func FindLatestFor(root, executable string) (string, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return "", fmt.Errorf("read Discord directory: %w", err)
@@ -27,7 +33,7 @@ func FindLatest(root string) (string, error) {
 		if !ok {
 			continue
 		}
-		candidate := filepath.Join(root, entry.Name(), "Discord.exe")
+		candidate := filepath.Join(root, entry.Name(), executable)
 		info, statErr := os.Stat(candidate)
 		if statErr != nil || info.IsDir() {
 			continue
@@ -39,7 +45,7 @@ func FindLatest(root string) (string, error) {
 		}
 	}
 	if !found {
-		return "", errors.New("Discord.exe was not found in any app-version directory")
+		return "", fmt.Errorf("%s was not found in any app-version directory", executable)
 	}
 	return bestPath, nil
 }
