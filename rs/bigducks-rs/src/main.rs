@@ -155,6 +155,10 @@ struct Args {
     console: bool,
     no_install: bool,
     no_update: bool,
+    /// Diagnostico: so' mostra a decisao de reinicio (nao reinicia nada).
+    check_restart: bool,
+    /// Forca o reinicio do Discord (ignora a comparacao) e sai.
+    restart_discord: bool,
     release_dir: PathBuf,
 }
 
@@ -174,6 +178,8 @@ impl Default for Args {
             console: false,
             no_install: false,
             no_update: false,
+            check_restart: false,
+            restart_discord: false,
             release_dir: default_release_dir(),
         }
     }
@@ -287,6 +293,17 @@ impl Args {
                     args.console = true;
                     i += 1;
                 }
+                // Diagnostico deterministico: mostra a decisao de reinicio de cada
+                // processo do Discord e SAI, sem reiniciar nada.
+                "--check-restart" => {
+                    args.check_restart = true;
+                    i += 1;
+                }
+                // Forca o reinicio do Discord (independente da comparacao) e sai.
+                "--restart-discord" => {
+                    args.restart_discord = true;
+                    i += 1;
+                }
                 // Marcador colocado pelo autostart; sem efeito proprio.
                 "--startup" => i += 1,
                 other => {
@@ -358,6 +375,20 @@ fn run(args: Args) -> anyhow::Result<()> {
     };
     if args.install_only {
         return Ok(());
+    }
+
+    // Flags de diagnostico do reinicio por carimbo. As duas rodam a injecao
+    // (para o carimbo desta execucao existir) e SAEM antes de subir servidor ou
+    // bandeja. `--check-restart` nao toca em processo nenhum; `--restart-discord`
+    // forca o reinicio, ignorando a comparacao.
+    #[cfg(windows)]
+    if args.check_restart || args.restart_discord {
+        run_restart_cli(&args, report.as_ref());
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    if args.check_restart || args.restart_discord {
+        anyhow::bail!("--check-restart/--restart-discord so' existem no Windows");
     }
 
     if args.relay {
@@ -471,6 +502,49 @@ fn relay_serve(state: AppState, port: u16) -> anyhow::Result<()> {
     })
 }
 
+/// CLI de diagnostico/teste do reinicio: usa o carimbo da injecao (desta rodada)
+/// e compara com a hora de inicio de cada processo do Discord.
+///
+/// `--check-restart` so' imprime a decisao (uma linha por processo) e o veredito
+/// - nao reinicia nada. `--restart-discord` forca o reinicio, sem comparar.
+#[cfg(windows)]
+fn run_restart_cli(args: &Args, report: Option<&install::InstallReport>) {
+    let stamp = report
+        .and_then(|report| report.stamp)
+        .or_else(install::read_stamp);
+    let decision = discord::check(stamp);
+
+    logging::write_line(&format!(
+        "check-restart: carimbo da injecao = {} ({})",
+        stamp
+            .map(install::fmt_time)
+            .unwrap_or_else(|| "ausente".to_string()),
+        install::stamp_path().display()
+    ));
+    for line in &decision.lines {
+        logging::write_line(line);
+    }
+
+    if args.restart_discord {
+        logging::write_line("--restart-discord: forca o reinicio (ignora a comparacao)");
+        match discord::restart() {
+            Ok(lines) => {
+                for line in lines {
+                    logging::write_line(&format!("reiniciar-discord: {line}"));
+                }
+            }
+            Err(error) => {
+                logging::write_line(&format!("WARN reiniciar Discord falhou: {error:#}"));
+            }
+        }
+    } else {
+        logging::write_line(&format!(
+            "--check-restart: {} (nenhum processo foi tocado)",
+            decision.note
+        ));
+    }
+}
+
 /// App de bandeja no Windows: servidor em threads do runtime + tray na main.
 #[cfg(windows)]
 fn desktop_main(args: Args, report: Option<install::InstallReport>) {
@@ -521,15 +595,30 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
         }
     });
 
-    // Se a injecao MUDOU nesta execucao e o Discord ja esta aberto, ele so' vai
-    // ler o asar quando reiniciar: fecha com educacao e reabre os mesmos exes.
-    if let Some(report) = report {
-        if report.changed && discord::is_running() {
-            logging::write_line("injecao mudou e o Discord esta aberto: reiniciando para aplicar");
+    // A REGRA (corrige o bridge "velho"): nao importa se o CONTEUDO mudou nesta
+    // execucao. O que importa e' se o Discord que esta rodando subiu ANTES ou
+    // DEPOIS do carimbo da injecao atual. Se subiu antes, ele leu o asar velho e
+    // continua com codigo velho -> reiniciar. (O gate antigo era `report.changed`,
+    // que vira false a partir da 2a execucao e deixava o Discord stale.)
+    if discord::is_running() {
+        let stamp = report
+            .as_ref()
+            .and_then(|report| report.stamp)
+            .or_else(install::read_stamp);
+        let decision = discord::check(stamp);
+        for line in &decision.lines {
+            logging::write_line(line);
+        }
+        if let Ok(mut status) = state.status.lock() {
+            status.restart_note = decision.note.clone();
+        }
+
+        if decision.stale {
+            logging::write_line("Discord rodando com injecao velha: reiniciando para aplicar");
             if let Ok(mut status) = state.status.lock() {
                 status.notify(
                     "Aplicando o bridge no Discord",
-                    "O Discord vai reiniciar para carregar a injecao.",
+                    "O Discord vai reiniciar para carregar a injecao atual.",
                 );
             }
             let status = state.status.clone();
@@ -539,16 +628,20 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
                         logging::write_line(&format!("reiniciar-discord: {line}"));
                     }
                     if let Ok(mut status) = status.lock() {
+                        status.restart_note = "Discord reiniciado - injecao ativa".to_string();
                         status.notify("Discord reiniciado", "A injecao ja esta ativa.");
                     }
                 }
                 Err(error) => {
                     logging::write_line(&format!("WARN reiniciar Discord falhou: {error:#}"));
                     if let Ok(mut status) = status.lock() {
+                        status.restart_note = format!("reinicio falhou: {error:#}");
                         status.notify("Falha ao reiniciar o Discord", &format!("{error:#}"));
                     }
                 }
             });
+        } else {
+            logging::write_line("Discord ja tem a injecao atual: nada a reiniciar");
         }
     }
 
@@ -561,7 +654,7 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
     }
 
     // Bandeja na thread principal; bloqueia ate' "Sair".
-    tray::run(port, state.status.clone());
+    tray::run(state.status.clone());
     logging::write_line("bandeja encerrada");
     std::process::exit(0);
 }
@@ -651,12 +744,44 @@ struct SourceQuery {
     pid: Option<String>,
 }
 
+/// Relatorios repetitivos do bridge (`stats`, `store-scan`, `native-poll`...)
+/// chegam a cada ~2s e so' servem pra diagnostico. Sem isto o log vira
+/// metralhadora e ainda queima CPU a toa. Loga quando o conteudo MUDA ou, no
+/// maximo, a cada 30s por tipo.
+fn should_log_event(name: &str, data: &str) -> bool {
+    const NOISY: [&str; 5] = [
+        "stats",
+        "store-scan",
+        "native-poll",
+        "voice-room-diag",
+        "probe",
+    ];
+    if !NOISY.contains(&name) {
+        return true;
+    }
+    static LAST: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (Instant, String)>>,
+    > = std::sync::OnceLock::new();
+    let map = LAST.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let Ok(mut guard) = map.lock() else {
+        return true;
+    };
+    let now = Instant::now();
+    match guard.get(name) {
+        Some((at, last))
+            if *last == data && now.duration_since(*at) < Duration::from_secs(30) =>
+        {
+            false
+        }
+        _ => {
+            guard.insert(name.to_string(), (now, data.to_string()));
+            true
+        }
+    }
+}
+
 /// O preload reporta aqui o que ele ve - inclusive a fonte escolhida no modal do
-/// Discord. Assim tudo aparece no log do motor.
-///
-/// stream-start/stream-stop sao o CICLO DE VIDA da live sem a store: o preload
-/// ve a fonte escolhida e o reset, e aqui a mensagem vira broadcast no hub -
-/// o renderer da janela certa (data = pid) publica/para o P2P.
+/// Discord. Assim tudo aparece no log do motor (respeitando `should_log_event`).
 async fn bridge_event(
     State(state): State<AppState>,
     Query(query): Query<EventQuery>,
@@ -672,7 +797,9 @@ async fn bridge_event(
         }));
     }
     update_status(&state, &name, &data);
-    logging::write_line(&format!("preload: {name} {data}"));
+    if should_log_event(&name, &data) {
+        logging::write_line(&format!("preload: {name} {data}"));
+    }
     (
         [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         "ok",

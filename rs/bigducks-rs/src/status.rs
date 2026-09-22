@@ -41,6 +41,9 @@ pub struct Status {
     pub update: Update,
     pub update_detail: String,
     pub autostart: bool,
+    /// Por que (nao) vamos reiniciar o Discord por causa da injecao. Vem da
+    /// comparacao carimbo-da-injecao x inicio do processo (ver src/discord.rs).
+    pub restart_note: String,
     /// Balao pendente: a bandeja consome e mostra (titulo, corpo).
     pub balloon: Option<(String, String)>,
 }
@@ -56,6 +59,7 @@ impl Default for Status {
             update: Update::Idle,
             update_detail: String::new(),
             autostart: false,
+            restart_note: String::new(),
             balloon: None,
         }
     }
@@ -88,7 +92,12 @@ impl Status {
             Update::Failed => " | update falhou",
             Update::Idle => "",
         };
-        format!("DiscordStream - {bridge}, {relay}{streaming}{update}")
+        let restart = if self.restart_note.is_empty() {
+            String::new()
+        } else {
+            format!(" | {}", self.restart_note)
+        };
+        format!("DiscordStream - {bridge}, {relay}{streaming}{update}{restart}")
     }
 }
 

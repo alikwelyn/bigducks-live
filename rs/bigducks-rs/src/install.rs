@@ -14,6 +14,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -32,11 +33,58 @@ pub struct InstallReport {
     pub installed: bool,
     /// Sabores (Discord/Canary/...) que receberam a injecao.
     pub flavours: Vec<String>,
+    /// Instante em que a injecao foi (re)afirmada nesta rodada (o carimbo).
+    pub stamp: Option<SystemTime>,
 }
 
 pub fn data_dir() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(base).join("DiscordStream")
+}
+
+/// Arquivo que registra QUANDO a injecao foi (re)afirmada por ultimo, em unix
+/// segundos. Fica SEPARADO do `write_if_changed`: mesmo quando o JS nao muda
+/// nenhum byte, a injecao foi reescrita no disco nesta execucao - e e' isso que
+/// decide se um Discord que ja esta rodando subiu ANTES (leu o asar velho) ou
+/// DEPOIS (ja' tem o bridge) dela.
+const STAMP_FILE: &str = "injected-at.txt";
+
+/// `%LOCALAPPDATA%\DiscordStream\injected-at.txt`.
+pub fn stamp_path() -> PathBuf {
+    data_dir().join(STAMP_FILE)
+}
+
+/// Grava o carimbo da injecao (unix segundos) e devolve o instante gravado.
+pub fn write_stamp() -> Result<SystemTime> {
+    let now = SystemTime::now();
+    let seconds = now
+        .duration_since(UNIX_EPOCH)
+        .map(|delta| delta.as_secs())
+        .unwrap_or(0);
+    let path = stamp_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("criar {}", parent.display()))?;
+    }
+    fs::write(&path, format!("{seconds}\n"))
+        .with_context(|| format!("escrever {}", path.display()))?;
+    Ok(now)
+}
+
+/// Le o carimbo da injecao (unix segundos). `None` = nunca injetamos aqui.
+pub fn read_stamp() -> Option<SystemTime> {
+    let text = fs::read_to_string(stamp_path()).ok()?;
+    let seconds: u64 = text.trim().parse().ok()?;
+    Some(UNIX_EPOCH + Duration::from_secs(seconds))
+}
+
+/// `18:05:40Z` (UTC, sem dependencia externa) - usado nas decisoes de reinicio.
+pub fn fmt_time(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .map(|delta| delta.as_secs())
+        .unwrap_or(0);
+    let rem = seconds % 86_400;
+    format!("{:02}:{:02}:{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
 }
 
 fn js_path(path: &Path) -> String {
@@ -194,11 +242,34 @@ pub fn install() -> Result<InstallReport> {
     if report.is_empty() {
         report.push("nenhuma instalacao do Discord encontrada".to_string());
     }
+
+    // Carimbo: SEMPRE que a injecao foi aplicada (mesmo sem mudar um byte),
+    // registra o instante. E' a base da decisao de reiniciar um Discord que ja'
+    // esta rodando (ver src/discord.rs).
+    let stamp = if installed {
+        match write_stamp() {
+            Ok(stamp) => {
+                report.push(format!(
+                    "injecao carimbada em {} (injected-at.txt)",
+                    fmt_time(stamp)
+                ));
+                Some(stamp)
+            }
+            Err(error) => {
+                report.push(format!("carimbo da injecao falhou: {error:#}"));
+                read_stamp()
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(InstallReport {
         lines: report,
         changed,
         installed,
         flavours,
+        stamp,
     })
 }
 

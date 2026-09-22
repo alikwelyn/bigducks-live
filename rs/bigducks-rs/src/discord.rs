@@ -9,17 +9,17 @@
 //! e' avisado por balao (sem prompt).
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use std::os::windows::process::CommandExt;
-use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, BOOL, FILETIME, HWND, LPARAM};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, WaitForSingleObject,
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, WaitForSingleObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
@@ -42,6 +42,8 @@ pub struct Instance {
     pub name: String,
     pub pid: u32,
     pub path: Option<PathBuf>,
+    /// Instante em que o processo comecou (UTC). `None` = nao conseguimos ler.
+    pub started: Option<SystemTime>,
 }
 
 /// Todos os processos das familias do Discord que estao rodando.
@@ -61,6 +63,7 @@ pub fn running() -> Vec<Instance> {
                 name,
                 pid: entry.th32ProcessID,
                 path: process_path(entry.th32ProcessID),
+                started: process_started(entry.th32ProcessID),
             });
         }
         ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
@@ -73,6 +76,78 @@ pub fn running() -> Vec<Instance> {
 
 pub fn is_running() -> bool {
     !running().is_empty()
+}
+
+/// Veredito da verificacao de reinicio: uma linha por processo do Discord.
+#[derive(Clone, Debug)]
+pub struct Decision {
+    /// Uma linha por processo, pronta pro log (uma por processo).
+    pub lines: Vec<String>,
+    /// Existe um Discord rodando ANTES do carimbo da injecao (codigo velho).
+    pub stale: bool,
+    /// Resumo curto: vai direto pro tooltip da bandeja.
+    pub note: String,
+}
+
+/// Compara cada processo do Discord com o carimbo da injecao.
+///
+/// Regra: o asar so' e' lido quando o Discord INICIA. Entao um Discord que
+/// comecou ANTES do carimbo esta rodando o codigo de antes -> VELHO, reiniciar.
+/// Se comecou DEPOIS, ja' leu a injecao atual -> ok, deixar quieto (nada de
+/// reinicio desnecessario). O que conta e' a HORA, nao se o JS mudou de bytes.
+pub fn check(stamp: Option<SystemTime>) -> Decision {
+    let instances = running();
+    if instances.is_empty() {
+        return Decision {
+            lines: vec!["discord: nenhum processo rodando - nada para reiniciar".to_string()],
+            stale: false,
+            note: "Discord fechado - nada a reiniciar".to_string(),
+        };
+    }
+
+    let injected = stamp
+        .map(crate::install::fmt_time)
+        .unwrap_or_else(|| "sem carimbo".to_string());
+    let mut lines = Vec::with_capacity(instances.len());
+    let mut stale_count = 0usize;
+
+    for instance in &instances {
+        let flavour = instance.name.trim_end_matches(".exe").to_lowercase();
+        let started = instance
+            .started
+            .map(crate::install::fmt_time)
+            .unwrap_or_else(|| "?".to_string());
+        let verdict = match (instance.started, stamp) {
+            (Some(start), Some(stamp_time)) if start >= stamp_time => "ok, ja tem o bridge",
+            (Some(_), Some(_)) => {
+                stale_count += 1;
+                "VELHO, reiniciando"
+            }
+            (Some(_), None) => {
+                stale_count += 1;
+                "sem carimbo da injecao, reiniciando"
+            }
+            (None, _) => {
+                stale_count += 1;
+                "sem hora de inicio, reiniciando"
+            }
+        };
+        lines.push(format!(
+            "discord: {flavour} pid={} started={started} injetado={injected} -> {verdict}",
+            instance.pid
+        ));
+    }
+
+    let stale = stale_count > 0;
+    let note = if stale {
+        format!(
+            "Discord com injecao velha ({stale_count}/{}) - reiniciar",
+            instances.len()
+        )
+    } else {
+        format!("Discord ja tem o bridge ({} processo(s))", instances.len())
+    };
+    Decision { lines, stale, note }
 }
 
 /// Fecha (educadamente) e reabre todos os Discords que estao rodando.
@@ -226,6 +301,37 @@ fn process_path(pid: u32) -> Option<PathBuf> {
         }
         Some(PathBuf::from(String::from_utf16_lossy(&buffer[..size as usize])))
     }
+}
+
+/// Instante de criacao do processo (UTC), via `GetProcessTimes`.
+fn process_started(pid: u32) -> Option<SystemTime> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut creation: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        Some(filetime_to_systemtime(creation))
+    }
+}
+
+/// `FILETIME` (100ns desde 1601-01-01 UTC) -> `SystemTime` (unix).
+fn filetime_to_systemtime(filetime: FILETIME) -> SystemTime {
+    /// Segundos entre 1601-01-01 e 1970-01-01 (a epoca do FILETIME e a do unix).
+    const TICKS_1601_TO_1970: u64 = 116_444_736_000_000_000;
+    let ticks = ((filetime.dwHighDateTime as u64) << 32) | filetime.dwLowDateTime as u64;
+    let unix_ticks = ticks.saturating_sub(TICKS_1601_TO_1970);
+    let seconds = unix_ticks / 10_000_000;
+    let nanos = ((unix_ticks % 10_000_000) * 100) as u32;
+    UNIX_EPOCH + Duration::new(seconds, nanos)
 }
 
 fn utf16_field(field: &[u16]) -> String {

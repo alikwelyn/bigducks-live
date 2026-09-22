@@ -20,22 +20,20 @@ use crate::status::{Relay, Shared, Update};
 use crate::{autostart, discord, icon, install, platform};
 
 /// Roda a bandeja na thread atual (bloqueia ate' "Sair").
-pub fn run(port: u16, status: Shared) {
+pub fn run(status: Shared) {
     platform::create_balloon_window();
 
     let menu = Menu::new();
-    let open = MenuItem::new("Abrir painel", true, None);
     let view_log = MenuItem::new("Ver log", true, None);
-    let reinstall = MenuItem::new("Reinstalar bridge", true, None);
+    // "Reiniciar Discord" tambem REINSTALA o bridge: pra quem recebeu o exe,
+    // "reinstalar" e' detalhe interno - um item so' resolve os dois casos.
     let restart_discord = MenuItem::new("Reiniciar Discord", true, None);
     let autostart_item =
         CheckMenuItem::new("Iniciar com o Windows", true, autostart::is_enabled(), None);
     let quit = MenuItem::new("Sair", true, None);
     let _ = menu.append_items(&[
-        &open,
         &view_log,
         &PredefinedMenuItem::separator(),
-        &reinstall,
         &restart_discord,
         &autostart_item,
         &PredefinedMenuItem::separator(),
@@ -53,6 +51,9 @@ pub fn run(port: u16, status: Shared) {
     let mut builder = TrayIconBuilder::new()
         .with_id("bigducks-rs")
         .with_menu(Box::new(menu))
+        // Clique ESQUERDO nao faz nada (nao abre menu, nao abre nada): o menu so'
+        // aparece no botao direito, que e' o que todo mundo espera no Windows.
+        .with_menu_on_left_click(false)
         .with_tooltip("DiscordStream");
     if let Some(icon) = initial {
         builder = builder.with_icon(icon);
@@ -66,9 +67,7 @@ pub fn run(port: u16, status: Shared) {
     };
 
     // Handler de cliques: so' ids + status compartilhado (Send + Sync).
-    let open_id = open.id().clone();
     let log_id = view_log.id().clone();
-    let reinstall_id = reinstall.id().clone();
     let restart_id = restart_discord.id().clone();
     let autostart_id = autostart_item.id().clone();
     let quit_id = quit.id().clone();
@@ -76,13 +75,8 @@ pub fn run(port: u16, status: Shared) {
     let handler_status = status.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         let id = event.id();
-        if id == &open_id {
-            platform::open_target(&format!("http://127.0.0.1:{port}/"));
-        } else if id == &log_id {
+        if id == &log_id {
             platform::open_target(&logging::log_path().to_string_lossy());
-        } else if id == &reinstall_id {
-            let status = handler_status.clone();
-            std::thread::spawn(move || reinstall_bridge(status));
         } else if id == &restart_id {
             let status = handler_status.clone();
             std::thread::spawn(move || restart_discord_app(status));
@@ -116,11 +110,31 @@ fn refresh(tray: &TrayIcon, autostart_item: &CheckMenuItem, status: &Shared) {
         return;
     };
 
-    if let Some(icon) = icon::tray_icon(installed, relay, update) {
-        let _ = tray.set_icon(Some(icon));
+    // So' mexe na bandeja quando o estado MUDA: recriar o icone 32x32 e chamar
+    // set_tooltip/set_checked a cada 2s era churn puro (alocacao + chamadas Win32).
+    static LAST_KEY: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+    let key = format!("{installed}|{relay:?}|{update:?}|{tooltip}");
+    let changed = LAST_KEY
+        .get_or_init(|| std::sync::Mutex::new(String::new()))
+        .lock()
+        .map(|mut last| {
+            let changed = *last != key;
+            if changed {
+                *last = key.clone();
+            }
+            changed
+        })
+        .unwrap_or(true);
+    if changed {
+        if let Some(icon) = icon::tray_icon(installed, relay, update) {
+            let _ = tray.set_icon(Some(icon));
+        }
+        let _ = tray.set_tooltip(Some(tooltip.clone()));
     }
-    let _ = tray.set_tooltip(Some(tooltip));
-    let _ = autostart_item.set_checked(autostart::is_enabled());
+    let wanted = autostart::is_enabled();
+    if autostart_item.is_checked() != wanted {
+        let _ = autostart_item.set_checked(wanted);
+    }
 
     if let Some((title, body)) = balloon {
         platform::balloon(&title, &body);
@@ -130,41 +144,36 @@ fn refresh(tray: &TrayIcon, autostart_item: &CheckMenuItem, status: &Shared) {
     }
 }
 
-/// Reinstala a injecao no app.asar e, se o Discord estiver aberto, reinicia.
-fn reinstall_bridge(status: Shared) {
-    crate::log_info!("bandeja: reinstalar bridge");
+/// Reinicia o Discord pra aplicar o bridge - e REINSTALA a injecao antes, porque
+/// pro usuario existe uma acao so' ("reiniciar" = "faz funcionar de novo").
+fn restart_discord_app(status: Shared) {
+    crate::log_info!("bandeja: reiniciar Discord (reinjetando o bridge antes)");
     match install::install() {
         Ok(report) => {
             for line in &report.lines {
-                crate::log_info!("reinstalar: {line}");
+                crate::log_info!("reiniciar: {line}");
             }
             if let Ok(mut state) = status.lock() {
                 state.bridge_installed = report.installed;
-                state.notify(
-                    "Bridge reinstalado",
-                    if report.installed {
-                        "A injecao foi reescrita. Reiniciando o Discord se necessario."
-                    } else {
-                        "Nenhuma instalacao do Discord encontrada."
-                    },
-                );
             }
-            if report.installed && report.changed && discord::is_running() {
-                restart_discord_app(status);
+            if !report.installed {
+                if let Ok(mut state) = status.lock() {
+                    state.notify(
+                        "Discord nao encontrado",
+                        "Nao achei nenhuma instalacao do Discord para injetar.",
+                    );
+                }
+                return;
             }
         }
         Err(error) => {
-            crate::log_warn!("reinstalar falhou: {error:#}");
+            crate::log_warn!("reiniciar: injecao falhou: {error:#}");
             if let Ok(mut state) = status.lock() {
-                state.notify("Falha ao reinstalar", &format!("{error:#}"));
+                state.notify("Falha ao reinstalar a injecao", &format!("{error:#}"));
             }
+            return;
         }
     }
-}
-
-/// Reinicia o Discord (fecha com WM_CLOSE e reabre os mesmos executaveis).
-fn restart_discord_app(status: Shared) {
-    crate::log_info!("bandeja: reiniciar Discord");
     if let Ok(mut state) = status.lock() {
         state.notify("Reiniciando o Discord", "Fechando e reabrindo para aplicar o bridge.");
     }
