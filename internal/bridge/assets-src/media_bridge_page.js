@@ -51,6 +51,8 @@
     viewerStream: null,
     viewerSwaps: 0,
     auto: true,
+    videoGuardCleared: false,
+    dispatcherFound: false,
     goLivePatched: false,
     goLiveError: "",
     enginePatched: false,
@@ -986,12 +988,73 @@
     return { ok: true, swaps: state.viewerSwaps };
   }
 
-  // Zero-command mode: unlock the Go Live UI and prefer H264 as soon as the
-  // script is pasted. Everything stays overridable through the API.
+  // The real gate: the server assigns the "2026-08-video-guard" user
+  // experiment (variations 1 and 2 set videoEnabled:false) to Brazilian
+  // accounts. Neutralize the assignment at the source by overriding it on
+  // the Flux dispatcher, then clear the experiment's blocking variations.
+  const VIDEO_GUARD = "2026-08-video-guard";
+
+  function findFluxDispatcher() {
+    try {
+      const chunk = globalThis.webpackChunkdiscord_app;
+      if (!chunk || typeof chunk.push !== "function") {
+        return null;
+      }
+      const require = chunk.push([[Symbol("bigducks-dispatcher")], {}, (r) => r]);
+      try {
+        chunk.pop();
+      } catch (_) {}
+      const cache = require && require.c;
+      if (!cache) {
+        return null;
+      }
+      for (const id of Object.keys(cache)) {
+        let exports = null;
+        try {
+          exports = cache[id] && cache[id].exports;
+        } catch (_) {
+          continue;
+        }
+        if (!exports || typeof exports !== "object") {
+          continue;
+        }
+        for (const value of Object.values(exports)) {
+          if (value && typeof value === "object" && typeof value.dispatch === "function" && value._actionHandlers && value._actionHandlers._orderedActionHandlers) {
+            return value;
+          }
+        }
+      }
+    } catch (error) {
+      state.lastError = String(error);
+    }
+    return null;
+  }
+
+  function neutralizeVideoGuard() {
+    try {
+      const dispatcher = state.dispatcher || findFluxDispatcher();
+      if (!dispatcher) {
+        return false;
+      }
+      state.dispatcher = dispatcher;
+      state.dispatcherFound = true;
+      dispatcher.dispatch({ type: "APEX_EXPERIMENT_SESSION_OVERRIDE_CREATE", experimentName: VIDEO_GUARD, variantId: 0 });
+      dispatcher.dispatch({ type: "APEX_EXPERIMENT_OVERRIDE_CREATE", experimentName: VIDEO_GUARD, variantId: 0 });
+      state.videoGuardCleared = true;
+      return true;
+    } catch (error) {
+      state.lastError = String(error);
+      return false;
+    }
+  }
+
   function applyAuto() {
     if (!state.auto) {
       return;
     }
+    try {
+      neutralizeVideoGuard();
+    } catch (_) {}
     try {
       forceGoLive(true);
     } catch (_) {}
@@ -1010,6 +1073,7 @@
     patchMediaEngineStore();
     patchMediaEngine();
     patchConfigStore();
+    neutralizeVideoGuard();
     applyAuto();
     ensureRepaintLoop();
     if (!state.engine && !state.retryTimer) {
@@ -1130,6 +1194,8 @@
       viewerOverride: state.viewerOverride,
       viewerSwaps: state.viewerSwaps,
       auto: state.auto,
+      videoGuardCleared: state.videoGuardCleared,
+      dispatcherFound: state.dispatcherFound,
       goLivePatched: state.goLivePatched,
       goLiveError: state.goLiveError,
       enginePatched: state.enginePatched,
@@ -1175,6 +1241,7 @@
     setVideoCodec: setVideoCodec,
     injectTestStream: injectTestStream,
     stopTestStream: stopTestStream,
+    neutralizeVideoGuard: neutralizeVideoGuard,
     setAuto: (enabled) => {
       state.auto = enabled !== false;
       if (state.auto) {
