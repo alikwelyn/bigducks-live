@@ -51,6 +51,8 @@
     viewerStream: null,
     viewerSwaps: 0,
     auto: true,
+    autoApplied: false,
+    incomingVideoForced: false,
     videoGuardCleared: false,
     dispatcherFound: false,
     goLivePatched: false,
@@ -431,6 +433,7 @@
     { name: "VoiceStateStore", match: function (value) { return storeName(value) === "VoiceStateStore"; } },
     { name: "CodecConnection", match: function (value) { try { const proto = typeof value === "function" ? value.prototype : Object.getPrototypeOf(value); return !!proto && typeof proto.getCodecOptions === "function"; } catch (_) { return false; } } },
     { name: "AppConfigStore", match: function (value) { return typeof value.useConfig === "function" && safeCall(value, "getConfig", { location: "handleScreenshareUnavailable" }).ok; } },
+    { name: "WindowVisibilityVideoManager", match: function (value) { return storeName(value) === "WindowVisibilityVideoManager"; } },
     { name: "UserStore", match: function (value) { return storeName(value) === "UserStore"; } }
   ];
 
@@ -1048,12 +1051,49 @@
     }
   }
 
+  // Discord's WindowVisibilityVideoManager stops incoming video when the
+  // window is not visible, which starves the stream receiver and produces the
+  // 20s receiver timeout (error 2012). Keep incoming video enabled.
+  function forceIncomingVideo() {
+    const store = findStores().WindowVisibilityVideoManager;
+    if (!store) {
+      return false;
+    }
+    state.incomingVideoForced = true;
+    let patched = false;
+    try {
+      const proto = Object.getPrototypeOf(store) || {};
+      for (const name of Object.getOwnPropertyNames(proto)) {
+        if (!/incomingVideo/i.test(name) || typeof proto[name] !== "function") {
+          continue;
+        }
+        if (state.originals["wv." + name]) {
+          continue;
+        }
+        const original = proto[name];
+        state.originals["wv." + name] = { target: proto, original: original };
+        proto[name] = function () {
+          const result = original.apply(this, arguments);
+          if (typeof result === "boolean") {
+            return true;
+          }
+          return result;
+        };
+        patched = true;
+      }
+    } catch (_) {}
+    return patched;
+  }
+
   function applyAuto() {
     if (!state.auto) {
       return;
     }
     try {
       neutralizeVideoGuard();
+    } catch (_) {}
+    try {
+      forceIncomingVideo();
     } catch (_) {}
     try {
       forceGoLive(true);
@@ -1074,7 +1114,10 @@
     patchMediaEngine();
     patchConfigStore();
     neutralizeVideoGuard();
-    applyAuto();
+    if (!state.autoApplied) {
+      state.autoApplied = true;
+      applyAuto();
+    }
     ensureRepaintLoop();
     if (!state.engine && !state.retryTimer) {
       state.retryTimer = globalThis.setTimeout(() => {
@@ -1127,6 +1170,16 @@
         } catch (_) {}
       }
     }
+    try {
+      for (const key of Object.keys(state.originals)) {
+        if (key.indexOf("wv.") === 0) {
+          const record = state.originals[key];
+          if (record && record.target) {
+            record.target[key.slice(3)] = record.original;
+          }
+        }
+      }
+    } catch (_) {}
     try {
       for (const key of ["engine.supports", "engine.supportsInApp"]) {
         const record = state.originals[key];
@@ -1196,6 +1249,7 @@
       auto: state.auto,
       videoGuardCleared: state.videoGuardCleared,
       dispatcherFound: state.dispatcherFound,
+      incomingVideoForced: state.incomingVideoForced === true,
       goLivePatched: state.goLivePatched,
       goLiveError: state.goLiveError,
       enginePatched: state.enginePatched,
@@ -1242,6 +1296,7 @@
     injectTestStream: injectTestStream,
     stopTestStream: stopTestStream,
     neutralizeVideoGuard: neutralizeVideoGuard,
+    forceIncomingVideo: forceIncomingVideo,
     setAuto: (enabled) => {
       state.auto = enabled !== false;
       if (state.auto) {
