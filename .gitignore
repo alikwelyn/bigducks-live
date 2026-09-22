@@ -3,3 +3,8 @@
 *.syso
 *.tmp
 *.log
+
+# Local agent notes, worktrees and Windows NUL redirect leftovers
+/AGENTS.md
+/.worktrees/
+/nul
