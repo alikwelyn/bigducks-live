@@ -87,7 +87,6 @@ const i18nProxy = new Proxy({}, {
 const engineConnections = new Set();
 const realEngine = { connections: engineConnections, connectionsEmpty: () => engineConnections.size === 0 };
 class FakeMediaEngineStore {
-  getName() { return "MediaEngineStore"; }
   getGoLiveSource() { return null; }
   getMediaEngine() { return realEngine; }
   supports() { return false; }

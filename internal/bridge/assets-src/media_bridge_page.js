@@ -46,6 +46,7 @@
     webpackCache: null,
     disposed: false,
     goLivePatched: false,
+    goLiveError: "",
     configPatched: false,
     forceGoLive: false,
     originals: {},
@@ -391,10 +392,13 @@
     {
       name: "MediaEngineStore",
       match: function (value) {
-        if (storeName(value) === "MediaEngineStore") {
-          return true;
-        }
-        return typeof value.getGoLiveSource === "function" && safeCall(value, "getMediaEngine").ok;
+        try {
+          const proto = Object.getPrototypeOf(value);
+          if (proto && typeof proto.supportsInApp === "function" && typeof proto.supports === "function" && typeof value.getMediaEngine === "function") {
+            return true;
+          }
+        } catch (_) {}
+        return false;
       }
     },
     {
@@ -635,10 +639,12 @@
     }
     const store = findStores().MediaEngineStore;
     if (!store) {
+      state.goLiveError = "MediaEngineStore not found";
       return false;
     }
     const proto = Object.getPrototypeOf(store);
     if (!proto) {
+      state.goLiveError = "MediaEngineStore prototype missing";
       return false;
     }
     let patched = false;
@@ -659,6 +665,7 @@
       } catch (_) {}
     }
     state.goLivePatched = patched;
+    state.goLiveError = patched ? "" : "supports methods not found on prototype";
     return patched;
   }
 
@@ -814,6 +821,7 @@
       engineKeys: engineKeys(),
       stores: Object.keys(findStores()),
       goLivePatched: state.goLivePatched,
+      goLiveError: state.goLiveError,
       configPatched: state.configPatched,
       forceGoLive: state.forceGoLive,
       webpack: scanWebpack(),
