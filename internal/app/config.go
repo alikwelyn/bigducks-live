@@ -75,13 +75,17 @@ type persistedConfig struct {
 func DefaultConfig() Config {
 	excluded := map[string]bool{"BR": true}
 	return Config{
-		DataDir:           defaultDataDir(),
-		DiscordRoot:       discord.DefaultRoot(),
-		RoutingMode:       RoutingModeGateway,
-		TelemetryEnabled:  true,
-		ProxySourceURL:    proxy.DefaultSourceURL,
-		RoutedHosts:       []string{"gateway.discord.gg", "remote-auth-gateway.discord.gg"},
-		RoutedSuffixes:    []string{"discord.gg"},
+		DataDir:          defaultDataDir(),
+		DiscordRoot:      discord.DefaultRoot(),
+		RoutingMode:      RoutingModeGateway,
+		TelemetryEnabled: true,
+		ProxySourceURL:   proxy.DefaultSourceURL,
+		RoutedHosts:      []string{"gateway.discord.gg", "remote-auth-gateway.discord.gg"},
+		// discord.com carries /api/v9/apex/experiments, which is what assigns the
+		// Brazilian video guard (2026-08-video-guard). Routing only *.discord.gg
+		// left that assignment on the direct BR IP, so the server withheld the
+		// E2EE video keys and Go Live stalled. Media (*.discord.media) stays direct.
+		RoutedSuffixes:    []string{"discord.gg", "discord.com"},
 		ExcludedCountries: excluded,
 		ProbeTimeout:      6 * time.Second,
 		StartupBudget:     12 * time.Second,

@@ -35,6 +35,22 @@ func TestDefaultConfigUsesGatewayOnlyDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigRoutesApexExperimentHost(t *testing.T) {
+	config := app.DefaultConfig()
+	routed := make(map[string]bool, len(config.RoutedSuffixes))
+	for _, suffix := range config.RoutedSuffixes {
+		routed[suffix] = true
+	}
+	if !routed["discord.gg"] || !routed["discord.com"] {
+		t.Fatalf("RoutedSuffixes = %#v, want discord.gg and discord.com so /apex/experiments boots off the BR IP", config.RoutedSuffixes)
+	}
+	for _, suffix := range config.RoutedSuffixes {
+		if suffix == "discord.media" || suffix == "discordapp.net" || suffix == "discordapp.com" {
+			t.Fatalf("RoutedSuffixes must keep media direct, got %q", suffix)
+		}
+	}
+}
+
 func TestDefaultConfigEnablesTelemetry(t *testing.T) {
 	if !app.DefaultConfig().TelemetryEnabled {
 		t.Fatal("telemetry must be enabled by default")
