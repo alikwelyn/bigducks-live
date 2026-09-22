@@ -4,7 +4,8 @@
   "version": "0.1.7",
   "scripts": {
     "build:bridge": "node scripts/build-bridge.mjs",
-    "check:bridge": "node scripts/check-bridge.mjs"
+    "check:bridge": "node scripts/check-bridge.mjs",
+    "test:media": "node scripts/media-bridge-page.test.mjs"
   },
   "dependencies": {
     "@sentry/electron": "7.18.0"

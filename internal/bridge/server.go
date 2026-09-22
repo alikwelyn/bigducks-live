@@ -227,6 +227,19 @@ func (s *Server) ResolveProxy(ctx context.Context, targetURL string) (string, er
 	return s.command(ctx, protocolMessage{Type: "resolve_proxy", URL: targetURL})
 }
 
+// MediaProbe asks the renderer media bridge to report which Discord media
+// internals it could hook and which video sinks it currently sees.
+func (s *Server) MediaProbe(ctx context.Context) (string, error) {
+	return s.command(ctx, protocolMessage{Type: "media_probe"})
+}
+
+// SetMediaTestPattern toggles the renderer test pattern that replaces the
+// frames being drawn for a Go Live stream. It is the spike that proves the
+// receive-side takeover before any peer-to-peer transport is wired in.
+func (s *Server) SetMediaTestPattern(ctx context.Context, enabled bool) (string, error) {
+	return s.command(ctx, protocolMessage{Type: "media_test_pattern", Enabled: enabled})
+}
+
 func (s *Server) command(ctx context.Context, message protocolMessage) (string, error) {
 	if s == nil {
 		return "", ErrUnavailable

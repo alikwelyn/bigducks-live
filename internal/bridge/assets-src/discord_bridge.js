@@ -13,6 +13,7 @@ if (!global.__discordStreamBridgeLoaded) {
   const clientURL = /^https:\/\/(?:canary|ptb\.)?discord\.com\/(?:app|channels|login)/;
   const dataRoot = process.env.LOCALAPPDATA || app.getPath("userData");
   const BIG_DUCKS_RELEASE = __BIG_DUCKS_RELEASE__;
+  const mediaBridgeSource = __BIG_DUCKS_MEDIA_PAGE__;
   const telemetryCachePath = path.join(dataRoot, "DiscordStream", "telemetry", "electron");
   const telemetryCodes = new Set([
     "bridge_failure", "audio_only", "video_stalled", "receiver_timeout",
@@ -161,6 +162,7 @@ if (!global.__discordStreamBridgeLoaded) {
   let nativeLastSentAt = 0;
   let nativeLastSnapshot = null;
   const nativeWindows = new WeakSet();
+  const mediaWindows = new WeakSet();
   const nativeVoiceWorld = 999;
   const nativePreloadID = "big-ducks-native-rtc";
 
@@ -411,6 +413,46 @@ if (!global.__discordStreamBridgeLoaded) {
     inject();
   }
 
+  function installMediaBridge(win) {
+    if (!win || mediaWindows.has(win)) return;
+    mediaWindows.add(win);
+    const inject = () => {
+      if (win.isDestroyed()) return;
+      win.webContents.executeJavaScript(mediaBridgeSource, true).catch(() => {});
+    };
+    win.webContents.on("dom-ready", inject);
+    win.webContents.on("did-finish-load", inject);
+    inject();
+  }
+
+  function respondFromClient(id, expression) {
+    const windows = clientWindows();
+    if (!windows.length) return reply(id, false, "Discord client window was not found");
+    Promise.all(windows.map(async win => {
+      try {
+        const value = await win.webContents.executeJavaScript(expression, true);
+        return typeof value === "string" ? value : "";
+      } catch (_) {
+        return "";
+      }
+    })).then(results => {
+      const found = results.find(value => value.length > 0);
+      if (found) reply(id, true, "", found);
+      else reply(id, false, "Big Ducks media bridge is not available in the renderer");
+    }).catch(error => {
+      reply(id, false, error instanceof Error ? error.message : String(error));
+    });
+  }
+
+  function mediaProbe(id) {
+    respondFromClient(id, "(function(){ try { return globalThis.__BIG_DUCKS_MEDIA_SUMMARY__ ? JSON.stringify(globalThis.__BIG_DUCKS_MEDIA_SUMMARY__()) : ''; } catch (_) { return ''; } })()");
+  }
+
+  function setMediaTestPattern(id, enabled) {
+    const method = enabled ? "enableTestPattern" : "disableTestPattern";
+    respondFromClient(id, "(function(){ try { return globalThis.__BIG_DUCKS_MEDIA__ ? JSON.stringify(globalThis.__BIG_DUCKS_MEDIA__." + method + "()) : ''; } catch (_) { return ''; } })()");
+  }
+
   function boundedCount(value) {
     return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
   }
@@ -554,6 +596,8 @@ if (!global.__discordStreamBridgeLoaded) {
     try {
       const message = JSON.parse(line);
       if (message.type === "reload" && Number.isSafeInteger(message.id)) reloadClient(message.id);
+      else if (message.type === "media_probe" && Number.isSafeInteger(message.id)) mediaProbe(message.id);
+      else if (message.type === "media_test_pattern" && Number.isSafeInteger(message.id)) setMediaTestPattern(message.id, message.enabled === true);
       else if (message.type === "close_connections" && Number.isSafeInteger(message.id)) void closeConnections(message.id);
       else if (message.type === "resolve_proxy" && Number.isSafeInteger(message.id)) void resolveProxy(message.id, message.url);
       else if (message.type === "telemetry_sync") {
@@ -621,8 +665,8 @@ if (!global.__discordStreamBridgeLoaded) {
 
   app.whenReady().then(() => {
     registerNativePreload();
-    for (const win of clientWindows()) installPageProbe(win);
-    app.on("browser-window-created", (_event, win) => installPageProbe(win));
+    for (const win of clientWindows()) { installPageProbe(win); installMediaBridge(win); }
+    app.on("browser-window-created", (_event, win) => { installPageProbe(win); installMediaBridge(win); });
     nativeProbeTimer = setInterval(() => { void pollNativeRTC(); }, 5000);
     connect();
   }).catch(scheduleReconnect);

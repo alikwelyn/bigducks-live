@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const expectedPath = join(root, "internal", "bridge", "assets", "discord_bridge.js");
 const sourcePath = join(root, "internal", "bridge", "assets-src", "discord_bridge.js");
+const mediaPagePath = join(root, "internal", "bridge", "assets-src", "media_bridge_page.js");
 const temporaryPath = join(tmpdir(), `bigducks-bridge-check-${process.pid}.js`);
 try {
   const result = spawnSync(process.execPath, [join(root, "scripts", "build-bridge.mjs")], {
@@ -23,19 +24,21 @@ try {
     process.exitCode = 1;
   }
 
-  const source = readFileSync(sourcePath, "utf8");
-  for (const fragment of [
-    "@sentry/electron/renderer",
-    "captureException(",
-    "setUser(",
-    "window.Sentry",
-    "globalThis.Sentry",
-    "Authorization",
-    "token=",
-  ]) {
-    if (source.includes(fragment)) {
-      console.error(`Bridge source contains a forbidden telemetry fragment: ${fragment}`);
-      process.exitCode = 1;
+  for (const path of [sourcePath, mediaPagePath]) {
+    const source = readFileSync(path, "utf8");
+    for (const fragment of [
+      "@sentry/electron/renderer",
+      "captureException(",
+      "setUser(",
+      "window.Sentry",
+      "globalThis.Sentry",
+      "Authorization",
+      "token=",
+    ]) {
+      if (source.includes(fragment)) {
+        console.error(`Bridge source ${path} contains a forbidden telemetry fragment: ${fragment}`);
+        process.exitCode = 1;
+      }
     }
   }
 } finally {

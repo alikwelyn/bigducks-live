@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import { build } from "esbuild";
+
+const mediaPageSource = readFileSync("internal/bridge/assets-src/media_bridge_page.js", "utf8");
 
 await build({
   entryPoints: ["internal/bridge/assets-src/discord_bridge.js"],
@@ -15,6 +18,7 @@ await build({
   sourcemap: false,
   define: {
     __BIG_DUCKS_RELEASE__: JSON.stringify(process.env.BIG_DUCKS_VERSION || "0.1.7"),
+    __BIG_DUCKS_MEDIA_PAGE__: JSON.stringify(mediaPageSource),
   },
   write: true,
 });

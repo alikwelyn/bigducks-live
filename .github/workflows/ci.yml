@@ -26,6 +26,8 @@ jobs:
           npm ci --ignore-scripts
           npm run build:bridge
           npm run check:bridge
+      - name: Test media bridge logic
+        run: npm run test:media
       - name: Test
         run: go test ./...
       - name: Vet
