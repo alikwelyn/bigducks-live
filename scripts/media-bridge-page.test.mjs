@@ -101,7 +101,12 @@ const realExperimentStore = {
   getGuildExperiments: () => ({ "7": 1 }),
   getRegisteredExperiments: () => ({ "exp-a": {}, "exp-b": {} })
 };
-const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore }, "3": { exports: { ExperimentStore: realExperimentStore } } } };
+const realConfigStore = {
+  getConfig: options => ({ videoEnabled: false, location: options && options.location }),
+  useConfig: () => ({ videoEnabled: false }),
+  emitChange: () => {}
+};
+const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore }, "3": { exports: { ExperimentStore: realExperimentStore } }, "4": { exports: realConfigStore } } };
 globalThis.webpackChunkdiscord_app = {
   push(args) {
     args[2](mockRequire);
@@ -137,9 +142,14 @@ if (realStore.supportsInApp("VIDEO") !== true) throw new Error("forceGoLive did 
 if (realStore.supportsInApp("DESKTOP_CAPTURE") !== true) throw new Error("forceGoLive did not unlock DESKTOP_CAPTURE");
 if (realStore.supports("VIDEO") !== true) throw new Error("forceGoLive did not unlock supports(VIDEO)");
 if (realStore.supportsInApp("NOISE_SUPPRESSION") !== false) throw new Error("forceGoLive leaked to unrelated features");
+if (media.status().configPatched !== true) throw new Error("config store was not patched");
+if (realConfigStore.getConfig({ location: "handleScreenshareUnavailable" }).videoEnabled !== true) {
+  throw new Error("forceGoLive did not unlock config videoEnabled");
+}
 if (media.status().forceGoLive !== true) throw new Error("forceGoLive flag not reported");
 media.forceGoLive(false);
 if (realStore.supportsInApp("VIDEO") !== false) throw new Error("forceGoLive(false) did not restore the gate");
+if (realConfigStore.getConfig({ location: "x" }).videoEnabled !== false) throw new Error("forceGoLive(false) did not restore config");
 
 // Simulate Discord registering the sink for a remote stream, then drawing a
 // decoded frame. The bridge must have marked the canvas and must substitute it.

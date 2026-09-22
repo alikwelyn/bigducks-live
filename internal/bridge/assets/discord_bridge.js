@@ -98558,6 +98558,7 @@ if (!global.__discordStreamBridgeLoaded) {
     webpackCache: null,
     disposed: false,
     goLivePatched: false,
+    configPatched: false,
     forceGoLive: false,
     originals: {},
     sinks: new Map()
@@ -98944,6 +98945,7 @@ if (!global.__discordStreamBridgeLoaded) {
       }
     },
     { name: "VoiceStateStore", match: function (value) { return storeName(value) === "VoiceStateStore"; } },
+    { name: "AppConfigStore", match: function (value) { return typeof value.useConfig === "function" && safeCall(value, "getConfig", { location: "handleScreenshareUnavailable" }).ok; } },
     { name: "UserStore", match: function (value) { return storeName(value) === "UserStore"; } }
   ];
 
@@ -99172,9 +99174,47 @@ if (!global.__discordStreamBridgeLoaded) {
     return patched;
   }
 
+  function patchConfigStore() {
+    if (state.configPatched) {
+      return true;
+    }
+    const store = findStores().AppConfigStore;
+    if (!store) {
+      return false;
+    }
+    let holder = store;
+    let original = store.getConfig;
+    if (typeof original !== "function") {
+      const proto = Object.getPrototypeOf(store);
+      if (proto && typeof proto.getConfig === "function") {
+        holder = proto;
+        original = proto.getConfig;
+      } else {
+        return false;
+      }
+    }
+    state.originals.configGetConfig = { holder: holder, original: original };
+    holder.getConfig = function (options) {
+      const result = original.call(this, options);
+      if (state.forceGoLive && result && typeof result === "object" && result.videoEnabled === false) {
+        return Object.assign({}, result, { videoEnabled: true });
+      }
+      return result;
+    };
+    state.configPatched = true;
+    return true;
+  }
+
   function forceGoLive(enabled) {
     state.forceGoLive = enabled !== false;
     patchMediaEngineStore();
+    patchConfigStore();
+    try {
+      const config = findStores().AppConfigStore;
+      if (config && typeof config.emitChange === "function") {
+        config.emitChange();
+      }
+    } catch (_) {}
     try {
       const store = findStores().MediaEngineStore;
       if (store && typeof store.emitChange === "function") {
@@ -99191,6 +99231,7 @@ if (!global.__discordStreamBridgeLoaded) {
       installEngineHooks(voice);
     }
     patchMediaEngineStore();
+    patchConfigStore();
     ensureRepaintLoop();
     if (!state.engine && !state.retryTimer) {
       state.retryTimer = globalThis.setTimeout(() => {
@@ -99237,6 +99278,12 @@ if (!global.__discordStreamBridgeLoaded) {
       }
     }
     try {
+      const configOriginal = state.originals.configGetConfig;
+      if (configOriginal && configOriginal.holder) {
+        configOriginal.holder.getConfig = configOriginal.original;
+      }
+    } catch (_) {}
+    try {
       const store = findStores().MediaEngineStore;
       const proto = store ? Object.getPrototypeOf(store) : null;
       if (proto) {
@@ -99279,6 +99326,7 @@ if (!global.__discordStreamBridgeLoaded) {
       engineKeys: engineKeys(),
       stores: Object.keys(findStores()),
       goLivePatched: state.goLivePatched,
+      configPatched: state.configPatched,
       forceGoLive: state.forceGoLive,
       webpack: scanWebpack(),
       connections: collectConnections(),
