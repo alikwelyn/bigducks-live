@@ -98856,6 +98856,46 @@ if (!global.__discordStreamBridgeLoaded) {
     }
   }
 
+  function safeCall(value, method, argument) {
+    try {
+      if (!value || typeof value[method] !== "function") {
+        return { ok: false };
+      }
+      return { ok: true, value: value[method](argument) };
+    } catch (_) {
+      return { ok: false };
+    }
+  }
+
+  function candidateObjects(value) {
+    const out = [];
+    if (!value || typeof value !== "object") {
+      return out;
+    }
+    out.push(value);
+    try {
+      if (value.__esModule && value.default && typeof value.default === "object") {
+        out.push(value.default);
+      }
+    } catch (_) {}
+    let keys = [];
+    try {
+      keys = Object.keys(value);
+    } catch (_) {}
+    for (const key of keys) {
+      let nested = null;
+      try {
+        nested = value[key];
+      } catch (_) {
+        continue;
+      }
+      if (nested && typeof nested === "object" && nested !== value) {
+        out.push(nested);
+      }
+    }
+    return out;
+  }
+
   const STORE_DEFS = [
     {
       name: "MediaEngineStore",
@@ -98863,18 +98903,44 @@ if (!global.__discordStreamBridgeLoaded) {
         if (storeName(value) === "MediaEngineStore") {
           return true;
         }
-        try {
-          return typeof value.getMediaEngine === "function" && typeof value.getGoLiveSource === "function" && !!value.getMediaEngine();
-        } catch (_) {
-          return false;
-        }
+        return typeof value.getGoLiveSource === "function" && safeCall(value, "getMediaEngine").ok;
       }
     },
-    { name: "ExperimentStore", match: function (value) { return storeName(value) === "ExperimentStore"; } },
-    { name: "PermissionStore", match: function (value) { return storeName(value) === "PermissionStore"; } },
-    { name: "ApplicationStreamingStore", match: function (value) { return storeName(value) === "ApplicationStreamingStore"; } },
-    { name: "ChannelRTCStore", match: function (value) { return storeName(value) === "ChannelRTCStore"; } },
-    { name: "RTCConnectionStore", match: function (value) { return storeName(value) === "RTCConnectionStore"; } },
+    {
+      name: "ExperimentStore",
+      match: function (value) {
+        return storeName(value) === "ExperimentStore" ||
+          (typeof value.getAllExperimentAssignments === "function" && typeof value.getGuildExperiments === "function" && safeCall(value, "getAllExperimentAssignments").ok);
+      }
+    },
+    {
+      name: "PermissionStore",
+      match: function (value) {
+        return storeName(value) === "PermissionStore" ||
+          (typeof value.can === "function" && typeof value.computePermissions === "function" && safeCall(value, "getChannelsVersion").ok);
+      }
+    },
+    {
+      name: "ApplicationStreamingStore",
+      match: function (value) {
+        return storeName(value) === "ApplicationStreamingStore" ||
+          (typeof value.getActiveStreamForStreamKey === "function" && safeCall(value, "getRTCStream", "bigducks-probe").ok);
+      }
+    },
+    {
+      name: "ChannelRTCStore",
+      match: function (value) {
+        return storeName(value) === "ChannelRTCStore" ||
+          (typeof value.getStreamParticipants === "function" && safeCall(value, "getParticipants", "bigducks-probe").ok);
+      }
+    },
+    {
+      name: "RTCConnectionStore",
+      match: function (value) {
+        return storeName(value) === "RTCConnectionStore" ||
+          (typeof value.getRTCConnection === "function" && safeCall(value, "getMediaSessionId").ok);
+      }
+    },
     { name: "VoiceStateStore", match: function (value) { return storeName(value) === "VoiceStateStore"; } },
     { name: "UserStore", match: function (value) { return storeName(value) === "UserStore"; } }
   ];
@@ -98919,15 +98985,17 @@ if (!global.__discordStreamBridgeLoaded) {
             if (!value || typeof value !== "object") {
               continue;
             }
-            for (const def of STORE_DEFS) {
-              if (found[def.name]) {
-                continue;
-              }
-              try {
-                if (def.match(value)) {
-                  found[def.name] = value;
+            for (const candidate of candidateObjects(value)) {
+              for (const def of STORE_DEFS) {
+                if (found[def.name]) {
+                  continue;
                 }
-              } catch (_) {}
+                try {
+                  if (def.match(candidate)) {
+                    found[def.name] = candidate;
+                  }
+                } catch (_) {}
+              }
             }
           }
         }

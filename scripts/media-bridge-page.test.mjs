@@ -97,7 +97,7 @@ const realExperimentStore = {
   getGuildExperiments: () => ({ "7": 1 }),
   getRegisteredExperiments: () => ({ "exp-a": {}, "exp-b": {} })
 };
-const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore }, "3": { exports: realExperimentStore } } };
+const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore }, "3": { exports: { ExperimentStore: realExperimentStore } } } };
 globalThis.webpackChunkdiscord_app = {
   push(args) {
     args[2](mockRequire);
