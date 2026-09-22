@@ -42,6 +42,7 @@
     lastFrameAt: 0,
     lastError: "",
     store: null,
+    stores: null,
     webpackCache: null,
     disposed: false,
     originals: {},
@@ -335,10 +336,42 @@
     }
   }
 
-  function findMediaStore() {
-    if (state.store) {
-      return state.store;
+  function storeName(value) {
+    try {
+      return typeof value.getName === "function" ? value.getName() : null;
+    } catch (_) {
+      return null;
     }
+  }
+
+  const STORE_DEFS = [
+    {
+      name: "MediaEngineStore",
+      match: function (value) {
+        if (storeName(value) === "MediaEngineStore") {
+          return true;
+        }
+        try {
+          return typeof value.getMediaEngine === "function" && typeof value.getGoLiveSource === "function" && !!value.getMediaEngine();
+        } catch (_) {
+          return false;
+        }
+      }
+    },
+    { name: "ExperimentStore", match: function (value) { return storeName(value) === "ExperimentStore"; } },
+    { name: "PermissionStore", match: function (value) { return storeName(value) === "PermissionStore"; } },
+    { name: "ApplicationStreamingStore", match: function (value) { return storeName(value) === "ApplicationStreamingStore"; } },
+    { name: "ChannelRTCStore", match: function (value) { return storeName(value) === "ChannelRTCStore"; } },
+    { name: "RTCConnectionStore", match: function (value) { return storeName(value) === "RTCConnectionStore"; } },
+    { name: "VoiceStateStore", match: function (value) { return storeName(value) === "VoiceStateStore"; } },
+    { name: "UserStore", match: function (value) { return storeName(value) === "UserStore"; } }
+  ];
+
+  function findStores() {
+    if (state.stores) {
+      return state.stores;
+    }
+    const found = {};
     try {
       const names = ["webpackChunkdiscord_app", "webpackChunkdiscord_desktop_core"];
       let chunk = null;
@@ -349,7 +382,8 @@
         }
       }
       if (!chunk) {
-        return null;
+        state.stores = found;
+        return found;
       }
       chunk.push([
         [Symbol("bigducks-media")],
@@ -359,7 +393,6 @@
           if (!cache) {
             return;
           }
-          const candidates = [];
           for (const id of Object.keys(cache)) {
             let value = null;
             try {
@@ -374,41 +407,28 @@
             if (!value || typeof value !== "object") {
               continue;
             }
-            if (typeof value.getMediaEngine !== "function") {
-              continue;
-            }
-            candidates.push(value);
-          }
-          // Prefer the authenticated Flux store: its getName() is
-          // "MediaEngineStore". This skips Discord's i18n message proxy, which
-          // pretends to expose getMediaEngine and throws when called.
-          for (const value of candidates) {
-            try {
-              if (typeof value.getName === "function" && value.getName() === "MediaEngineStore") {
-                state.store = value;
-                return;
-              }
-            } catch (_) {}
-          }
-          // Fallback: accept the candidate whose engine actually resolves.
-          for (const value of candidates) {
-            try {
-              if (typeof value.getGoLiveSource !== "function") {
+            for (const def of STORE_DEFS) {
+              if (found[def.name]) {
                 continue;
               }
-              const resolved = value.getMediaEngine();
-              if (resolved) {
-                state.store = value;
-                return;
-              }
-            } catch (_) {}
+              try {
+                if (def.match(value)) {
+                  found[def.name] = value;
+                }
+              } catch (_) {}
+            }
           }
         }
       ]);
     } catch (error) {
       state.lastError = String(error);
     }
-    return state.store;
+    state.stores = found;
+    return found;
+  }
+
+  function findMediaStore() {
+    return findStores().MediaEngineStore || null;
   }
 
   function collectConnections() {
@@ -458,6 +478,37 @@
       state.lastError = String(error);
       return [];
     }
+  }
+
+  function experiments() {
+    const out = { found: false, user: null, guild: null, registered: null, errors: [] };
+    try {
+      const store = findStores().ExperimentStore;
+      if (!store) {
+        out.errors.push("ExperimentStore not found");
+        return out;
+      }
+      out.found = true;
+      try {
+        out.user = store.getAllExperimentAssignments();
+      } catch (error) {
+        out.errors.push("user: " + String(error));
+      }
+      try {
+        out.guild = store.getGuildExperiments();
+      } catch (error) {
+        out.errors.push("guild: " + String(error));
+      }
+      try {
+        const registered = store.getRegisteredExperiments();
+        out.registered = registered ? Object.keys(registered) : null;
+      } catch (error) {
+        out.errors.push("registered: " + String(error));
+      }
+    } catch (error) {
+      out.errors.push(String(error));
+    }
+    return out;
   }
 
   function scanWebpack() {
@@ -553,6 +604,7 @@
       lastError: state.lastError,
       moduleKeys: moduleKeys(),
       engineKeys: engineKeys(),
+      stores: Object.keys(findStores()),
       webpack: scanWebpack(),
       connections: collectConnections(),
       sinks: listSinks()
@@ -586,6 +638,8 @@
       return summary();
     },
     dispose: dispose,
+    stores: () => Object.keys(findStores()),
+    experiments: experiments,
     store: () => findMediaStore(),
     engine: () => {
       try {

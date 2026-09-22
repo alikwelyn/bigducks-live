@@ -91,7 +91,13 @@ const realStore = {
   getGoLiveSource: () => null,
   getMediaEngine: () => realEngine
 };
-const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore } } };
+const realExperimentStore = {
+  getName: () => "ExperimentStore",
+  getAllExperimentAssignments: () => ({ "exp-a": 1, "exp-b": 0 }),
+  getGuildExperiments: () => ({ "7": 1 }),
+  getRegisteredExperiments: () => ({ "exp-a": {}, "exp-b": {} })
+};
+const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore }, "3": { exports: realExperimentStore } } };
 globalThis.webpackChunkdiscord_app = {
   push(args) {
     args[2](mockRequire);
@@ -111,6 +117,13 @@ if (initial.putImageDataHook !== true) throw new Error("putImageData was not hoo
 if (initial.webpack.mediaEngineStore !== true) throw new Error("real MediaEngineStore was not found");
 if (initial.connections.length !== 0) throw new Error("unexpected connections: " + JSON.stringify(initial.connections));
 if (media.store() !== realStore) throw new Error("store() did not return the real store");
+if (!initial.stores.includes("ExperimentStore") || !initial.stores.includes("MediaEngineStore")) {
+  throw new Error("store discovery incomplete: " + JSON.stringify(initial.stores));
+}
+const foundExperiments = media.experiments();
+if (foundExperiments.found !== true || foundExperiments.user["exp-a"] !== 1) {
+  throw new Error("experiments() failed: " + JSON.stringify(foundExperiments));
+}
 
 // Simulate Discord registering the sink for a remote stream, then drawing a
 // decoded frame. The bridge must have marked the canvas and must substitute it.
