@@ -359,6 +359,7 @@
           if (!cache) {
             return;
           }
+          const candidates = [];
           for (const id of Object.keys(cache)) {
             let value = null;
             try {
@@ -370,10 +371,37 @@
             } catch (_) {
               continue;
             }
-            if (value && typeof value === "object" && typeof value.getMediaEngine === "function") {
-              state.store = value;
-              return;
+            if (!value || typeof value !== "object") {
+              continue;
             }
+            if (typeof value.getMediaEngine !== "function") {
+              continue;
+            }
+            candidates.push(value);
+          }
+          // Prefer the authenticated Flux store: its getName() is
+          // "MediaEngineStore". This skips Discord's i18n message proxy, which
+          // pretends to expose getMediaEngine and throws when called.
+          for (const value of candidates) {
+            try {
+              if (typeof value.getName === "function" && value.getName() === "MediaEngineStore") {
+                state.store = value;
+                return;
+              }
+            } catch (_) {}
+          }
+          // Fallback: accept the candidate whose engine actually resolves.
+          for (const value of candidates) {
+            try {
+              if (typeof value.getGoLiveSource !== "function") {
+                continue;
+              }
+              const resolved = value.getMediaEngine();
+              if (resolved) {
+                state.store = value;
+                return;
+              }
+            } catch (_) {}
           }
         }
       ]);
@@ -416,6 +444,20 @@
       state.lastError = String(error);
     }
     return out;
+  }
+
+  function engineKeys() {
+    try {
+      const store = findMediaStore();
+      if (!store) {
+        return [];
+      }
+      const engine = store.getMediaEngine();
+      return engine ? Object.keys(engine) : [];
+    } catch (error) {
+      state.lastError = String(error);
+      return [];
+    }
   }
 
   function scanWebpack() {
@@ -510,6 +552,7 @@
       lastFrameAt: state.lastFrameAt,
       lastError: state.lastError,
       moduleKeys: moduleKeys(),
+      engineKeys: engineKeys(),
       webpack: scanWebpack(),
       connections: collectConnections(),
       sinks: listSinks()
@@ -543,6 +586,16 @@
       return summary();
     },
     dispose: dispose,
+    store: () => findMediaStore(),
+    engine: () => {
+      try {
+        const store = findMediaStore();
+        return store ? store.getMediaEngine() : null;
+      } catch (_) {
+        return null;
+      }
+    },
+    connections: collectConnections,
     rescan: install
   };
   globalThis.__BIG_DUCKS_MEDIA_SUMMARY__ = summary;

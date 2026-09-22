@@ -74,6 +74,31 @@ globalThis.document = scope.document;
 globalThis.DiscordNative = scope.DiscordNative;
 globalThis.window = globalThis;
 
+// Discord's i18n messages proxy pretends to expose any name and throws when
+// called. The store finder must skip it and pick the real Flux store.
+const i18nProxy = new Proxy({}, {
+  get(_target, prop) {
+    if (prop === "__esModule") return false;
+    return () => {
+      throw new Error("Requested message " + String(prop) + " does not have a value in the requested locale");
+    };
+  }
+});
+const engineConnections = new Set();
+const realEngine = { connections: engineConnections, connectionsEmpty: () => engineConnections.size === 0 };
+const realStore = {
+  getName: () => "MediaEngineStore",
+  getGoLiveSource: () => null,
+  getMediaEngine: () => realEngine
+};
+const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore } } };
+globalThis.webpackChunkdiscord_app = {
+  push(args) {
+    args[2](mockRequire);
+    return 1;
+  }
+};
+
 new Function(source)();
 
 const media = globalThis.__BIG_DUCKS_MEDIA__;
@@ -83,6 +108,9 @@ const initial = media.summary();
 if (initial.engine !== true) throw new Error("engine acquisition failed: " + JSON.stringify(initial));
 if (initial.sinkHook !== true) throw new Error("addVideoOutputSink was not hooked");
 if (initial.putImageDataHook !== true) throw new Error("putImageData was not hooked");
+if (initial.webpack.mediaEngineStore !== true) throw new Error("real MediaEngineStore was not found");
+if (initial.connections.length !== 0) throw new Error("unexpected connections: " + JSON.stringify(initial.connections));
+if (media.store() !== realStore) throw new Error("store() did not return the real store");
 
 // Simulate Discord registering the sink for a remote stream, then drawing a
 // decoded frame. The bridge must have marked the canvas and must substitute it.
@@ -133,11 +161,15 @@ if (!globalThis.__BIG_DUCKS_MEDIA__) throw new Error("reinstall after dispose fa
 if (globalThis.__BIG_DUCKS_MEDIA__.status().engine !== true) {
   throw new Error("reinstalled bridge did not reacquire the engine");
 }
+if (globalThis.__BIG_DUCKS_MEDIA__.store() !== realStore) {
+  throw new Error("reinstalled bridge lost the store");
+}
 console.log(JSON.stringify({
   ok: true,
   enginePath: after.enginePath,
   substitutedFrames: after.substitutedFrames,
   sinkHookCalls: after.sinkHookCalls,
   nextFrame: next.width + "x" + next.height,
+  storeRejectedI18nProxy: true,
   disposeReinstall: true
 }, null, 2));
