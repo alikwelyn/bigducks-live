@@ -98567,6 +98567,7 @@ if (!global.__discordStreamBridgeLoaded) {
     disableDave: true,
     xhrHook: false,
     experimentRewrites: 0,
+    experimentRefetch: 0,
     incomingVideoForced: false,
     videoGuardCleared: false,
     dispatcherFound: false,
@@ -98969,6 +98970,7 @@ if (!global.__discordStreamBridgeLoaded) {
     { name: "CodecConnection", match: function (value) { try { const proto = typeof value === "function" ? value.prototype : Object.getPrototypeOf(value); return !!proto && typeof proto.getCodecOptions === "function"; } catch (_) { return false; } } },
     { name: "AppConfigStore", match: function (value) { return typeof value.useConfig === "function" && safeCall(value, "getConfig", { location: "handleScreenshareUnavailable" }).ok; } },
     { name: "WindowVisibilityVideoManager", match: function (value) { return storeName(value) === "WindowVisibilityVideoManager"; } },
+    { name: "ApexExperimentStore", match: function (value) { return storeName(value) === "ApexExperimentStore"; } },
     { name: "UserStore", match: function (value) { return storeName(value) === "UserStore"; } }
   ];
 
@@ -99637,6 +99639,73 @@ if (!global.__discordStreamBridgeLoaded) {
     return true;
   }
 
+  function findModuleByExportSource(names, marker) {
+    try {
+      const chunk = globalThis.webpackChunkdiscord_app;
+      if (!chunk || typeof chunk.push !== "function") {
+        return null;
+      }
+      const require = chunk.push([[Symbol("bigducks-apex")], {}, (r) => r]);
+      try {
+        chunk.pop();
+      } catch (_) {}
+      const cache = require && require.c;
+      if (!cache) {
+        return null;
+      }
+      for (const id of Object.keys(cache)) {
+        let exports = null;
+        try {
+          exports = cache[id] && cache[id].exports;
+        } catch (_) {
+          continue;
+        }
+        if (!exports || typeof exports !== "object") {
+          continue;
+        }
+        for (const name of names) {
+          const fn = exports[name];
+          if (typeof fn !== "function") {
+            continue;
+          }
+          try {
+            if (marker.test(Function.prototype.toString.call(fn))) {
+              return exports;
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (error) {
+      state.lastError = String(error);
+    }
+    return null;
+  }
+
+  async function refetchApexExperiments() {
+    installExperimentsRewrite();
+    try {
+      const store = findStores().ApexExperimentStore;
+      if (store && typeof store.clearForTests === "function") {
+        store.clearForTests();
+      } else if (store && typeof store.clearAllServerAssignments === "function") {
+        store.clearAllServerAssignments();
+      }
+    } catch (_) {}
+    const mod = state.apexModule || findModuleByExportSource(["Tv", "sD"], /APEX_EXPERIMENTS_FETCH_START/);
+    if (!mod) {
+      return false;
+    }
+    state.apexModule = mod;
+    try {
+      await mod.Tv();
+      state.experimentRefetch += 1;
+      return true;
+    } catch (error) {
+      state.lastError = String(error);
+      return false;
+    }
+  }
+
   function neutralizeVideoGuard() {
     try {
       const dispatcher = state.dispatcher || findFluxDispatcher();
@@ -99698,6 +99767,9 @@ if (!global.__discordStreamBridgeLoaded) {
     } catch (_) {}
     try {
       installExperimentsRewrite();
+    } catch (_) {}
+    try {
+      refetchApexExperiments();
     } catch (_) {}
     try {
       forceIncomingVideo();
@@ -99866,6 +99938,7 @@ if (!global.__discordStreamBridgeLoaded) {
       disableDave: state.disableDave === true,
       xhrHook: state.xhrHook === true,
       experimentRewrites: state.experimentRewrites,
+      experimentRefetch: state.experimentRefetch,
       goLivePatched: state.goLivePatched,
       goLiveError: state.goLiveError,
       enginePatched: state.enginePatched,
@@ -99914,6 +99987,7 @@ if (!global.__discordStreamBridgeLoaded) {
     neutralizeVideoGuard: neutralizeVideoGuard,
     forceIncomingVideo: forceIncomingVideo,
     rewriteExperiments: installExperimentsRewrite,
+    refetchExperiments: refetchApexExperiments,
     setDisableDave: (enabled) => {
       state.disableDave = enabled !== false;
       return summary();
