@@ -406,6 +406,9 @@ func Run(ctx context.Context, options RunOptions) error {
 			return launchErr
 		}
 		logger.Printf("Discord started with protected routing during recovery")
+		for _, companionErr := range discord.LaunchCompanions(config.DiscordRoot, pacURL, fullProxyURL) {
+			logger.Printf("could not start a secondary Discord install: %v", companionErr)
+		}
 		go func() {
 			if waitErr := discord.WaitForProcessTreePreserving(context.Background(), command); waitErr != nil {
 				logger.Printf("Discord recovery launch exited: %v", waitErr)
@@ -667,6 +670,9 @@ func launchDiscord(ctx context.Context, config Config, pacURL, fullProxyURL stri
 		logger.Printf("Discord started with full control proxy; media domains bypass directly")
 	} else if pacURL != "" {
 		logger.Printf("Discord started with gateway-only PAC routing")
+	}
+	for _, companionErr := range discord.LaunchCompanions(config.DiscordRoot, pacURL, fullProxyURL) {
+		logger.Printf("could not start a secondary Discord install: %v", companionErr)
 	}
 	wait := discord.WaitForProcessTree
 	if preserveDiscord {

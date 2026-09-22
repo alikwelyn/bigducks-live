@@ -3,10 +3,46 @@
 package discord_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/alikwelyn/bigducks-live/internal/discord"
 )
+
+func TestCompanionRootsFindsSiblingInstalls(t *testing.T) {
+	base := t.TempDir()
+	stable := filepath.Join(base, "Discord")
+	canary := filepath.Join(base, "DiscordCanary")
+	ptb := filepath.Join(base, "DiscordPTB")
+	for _, dir := range []string{stable, canary, ptb} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	roots := discord.CompanionRoots(stable)
+	if len(roots) != 2 {
+		t.Fatalf("CompanionRoots() = %#v, want Canary and PTB", roots)
+	}
+	found := map[string]bool{}
+	for _, root := range roots {
+		found[root] = true
+	}
+	if !found[canary] || !found[ptb] {
+		t.Fatalf("CompanionRoots() = %#v, missing a sibling install", roots)
+	}
+}
+
+func TestCompanionRootsSkipsMissingAndPrimary(t *testing.T) {
+	base := t.TempDir()
+	stable := filepath.Join(base, "Discord")
+	if err := os.MkdirAll(stable, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if roots := discord.CompanionRoots(stable); len(roots) != 0 {
+		t.Fatalf("CompanionRoots() = %#v, want none", roots)
+	}
+}
 
 func TestBuildArgsUsesOnlyPACProxyConfiguration(t *testing.T) {
 	args := discord.BuildArgs("http://127.0.0.1:4567/proxy.pac")
