@@ -3,6 +3,9 @@ name = "bigducks-rs"
 version = "0.1.0"
 edition = "2021"
 description = "BIG DUCKS (Rust) - screen capture engine that feeds the native Discord client"
+# O build.rs (icone do exe via winresource) e detectado automaticamente pelo cargo
+# quando existe. No container Linux do relay (Dockerfile) ele NAO e copiado, entao
+# simplesmente nao roda - o build do relay continua identico.
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
@@ -11,7 +14,35 @@ futures-util = "0.3"
 xcap = "0.9"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 
-# HMONITOR -> monitor do xcap (o Discord manda handle de tela, nao indice).
+# HMONITOR -> monitor do xcap (o Discord manda handle de tela, nao indice) +
+# toda a camada de "app de bandeja" do Windows (console, tray, resto, autostart,
+# atualizacao). Nada disto e' compilado no relay Linux.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+tray-icon = "0.25"
+winreg = "0.56"
+# Decodifica o logo para o icone da bandeja (o mesmo do exe) e gera as variantes.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Cliente HTTPS do auto-update (schannel no Windows, sem compilador C).
+ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
+
+# Gera o .ico multi-tamanho (16/24/32/48/64/256) do logo do app Go
+# (imgs/big-ducks.png) e embute no exe. So no Windows (host do build script).
+[target.'cfg(windows)'.build-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+winresource = "0.1"

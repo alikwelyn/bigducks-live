@@ -8,7 +8,7 @@ echo.
 pause
 
 echo Removendo a injecao do bigducks-rs...
-target\release\bigducks-rs.exe --uninstall
+target\release\bigducks-rs.exe --console --uninstall
 
 echo.
 echo  Pronto. O app.asar original foi restaurado.

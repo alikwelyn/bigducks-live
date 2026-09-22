@@ -316,3 +316,61 @@ http://127.0.0.1:8791/source?value=window:123    troca a fonte ao vivo
 http://127.0.0.1:8791/settings?width=1920&height=1080&fps=30&bitrate=8000000
 http://127.0.0.1:8791/bridge-event?name=x&data=y  aparece no log do motor
 ```
+
+---
+
+## 9. App de bandeja (Windows) — o que foi agregado por cima do motor
+
+O binario continua o mesmo (motor + relay), mas no Windows agora ele e' um app
+de bandeja "de amigo": dois cliques, sem terminal, com icone.
+
+### 9.1 Icone
+`build.rs` gera um `.ico` multi-tamanho (16/24/32/48/64/256) a partir do MESMO
+logo do app Go (`imgs/big-ducks.png`, ver `internal/brand/brand.go`) e embute via
+`winresource`. O `imgs/` fica na RAIZ do repo (fora deste crate) - por isso o
+`build.rs` so' roda no Windows (com `build.rs` presente) e nao existe no container
+Linux do relay. A bandeja usa o mesmo desenho (`src/icon.rs`) com um ponto de
+estado: verde=relay conectado, ambar=sem canal de voz, azul=so' hub local,
+vermelho=bridge nao instalado, roxo=update pronto.
+
+### 9.2 Sem console
+`#![cfg_attr(windows, windows_subsystem = "windows")]` no `src/main.rs`. TODO o
+log vai para `%LOCALAPPDATA%\DiscordStream\engine.log` (rotativo 2 MB x 3:
+`engine.log`, `.1`, `.2`) via `src/logging.rs`. `--console` chama
+`AttachConsole`/`AllocConsole` (src/platform.rs) e o mesmo texto aparece no
+terminal - os prints de diagnostico NAO foram perdidos.
+
+### 9.3 Bandeja (`src/tray.rs`, crate `tray-icon`)
+A thread principal bombeia mensagens Win32 (o runtime tokio fica nas threads de
+trabalho). Menu: Abrir painel / Ver log / Reinstalar bridge / Reiniciar Discord /
+Iniciar com o Windows (checkbox) / Sair. O estado vem de `src/status.rs`, que o
+`/bridge-event` alimenta com o que o preload reporta (`hub-remoto` -> relay
+conectado / sem canal de voz).
+
+### 9.4 Reiniciar o Discord (`src/discord.rs`)
+O asar so' e' lido no boot. Se a injecao MUDOU nesta execucao e o Discord esta
+aberto, ele e' fechado com `WM_CLOSE` nas janelas de topo dos PIDs do Discord e
+reaberto pelos MESMOS executaveis (caminho lembrado via `QueryFullProcessImageNameW`).
+Sem prompt; avisa por balao.
+
+### 9.5 Autostart (`src/autostart.rs`)
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` valor `BigDucksRS`
+(`"...exe" --startup`), sem admin. Ligado na primeira execucao (nunca para
+caminho temporario). Resolve tambem a ORDEM: o asar e' reescrito antes do Discord.
+
+### 9.6 Auto-update (`src/update.rs`)
+Manifest JSON em `https://desjanjador.skillup.com.br/release.json`, checado no
+boot (~20s depois) e a cada 4h (desligue com `--no-update`). Compara versao
+(`CARGO_PKG_VERSION`), baixa `bigducks-rs.exe`, confere SHA-256 + tamanho, e troca
+o binario EM EXECUCAO (renomeia o atual para `.old`, poe o novo no lugar, reabre,
+apaga o `.old` no proximo boot). Nunca troca no meio de uma transmissao.
+O lado servidor vive no MESMO binario (`--relay`): rotas `/release.json`,
+`/bigducks-rs.exe` e `/release/<arquivo>` a partir de `--release-dir`
+(ou `BIGDUCKS_RELEASE_DIR`). Para publicar: jogue o exe em `releases/` + um
+`version.txt` (gera o manifest na hora), ou o `release.json` pronto.
+
+### 9.7 Flags novas
+`--console`, `--no-install` (nao mexe no app.asar; util p/ subir a bandeja em
+teste), `--no-update`, `--release-dir <dir>`, `--startup` (marcador do autostart).
+`run.cmd` agora passa `--console` (dev) e segue funcionando.
+

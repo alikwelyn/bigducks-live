@@ -15,14 +15,15 @@ if not exist target\release\bigducks-rs.exe (
 )
 
 echo.
-echo  BIG DUCKS RS
+echo  BIG DUCKS RS (dev)
 echo   - instala o bridge no Discord (automatico, sem colar nada)
 echo   - captura a tela e transmite para os Discords abertos
 echo.
 echo  Painel no navegador: http://127.0.0.1:8791/
 echo  Deixe esta janela aberta. Ctrl+C para parar.
+echo  (--console: o exe e' GUI - esta flag anexa o console para ver os logs aqui)
 echo.
 
-target\release\bigducks-rs.exe --width 1280 --height 720 --fps 20 --port 8791 --nitro %*
+target\release\bigducks-rs.exe --console --width 1280 --height 720 --fps 20 --port 8791 --nitro %*
 echo.
 pause
