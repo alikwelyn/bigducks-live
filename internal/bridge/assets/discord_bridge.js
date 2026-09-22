@@ -98526,8 +98526,10 @@ if (!global.__discordStreamBridgeLoaded) {
 (() => {
   "use strict";
 
-  if (globalThis.__BIG_DUCKS_MEDIA__) {
-    return;
+  if (globalThis.__BIG_DUCKS_MEDIA__ && typeof globalThis.__BIG_DUCKS_MEDIA__.dispose === "function") {
+    try {
+      globalThis.__BIG_DUCKS_MEDIA__.dispose();
+    } catch (_) {}
   }
 
   const state = {
@@ -98553,6 +98555,8 @@ if (!global.__discordStreamBridgeLoaded) {
     lastError: "",
     store: null,
     webpackCache: null,
+    disposed: false,
+    originals: {},
     sinks: new Map()
   };
 
@@ -98700,6 +98704,7 @@ if (!global.__discordStreamBridgeLoaded) {
       return false;
     }
     originalPutImageData = proto.putImageData;
+    state.originals.putImageData = proto.putImageData;
     proto.putImageData = function (imageData, dx, dy) {
       try {
         if (state.testPattern && isSinkCanvas(this.canvas)) {
@@ -98731,6 +98736,9 @@ if (!global.__discordStreamBridgeLoaded) {
     }
     state.repaintLoop = true;
     const step = () => {
+      if (state.disposed) {
+        return;
+      }
       if (state.testPattern && originalPutImageData) {
         for (const record of state.sinks.values()) {
           const canvas = canvasForSink(record.sinkId);
@@ -98763,6 +98771,7 @@ if (!global.__discordStreamBridgeLoaded) {
     try {
       if (typeof voice.addVideoOutputSink === "function") {
         const originalAdd = voice.addVideoOutputSink;
+        state.originals.addVideoOutputSink = originalAdd;
         voice.addVideoOutputSink = function (sinkId, streamId, frameCallback) {
           state.sinkHookCalls += 1;
           registerSink(sinkId, streamId);
@@ -98772,6 +98781,7 @@ if (!global.__discordStreamBridgeLoaded) {
       }
       if (typeof voice.getNextVideoOutputFrame === "function") {
         const originalNext = voice.getNextVideoOutputFrame;
+        state.originals.getNextVideoOutputFrame = originalNext;
         voice.getNextVideoOutputFrame = function (streamId) {
           state.nextFrameCalls += 1;
           if (state.testPattern) {
@@ -98790,6 +98800,7 @@ if (!global.__discordStreamBridgeLoaded) {
       }
       if (typeof voice.addDirectVideoOutputSink === "function") {
         const originalDirect = voice.addDirectVideoOutputSink;
+        state.originals.addDirectVideoOutputSink = originalDirect;
         voice.addDirectVideoOutputSink = function () {
           state.directVideo = true;
           state.directVideoCalls += 1;
@@ -98964,6 +98975,31 @@ if (!global.__discordStreamBridgeLoaded) {
     return out;
   }
 
+  function dispose() {
+    state.disposed = true;
+    try {
+      const proto = globalThis.CanvasRenderingContext2D && globalThis.CanvasRenderingContext2D.prototype;
+      if (proto && typeof state.originals.putImageData === "function") {
+        proto.putImageData = state.originals.putImageData;
+      }
+    } catch (_) {}
+    const voice = state.voice;
+    if (voice) {
+      for (const name of ["addVideoOutputSink", "getNextVideoOutputFrame", "addDirectVideoOutputSink"]) {
+        try {
+          if (typeof state.originals[name] === "function") {
+            voice[name] = state.originals[name];
+          }
+        } catch (_) {}
+      }
+    }
+    try {
+      delete globalThis.__BIG_DUCKS_MEDIA__;
+      delete globalThis.__BIG_DUCKS_MEDIA_SUMMARY__;
+    } catch (_) {}
+    return { disposed: true };
+  }
+
   function summary() {
     return {
       version: 2,
@@ -99018,6 +99054,7 @@ if (!global.__discordStreamBridgeLoaded) {
       state.permissive = enabled !== false;
       return summary();
     },
+    dispose: dispose,
     rescan: install
   };
   globalThis.__BIG_DUCKS_MEDIA_SUMMARY__ = summary;

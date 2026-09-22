@@ -117,10 +117,27 @@ if (next.width !== 1280 || next.height !== 720) {
   throw new Error("getNextVideoOutputFrame was not taken over: " + next.width + "x" + next.height);
 }
 
+// dispose must restore the original canvas hook so a new paste can install
+// cleanly without reloading Discord.
+media.dispose();
+if (globalThis.__BIG_DUCKS_MEDIA__ !== undefined) throw new Error("dispose did not clear the API");
+drawCalls.length = 0;
+const rawFrame = new ImageData(new Uint8ClampedArray(4), 1, 1);
+fakeContext.putImageData(rawFrame, 0, 0);
+if (drawCalls.length !== 1 || drawCalls[0].imageData !== rawFrame) {
+  throw new Error("dispose did not restore putImageData");
+}
+
+new Function(source)();
+if (!globalThis.__BIG_DUCKS_MEDIA__) throw new Error("reinstall after dispose failed");
+if (globalThis.__BIG_DUCKS_MEDIA__.status().engine !== true) {
+  throw new Error("reinstalled bridge did not reacquire the engine");
+}
 console.log(JSON.stringify({
   ok: true,
   enginePath: after.enginePath,
   substitutedFrames: after.substitutedFrames,
   sinkHookCalls: after.sinkHookCalls,
-  nextFrame: next.width + "x" + next.height
+  nextFrame: next.width + "x" + next.height,
+  disposeReinstall: true
 }, null, 2));
