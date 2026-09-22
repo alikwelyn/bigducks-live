@@ -105,7 +105,12 @@ const realConfigStore = {
   useConfig: () => ({ videoEnabled: false }),
   emitChange: () => {}
 };
-const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore }, "3": { exports: { ExperimentStore: realExperimentStore } }, "4": { exports: realConfigStore } } };
+class FakeCodecConnection {
+  getCodecOptions() {
+    return { videoDecoders: [{ name: "H264" }, { name: "H265" }], videoEncoder: null };
+  }
+}
+const mockRequire = { c: { "1": { exports: i18nProxy }, "2": { exports: realStore }, "3": { exports: { ExperimentStore: realExperimentStore } }, "4": { exports: realConfigStore }, "5": { exports: { Connection: FakeCodecConnection } } } };
 globalThis.webpackChunkdiscord_app = {
   push(args) {
     args[2](mockRequire);
@@ -149,6 +154,13 @@ if (media.status().forceGoLive !== true) throw new Error("forceGoLive flag not r
 media.forceGoLive(false);
 if (realStore.supportsInApp("VIDEO") !== false) throw new Error("forceGoLive(false) did not restore the gate");
 if (realConfigStore.getConfig({ location: "x" }).videoEnabled !== false) throw new Error("forceGoLive(false) did not restore config");
+
+const codecResult = media.setVideoCodec("H264");
+if (codecResult.codecHook !== true) throw new Error("getCodecOptions was not hooked: " + JSON.stringify(codecResult));
+const codecOptions = new FakeCodecConnection().getCodecOptions();
+if (!codecOptions.videoEncoder || codecOptions.videoEncoder.name !== "H264") {
+  throw new Error("setVideoCodec did not force H264: " + JSON.stringify(codecOptions));
+}
 
 // Simulate Discord registering the sink for a remote stream, then drawing a
 // decoded frame. The bridge must have marked the canvas and must substitute it.

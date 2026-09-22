@@ -362,12 +362,12 @@
 
   function candidateObjects(value) {
     const out = [];
-    if (!value || typeof value !== "object") {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) {
       return out;
     }
     out.push(value);
     try {
-      if (value.__esModule && value.default && typeof value.default === "object") {
+      if (value.__esModule && value.default) {
         out.push(value.default);
       }
     } catch (_) {}
@@ -382,7 +382,7 @@
       } catch (_) {
         continue;
       }
-      if (nested && typeof nested === "object" && nested !== value) {
+      if (nested && (typeof nested === "object" || typeof nested === "function") && nested !== value) {
         out.push(nested);
       }
     }
@@ -438,7 +438,7 @@
       }
     },
     { name: "VoiceStateStore", match: function (value) { return storeName(value) === "VoiceStateStore"; } },
-    { name: "CodecConnection", match: function (value) { try { const proto = Object.getPrototypeOf(value); return !!proto && typeof proto.getCodecOptions === "function"; } catch (_) { return false; } } },
+    { name: "CodecConnection", match: function (value) { try { const proto = typeof value === "function" ? value.prototype : Object.getPrototypeOf(value); return !!proto && typeof proto.getCodecOptions === "function"; } catch (_) { return false; } } },
     { name: "AppConfigStore", match: function (value) { return typeof value.useConfig === "function" && safeCall(value, "getConfig", { location: "handleScreenshareUnavailable" }).ok; } },
     { name: "UserStore", match: function (value) { return storeName(value) === "UserStore"; } }
   ];
@@ -708,7 +708,10 @@
     } catch (_) {}
     try {
       const connection = findStores().CodecConnection;
-      const proto = connection ? Object.getPrototypeOf(connection) : null;
+      let proto = null;
+      if (connection) {
+        proto = typeof connection === "function" ? connection.prototype : Object.getPrototypeOf(connection);
+      }
       if (proto && typeof proto.getCodecOptions === "function") {
         if (!state.originals.getCodecOptions) {
           state.originals.getCodecOptions = proto.getCodecOptions;
@@ -893,7 +896,10 @@
     try {
       const codecOriginal = state.originals.getCodecOptions;
       const connection = findStores().CodecConnection;
-      const proto = connection ? Object.getPrototypeOf(connection) : null;
+      let proto = null;
+      if (connection) {
+        proto = typeof connection === "function" ? connection.prototype : Object.getPrototypeOf(connection);
+      }
       if (proto && typeof codecOriginal === "function") {
         proto.getCodecOptions = codecOriginal;
       }
