@@ -613,6 +613,81 @@
     return out;
   }
 
+  function callStats(connection) {
+    return new Promise((resolve) => {
+      try {
+        if (!connection || typeof connection.getStats !== "function") {
+          resolve(null);
+          return;
+        }
+        let done = false;
+        const finish = (value) => {
+          if (!done) {
+            done = true;
+            resolve(value || null);
+          }
+        };
+        setTimeout(() => finish(null), 3000);
+        if (connection.getStats.length === 0) {
+          const returned = connection.getStats();
+          if (returned && typeof returned.then === "function") {
+            returned.then(finish, () => finish(null));
+          } else {
+            finish(returned);
+          }
+        } else {
+          connection.getStats(finish);
+        }
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  }
+
+  async function rtcStats() {
+    const out = { rtc: null, connections: [], errors: [] };
+    try {
+      const store = findStores().RTCConnectionStore;
+      if (store) {
+        const pick = (name) => {
+          try {
+            return typeof store[name] === "function" ? store[name]() : null;
+          } catch (_) {
+            return null;
+          }
+        };
+        out.rtc = {
+          hostname: pick("getHostname"),
+          quality: pick("getQuality"),
+          mediaSessionId: pick("getMediaSessionId"),
+          connected: pick("isConnected"),
+          packetStats: pick("getPacketStats"),
+          voiceStateStats: pick("getVoiceStateStats"),
+          lastVideoSinkWantAt: pick("getLastNonZeroRemoteVideoSinkWantsTime")
+        };
+      }
+    } catch (error) {
+      out.errors.push("rtc: " + String(error));
+    }
+    try {
+      const store = findStores().MediaEngineStore;
+      const engine = store ? store.getMediaEngine() : null;
+      const list = engine && engine.connections ? Array.from(engine.connections) : [];
+      for (const connection of list) {
+        const stats = await callStats(connection);
+        out.connections.push({
+          context: connection && connection.context,
+          streamUserId: connection && connection.streamUserId,
+          destroyed: connection && connection.destroyed,
+          stats: stats
+        });
+      }
+    } catch (error) {
+      out.errors.push("connections: " + String(error));
+    }
+    return out;
+  }
+
   function scanWebpack() {
     if (state.webpackCache) {
       return state.webpackCache;
@@ -860,6 +935,7 @@
     stores: () => Object.keys(findStores()),
     experiments: experiments,
     experimentNames: experimentNames,
+    rtcStats: rtcStats,
     forceGoLive: forceGoLive,
     store: () => findMediaStore(),
     engine: () => {
