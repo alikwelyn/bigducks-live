@@ -12,11 +12,16 @@
 # ---------------------------------------------------------------- build -----
 FROM rust:1-bookworm AS build
 
-# xcap (captura) tem deps de sistema no Linux que precisam existir ate' pra
-# compilar o crate, mesmo que o modo relay nao capture nada.
+# O crate de captura (xcap) compila no Linux mesmo se a gente nao capture nada,
+# e ele depende de pkg-config + headers de X11, Wayland, PipeWire, DRM/GBM e EGL.
+# Sem TODAS estas, o build morre em `wayland-sys`, `pipewire-sys`, `drm-sys`...
+# O `clang`/`libclang-dev` e' pro bindgen (usado por alguns desses crates).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      pkg-config libxcb1-dev libxrandr-dev libdbus-1-dev \
+      pkg-config clang libclang-dev \
+      libxcb1-dev libxrandr-dev libdbus-1-dev \
+      libwayland-dev libxkbcommon-dev \
+      libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev libgl1-mesa-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -28,8 +33,13 @@ RUN cargo build --release
 # --------------------------------------------------------------- runtime -----
 FROM debian:bookworm-slim
 
+# As mesmas libs, agora em versao de runtime: o binario linka nelas, entao o
+# loader precisa encontra-las mesmo no modo relay.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libxcb1 libxrandr2 libdbus-1-3 \
+ && apt-get install -y --no-install-recommends \
+      libxcb1 libxrandr2 libdbus-1-3 \
+      libwayland-client0 libxkbcommon0 \
+      libpipewire-0.3-0 libdrm2 libgbm1 libegl1 \
  && rm -rf /var/lib/apt/lists/* \
  && useradd -r -s /usr/sbin/nologin bigducks
 
