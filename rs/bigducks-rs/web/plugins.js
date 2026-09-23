@@ -446,6 +446,17 @@
       note("perk-bind", "perk-bind-sem-primitivas", "getByBody/__bdWrap ausentes (preload novo?)");
       return false;
     }
+    // ON-DEMAND: a varredura por CORPO e O(modulos) e cara (getOwnPropertyNames +
+    // toString de cada export) - NAO pode rodar a cada poll de injecao. So tenta
+    // quando o cache do webpack MUDOU de tamanho (modulo novo entrou); o preload
+    // ainda cacheia o indice por tamanho, entao o trabalho pesado roda 1x.
+    let size = -1;
+    try {
+      const req = api.getRequire && api.getRequire();
+      if (req && req.c) size = Object.keys(req.c).length;
+    } catch (_) {}
+    if (size >= 0 && state.perkTriedSize === size) return false;
+    if (size >= 0) state.perkTriedSize = size;
     const hit = api.getByBody((body) => {
       if (body.indexOf("STREAM_HIGH_QUALITY") === -1) return false;
       // o consumidor do entitlement cita uma checagem de premium/entitlement

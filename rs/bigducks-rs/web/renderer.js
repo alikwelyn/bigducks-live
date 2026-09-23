@@ -822,12 +822,16 @@
   // na varredura.
   const STORE_SIGNATURE = "getCurrentUserActiveStream";
   const VOICE_SIGNATURE = "getVoiceChannelId";
+  // A engine de midia tambem e chunk LAZY: a fabrica que cita o picker nativo e
+  // capturada no push, igual a store e a do canal de voz.
+  const ENGINE_SIGNATURE = "presentNativeScreenSharePicker";
 
   function capture() {
     try {
       return globalThis.__bdCapture || (globalThis.__bdCapture = {
         store: { ids: [], candidates: [] },
         voice: { ids: [], candidates: [] },
+        engine: { ids: [], candidates: [] },
       });
     } catch { return null; }
   }
@@ -870,6 +874,33 @@
     return null;
   }
 
+  // A engine nativa de midia tem um dos dois formatos abaixo (HANDOFF 4.1).
+  // Guarda barata: so vale para objeto/funcao - primitivo nem chega aqui.
+  function engineCandidateOf(value) {
+    try {
+      if (typeof value.presentNativeScreenSharePicker === "function") return true;
+      if (typeof value.getScreenPreviews === "function"
+        && typeof value.addDirectVideoOutputSink === "function") return true;
+    } catch {}
+    return false;
+  }
+
+  // Acha a engine de midia dentro de um namespace webpack (mesma varredura da
+  // store/voz: `trusted` pula o filtro de proxy).
+  function findEngineIn(value, depth, trusted) {
+    if (!value || typeof value !== "object" || depth > 2) return null;
+    if (!trusted && isProxyLike(value)) return null;
+    if (engineCandidateOf(value)) return value;
+    let values;
+    try { values = [value.default].concat(Object.values(value)); } catch { values = []; }
+    for (const child of values) {
+      if (!child || typeof child !== "object") continue;
+      const hit = findEngineIn(child, depth + 1, trusted);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   // Roda no PUSH, ANTES de o modulo ser registrado e executado.
   function captureFactories(modules) {
     if (!modules || typeof modules !== "object") return;
@@ -882,11 +913,13 @@
       try { source = Function.prototype.toString.call(factory); } catch { continue; }
       const wantsStore = source.indexOf(STORE_SIGNATURE) !== -1;
       const wantsVoice = source.indexOf(VOICE_SIGNATURE) !== -1;
-      if (!wantsStore && !wantsVoice) continue;
+      const wantsEngine = source.indexOf(ENGINE_SIGNATURE) !== -1;
+      if (!wantsStore && !wantsVoice && !wantsEngine) continue;
 
       if (wantsStore && reg.store.ids.indexOf(id) === -1) reg.store.ids.push(id);
       if (wantsVoice && reg.voice.ids.indexOf(id) === -1) reg.voice.ids.push(id);
-      report("store-factory", { module: String(id), store: wantsStore, voice: wantsVoice });
+      if (wantsEngine && reg.engine.ids.indexOf(id) === -1) reg.engine.ids.push(id);
+      report("store-factory", { module: String(id), store: wantsStore, voice: wantsVoice, engine: wantsEngine });
 
       // Embrulha mantendo a assinatura (module, exports, require): no retorno a
       // gente le os exports NA HORA da execucao da fabrica.
@@ -906,6 +939,13 @@
               if (hit && reg.voice.candidates.indexOf(hit) === -1) {
                 reg.voice.candidates.push(hit);
                 report("voice-captured", { module: String(id), via: "execucao" });
+              }
+            }
+            if (wantsEngine) {
+              const hit = findEngineIn(exports, 0, true) || findEngineIn(result, 0, true);
+              if (hit && reg.engine.candidates.indexOf(hit) === -1) {
+                reg.engine.candidates.push(hit);
+                report("engine-captured", { module: String(id), via: "execucao" });
               }
             }
           } catch {}
@@ -1071,12 +1111,27 @@
     return typeof value === "string" && SOURCE_ID.test(value);
   }
 
+  // Valores de um namespace webpack, mas com TETO. `Object.values(exports)` num
+  // modulo cujo export e um mapa de dados gigante (i18n, assets, config) vira
+  // dezenas de milhares de "candidatos" e e o que fazia o contador da varredura
+  // explodir. Um modulo de engine tem poucos exports - acima do teto a gente so
+  // olha `exports` e `exports.default` (onde a engine vive) e NAO materializa o
+  // mapa inteiro.
+  const EXPORT_VALUE_CAP = 32;
   function exportValues(exports) {
+    const out = [exports, undefined];
+    try { out[1] = exports.default; } catch { out[1] = undefined; }
     try {
-      return [exports, exports.default].concat(Object.values(exports));
-    } catch {
-      return [exports];
-    }
+      const names = Object.keys(exports);
+      if (names.length <= EXPORT_VALUE_CAP) {
+        for (const name of names) {
+          let value;
+          try { value = exports[name]; } catch { continue; }
+          out.push(value);
+        }
+      }
+    } catch {}
+    return out;
   }
 
   // Procura um sourceId dentro de um valor (objeto, array, Map), com limites.
@@ -1118,28 +1173,53 @@
   }
 
   // A engine nativa de midia e quem recebe o sourceId escolhido no modal.
+  //
+  // CUSTO: cada linha da varredura e um MODULO do cache do webpack (require.c).
+  // O cache sai de ~63 modulos no boot para ~37.000 depois que o bundle carrega
+  // (HANDOFF 6.1) - entao varrer ele A CADA poll de 2.5s era o desperdicio que
+  // levava o contador a dezenas de milhares. Aqui: (a) a varredura do cache roda
+  // UMA vez por sessao; (b) so entra na conta o registro que passa pela guarda
+  // barata (export objeto/funcao, nao-Proxy) - string/mapa de dados nunca conta;
+  // (c) o chunk LAZY da engine, se existir, ja vem capturado no push do webpack
+  // (captureFactories -> reg.engine), igual a store e a do canal de voz.
+  let registryWalked = false;
+
   function findMediaEngine() {
-    const require = webpackRequire();
-    if (!require || !require.c) return null;
     let scanned = 0;
     let marked = 0;
     let found = null;
+
+    // (1) candidatos capturados no push - O(tens), sem tocar no cache.
+    const reg = capture();
+    if (reg && reg.engine && reg.engine.candidates.length) {
+      scanned = reg.engine.candidates.length;
+      for (const candidate of reg.engine.candidates) {
+        if (!engineCandidateOf(candidate)) continue;
+        marked += 1;
+        if (!found) found = candidate;
+      }
+      if (found) { reportOnce("engine-scan", { scanned, marked, via: "captura" }); return found; }
+    }
+
+    const require = webpackRequire();
+    if (!require || !require.c) return null;
+    if (registryWalked) return null;
+    registryWalked = true;
+
     for (const id of Object.keys(require.c)) {
       let exports;
       try { exports = require.c[id] && require.c[id].exports; } catch { continue; }
-      if (!exports || typeof exports !== "object") continue;
+      // GUARDA BARATA: um registro so e olhado - e so ENTRA NA CONTA - se o
+      // export for um modulo de verdade (objeto/funcao). Primitivo (string,
+      // numero) e Proxy sao pulados SEM contar.
+      if (!exports || (typeof exports !== "object" && typeof exports !== "function")) continue;
+      if (isProxyLike(exports)) continue;
+      scanned += 1; // UMA vez por modulo REAL - nao por valor exportado
       for (const candidate of exportValues(exports)) {
         if (!candidate || typeof candidate !== "object" || isProxyLike(candidate)) continue;
-        scanned += 1;
-        try {
-          const hasPicker = typeof candidate.presentNativeScreenSharePicker === "function";
-          const hasPreviews = typeof candidate.getScreenPreviews === "function";
-          const hasSink = typeof candidate.addDirectVideoOutputSink === "function";
-          if (hasPicker || (hasPreviews && hasSink)) {
-            marked += 1;
-            if (!found) found = candidate;
-          }
-        } catch {}
+        if (!engineCandidateOf(candidate)) continue;
+        marked += 1;
+        if (!found) found = candidate;
       }
     }
     // Reporta mesmo quando nao acha: e o que diz se o problema e o filtro ou a
@@ -1153,7 +1233,8 @@
     for (const id of Object.keys(require.c)) {
       let exports;
       try { exports = require.c[id] && require.c[id].exports; } catch { continue; }
-      if (!exports || typeof exports !== "object") continue;
+      if (!exports || (typeof exports !== "object" && typeof exports !== "function")) continue;
+      if (isProxyLike(exports)) continue;
       for (const candidate of exportValues(exports)) {
         if (!candidate || typeof candidate !== "object" || isProxyLike(candidate)) continue;
         let own;

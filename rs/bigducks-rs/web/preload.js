@@ -87,12 +87,17 @@ globalThis.__bdWebpack = globalThis.__bdWebpack || (function () {
     } catch (_) {}
     return null;
   }
-  function getByBody(pred) {
-    const require = getRequire();
-    if (!require || !require.c) {
-      console.log("[bigducks-rs] __bdWebpack.getByBody: webpack ainda nao esta pronto");
-      return null;
-    }
+  // Indice corpo->export montado UMA vez por tamanho de cache e reusado por
+  // qualquer predicado. O consumidor (plugins.js) pode chamar getByBody varias
+  // vezes por sessao; reconstruir a varredura (Object.getOwnPropertyNames +
+  // Function.prototype.toString de CADA export) a cada chamada era o custo
+  // repetido. Com o indice, o trabalho pesado roda na primeira vez e as demais
+  // so casam o predicado - e nada e varrido no hot path do poll.
+  let bodyIndex = null;
+  let bodyIndexSize = -1;
+
+  function buildBodyIndex(require) {
+    const index = [];
     for (const id of Object.keys(require.c)) {
       let exports;
       try { exports = require.c[id] && require.c[id].exports; } catch (_) { continue; }
@@ -105,10 +110,28 @@ globalThis.__bdWebpack = globalThis.__bdWebpack || (function () {
         if (typeof fn !== "function") continue;
         let body;
         try { body = Function.prototype.toString.call(fn); } catch (_) { continue; }
-        let hit = false;
-        try { hit = !!pred(body, key, exports); } catch (_) { hit = false; }
-        if (hit) return { fn: fn, key: key, id: id, exports: exports };
+        index.push({ id: id, key: key, exports: exports, fn: fn, body: body });
       }
+    }
+    return index;
+  }
+
+  function getByBody(pred) {
+    const require = getRequire();
+    if (!require || !require.c) {
+      console.log("[bigducks-rs] __bdWebpack.getByBody: webpack ainda nao esta pronto");
+      return null;
+    }
+    let size = -1;
+    try { size = Object.keys(require.c).length; } catch (_) {}
+    if (!bodyIndex || size !== bodyIndexSize) {
+      bodyIndex = buildBodyIndex(require);
+      bodyIndexSize = size;
+    }
+    for (const entry of bodyIndex) {
+      let hit = false;
+      try { hit = !!pred(entry.body, entry.key, entry.exports); } catch (_) { hit = false; }
+      if (hit) return { fn: entry.fn, key: entry.key, id: entry.id, exports: entry.exports };
     }
     return null;
   }
