@@ -24,6 +24,29 @@
   let hubSocket = null;
   let hubId = null;
   let peer = null;
+  // Mesh: um peer POR espectador, roteado pelo ufrag ICE (cada oferta tem um
+  // a=ice-ufrag: proprio e cada candidato carrega usernameFragment). O relay e
+  // broadcast - quem casa o ufrag responde; os outros ignoram. Sem isso, N
+  // espectadores respondem para UM peer e so um conecta (os demais ficam pretos).
+  const peers = new Map();          // ufrag -> { pc, from|null, answered, sdp, viewerUfrag }
+  const answeredUfrags = new Map(); // viewer: ufrag -> answer sdp (dedupe)
+  const pendingIce = new Map();     // ufrag do viewer -> candidates antes do answer
+  const MAX_PEERS = 8;
+  function extractUfrag(sdp) {
+    const m = typeof sdp === 'string' ? sdp.match(/a=ice-ufrag:(\S+)/) : null;
+    return m ? m[1] : null;
+  }
+  // Ufrag da OFERTA original (o viewer ecoa em a=x-bd-offer-ufrag:).
+  function extractOfferUfrag(sdp) {
+    const m = typeof sdp === 'string' ? sdp.match(/a=x-bd-offer-ufrag:(\S+)/) : null;
+    return m ? m[1] : null;
+  }
+  function candidateUfrag(candidate) {
+    if (!candidate) return null;
+    if (candidate.usernameFragment) return candidate.usernameFragment;
+    const m = String(candidate.candidate || '').match(/ ufrag (\S+)/);
+    return m ? m[1] : null;
+  }
   let publishing = null;      // MediaStream vindo do Discord
   let receiving = null;       // MediaStream recebido (P2P)
   let p2pReceiving = false;
@@ -1696,8 +1719,9 @@
           log('unlock re-armado (hub ' + previousHubId + ' -> ' + hubId + ')');
         }
         // Se alguem ja estiver transmitindo, pede a oferta de novo (senao quem
-        // abre o Discord depois do inicio da live perderia o stream).
-        setTimeout(() => { if (!publishing) send({ type: 'request-offer' }); }, 1500);
+        // abre o Discord depois do inicio da live perderia o stream). Pede so
+        // se NAO ha peer vivo recebendo - pedir sempre realimentava o loop.
+        setTimeout(() => { if (!publishing && !hasLiveViewerPeer()) send({ type: 'request-offer' }); }, 1500);
         return;
       }
       if (message.from && hubId !== null && message.from === hubId) return;
@@ -1756,16 +1780,20 @@
     streamBitrate = bitrate;
     if (fps && fps > 0) streamFps = Math.min(120, Math.round(fps));
     try {
-      if (!peer || typeof peer.getSenders !== "function") return;
-      for (const sender of peer.getSenders()) {
-        if (!sender.track || sender.track.kind !== "video") continue;
-        const params = sender.getParameters();
-        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-        params.encodings[0].maxBitrate = streamBitrate;
-        // O fps vem do painel/UI (era fixo em 30 aqui - prendia o 60).
-        params.encodings[0].maxFramerate = streamFps;
-        params.degradationPreference = "maintain-resolution";
-        await sender.setParameters(params);
+      const targets = new Set();
+      if (peer && typeof peer.getSenders === "function") targets.add(peer);
+      for (const entry of peers.values()) if (entry.pc) targets.add(entry.pc);
+      for (const pc of targets) {
+        for (const sender of pc.getSenders()) {
+          if (!sender.track || sender.track.kind !== "video") continue;
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+          params.encodings[0].maxBitrate = streamBitrate;
+          // O fps vem do painel/UI (era fixo em 30 aqui - prendia o 60).
+          params.encodings[0].maxFramerate = streamFps;
+          params.degradationPreference = "maintain-resolution";
+          await sender.setParameters(params);
+        }
       }
       report("bitrate", { bitrate: streamBitrate, fps: streamFps });
     } catch (error) {
@@ -1788,6 +1816,8 @@
     publishingNative = false;
     feedPublishing = false;
     publishing = null;
+    for (const entry of peers.values()) { try { if (entry.pc) entry.pc.close(); } catch {} }
+    peers.clear();
     try { if (peer) peer.close(); } catch {}
     peer = null;
     try { if (feedSocket) feedSocket.close(); } catch {}
@@ -1807,7 +1837,7 @@
     if (message.type === 'remote-ready') {
       // A ponte pro relay (re)conectou. Se nao estou publicando, peco a oferta
       // de novo - a anterior pode ter morrido dentro do tunel morto.
-      if (!publishing) send({ type: 'request-offer' });
+      if (!publishing && !hasLiveViewerPeer()) send({ type: 'request-offer' });
       return;
     }
     if (message.type === 'settings') {
@@ -1817,9 +1847,47 @@
     if (message.type === 'offer') {
       await acceptOffer(message.sdp);
     } else if (message.type === 'answer') {
-      if (peer) await peer.setRemoteDescription({ type: 'answer', sdp: message.sdp });
+      // Mesh: casa o answer com o peer dono da oferta. O viewer ecoa o ufrag da
+      // oferta (a=x-bd-offer-ufrag:); sem eco (viewer antigo), casa pelo from ou
+      // pelo primeiro peer aberto. Answers de outros espectadores caem fora.
+      const ufrag = extractOfferUfrag(message.sdp);
+      let entry = ufrag ? peers.get(ufrag) : null;
+      if (!entry) {
+        for (const e of peers.values()) {
+          if (e.answered) continue;
+          if (e.from !== null && message.from && String(e.from) === String(message.from)) { entry = e; break; }
+        }
+        if (!entry) {
+          for (const e of peers.values()) { if (e.from === null && !e.answered) { entry = e; break; } }
+        }
+      }
+      if (entry && !entry.answered) {
+        try {
+          await entry.pc.setRemoteDescription({ type: 'answer', sdp: message.sdp });
+          entry.answered = true;
+          // No answer, a=ice-ufrag: e o ufrag DO VIEWER - chaveia os ICE dele.
+          entry.viewerUfrag = extractUfrag(message.sdp);
+          const pending = pendingIce.get(entry.viewerUfrag) || [];
+          pendingIce.delete(entry.viewerUfrag);
+          for (const c of pending) { try { await entry.pc.addIceCandidate(c); } catch {} }
+        } catch (error) {
+          log('answer falhou', String(error).slice(0, 120));
+        }
+      }
     } else if (message.type === 'ice') {
-      if (peer && message.candidate) { try { await peer.addIceCandidate(message.candidate); } catch {} }
+      // Roteia o candidato para o peer do viewer (answer pode chegar depois;
+      // pendentes entram quando o answer chegar).
+      const ufrag = candidateUfrag(message.candidate);
+      let target = null;
+      for (const e of peers.values()) {
+        if (e.viewerUfrag && ufrag && e.viewerUfrag === ufrag) { target = e; break; }
+      }
+      if (!target) {
+        if (!pendingIce.has(ufrag)) pendingIce.set(ufrag, []);
+        if (ufrag) pendingIce.get(ufrag).push(message.candidate);
+      } else if (message.candidate) {
+        try { await target.pc.addIceCandidate(message.candidate); } catch {}
+      }
     } else if (message.type === 'test-publish') {
       const isPublisher = String(message.publisher) === String(hubId);
       if (isPublisher) {
@@ -1846,7 +1914,11 @@
         report('test-watching', { viewer: hubId });
       }
     } else if (message.type === 'request-offer') {
-      if (publishing) await publish(publishing);
+      // Nunca destrua peers vivos por causa de um request-offer: reenviar a
+      // oferta existente ou abrir UM peer novo para quem pediu. Recriar em
+      // cascade era o loop (cada novo viewer matava as conexoes dos outros).
+      if (!publishing) return;
+      void ensurePublisherPeer(message.from || null).catch((error) => log('request-offer', String(error).slice(0, 120)));
     }
   }
 
@@ -1860,10 +1932,12 @@
     return pc;
   }
 
-  async function publish(stream) {
-    publishing = stream;
-    if (peer) { try { peer.close(); } catch {} }
-    peer = createPeer();
+  function hasLiveViewerPeer() {
+    const state = peer ? peer.connectionState : 'closed';
+    return state === 'new' || state === 'connecting' || state === 'connected';
+  }
+
+  function addStreamTracks(pc, stream) {
     for (const track of stream.getTracks()) {
       try {
         // Tela e conteudo de detalhe: evita o encoder "borrar" para economizar.
@@ -1874,35 +1948,94 @@
       // called") quando chegava antes da negociação (o bitrate-failed do log).
       if (track.kind === "video") {
         try {
-          peer.addTransceiver(track, {
+          pc.addTransceiver(track, {
             direction: "sendonly",
             streams: [stream],
             sendEncodings: [{ maxBitrate: streamBitrate, maxFramerate: Math.min(120, streamFps || 30) }],
           });
-        } catch { peer.addTrack(track, stream); }
+        } catch { pc.addTrack(track, stream); }
       } else {
-        peer.addTrack(track, stream);
+        pc.addTrack(track, stream);
       }
     }
-    // O padrao do WebRTC e ~2 Mbps: fica horrivel em 720p/1080p.
-    await applyBitrate(streamBitrate, streamFps);
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    send({ type: 'offer', sdp: peer.localDescription.sdp });
+  }
+
+  async function publish(stream) {
+    publishing = stream;
+    // Peer inicial "aberto" (from=null): a oferta vai em broadcast e o PRIMEIRO
+    // answer legitimo assume o peer. Espectadores seguintes pedem offer e
+    // recebem peers proprios (mesh). Nada de peer unico para todos.
+    await ensurePublisherPeer(null);
     log('publicando', stream.getVideoTracks()[0] && stream.getVideoTracks()[0].label);
     return true;
+  }
+
+  // Cria (ou reenvia a oferta de) um peer de publicacao. NUNCA destrói peers
+  // answered/vivos - recriar por request-offer era o loop infinito.
+  async function ensurePublisherPeer(from) {
+    if (!publishing) return;
+    // 1. Espectador que ja tem peer vivo: so reenvia a oferta (dedupe no
+    // viewer responde com a mesma answer sem resetar nada).
+    for (const entry of peers.values()) {
+      if (entry.from !== null && from !== null && String(entry.from) === String(from)) {
+        if (!entry.answered && entry.pc.connectionState !== 'closed') {
+          send({ type: 'offer', sdp: entry.sdp });
+        }
+        return;
+      }
+    }
+    // 2. Reutiliza peer de oferta pendente sem dono (oferta perdida no tunel).
+    for (const entry of peers.values()) {
+      if (entry.from === null && !entry.answered && entry.pc.connectionState !== 'closed') {
+        entry.from = from;
+        send({ type: 'offer', sdp: entry.sdp });
+        return;
+      }
+    }
+    // 3. Peer novo. Limite duro: sem espaco, reenvia a ultima oferta viva.
+    if (peers.size >= MAX_PEERS) {
+      for (const entry of peers.values()) {
+        if (entry.pc.connectionState !== 'closed') { send({ type: 'offer', sdp: entry.sdp }); return; }
+      }
+      return;
+    }
+    const pc = createPeer();
+    addStreamTracks(pc, publishing);
+    await applyBitrate(streamBitrate, streamFps);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const ufrag = extractUfrag(pc.localDescription.sdp);
+    if (ufrag) peers.set(ufrag, { pc, from: from || null, answered: false, sdp: pc.localDescription.sdp });
+    if (!peer) peer = pc;
+    send({ type: 'offer', sdp: pc.localDescription.sdp });
   }
 
   async function acceptOffer(sdp) {
     if (publishing) return; // quem publica nao aceita
     try { if (feedSocket) feedSocket.close(); } catch {}
     feedSocket = null;
+    const ufrag = extractUfrag(sdp);
+    // Oferta repetida (mesmo ufrag): re-responde com a MESMA answer sem tocar
+    // no peer - reconectar de novo zeraria frames e reativava o loop.
+    if (ufrag && answeredUfrags.has(ufrag)) {
+      send({ type: 'answer', sdp: answeredUfrags.get(ufrag) });
+      return;
+    }
     if (peer) { try { peer.close(); } catch {} }
     peer = createPeer();
     await peer.setRemoteDescription({ type: 'offer', sdp });
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
-    send({ type: 'answer', sdp: peer.localDescription.sdp });
+    // Eco do ufrag da oferta: o publisher mesh casa o answer com o peer certo
+    // (o a=ice-ufrag: do answer e o ufrag DO VIEWER, inutil para rotear).
+    const answerSdp = ufrag
+      ? peer.localDescription.sdp + '\r\na=x-bd-offer-ufrag:' + ufrag
+      : peer.localDescription.sdp;
+    send({ type: 'answer', sdp: answerSdp });
+    if (ufrag) {
+      answeredUfrags.set(ufrag, answerSdp);
+      if (answeredUfrags.size > 8) answeredUfrags.delete(answeredUfrags.keys().next().value);
+    }
   }
 
   // --------------------------------------------------------- captura -------
@@ -2014,6 +2147,8 @@
     paused = true;
     removeCover();
     closePanel();
+    for (const entry of peers.values()) { try { if (entry.pc) entry.pc.close(); } catch {} }
+    peers.clear();
     try { if (peer) peer.close(); } catch {}
     peer = null;
     publishing = null;

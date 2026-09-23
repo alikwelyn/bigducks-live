@@ -31,7 +31,12 @@
   const FLUX_EXPERIMENTS = ["2026-05-frontier-tuning", "2026-08-video-guard"];
   const EXPERIMENT_NAME = /^\d{4}-\d{2}-[a-z0-9-]+$/i;
   // item 4 - agucamento do stream (texto compartilhado nitido). false desliga.
-  const SHARPEN_STREAM = true;
+  // DESLIGADO (0.1.3): aplicar `filter: url(#bd-sharpen-filter)` em video ao
+  // vivo faz o feConvolveMatrix engolir os frames do WebRTC e renderizar LIXO -
+  // tiles serpia e o player de quem ASSISTE preto com franja no topo (visto e
+  // fotografado no par Discord x Canary no mesmo PC). Texto nitido era o
+  // objetivo, mas o alvo aqui so' pode ser <video>. Vira opt-in explicito.
+  const SHARPEN_STREAM = false;
   // item 5 - teto de upload (100 MB).
   const UPLOAD_LIMIT_BYTES = 100 * 1024 * 1024;
   // item 6 - fundo de camera virtual. Vazio = DESLIGADO; com URL/caminho, liga
