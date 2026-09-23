@@ -19,3 +19,7 @@ COMO PUBLICAR UMA VERSAO NOVA (o parque inteiro se atualiza sozinho)
 Nesta pasta vai SO' o binario que esta sendo distribuido - nada de build
 artifact. Se um dia ficar pesado, a alternativa e' montar um volume no VPS e
 subir o exe por la, mas ai' deixa de ser "so' um push".
+
+A pasta precisa dos DOIS arquivos: Desjanjador.exe e version.txt (so' o numero, ex:
+0.1.1). O relay monta o /release.json a partir deles (versao + sha256); sem o
+version.txt ele responde que o manifesto esta ausente.
