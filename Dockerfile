@@ -53,11 +53,20 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # (2) Codigo real (src + web, que entra via include_str! no main.rs). Mudar
 # QUALQUER arquivo daqui invalida SO' esta camada: as dependencias vem do cache.
+#
+# O `find -exec touch` e' OBRIGATORIO: o build de mentira de cima grava um
+# binario stub no cache mount com mtime = AGORA, e os arquivos que o COPY traz
+# do clone tem mtime do checkout (mais velhos). Sem o touch, o cargo compara
+# mtimes, acha que o binario stub esta em dia e SHIPA `fn main() {}` como
+# /Desjanjador - o container entao sai com exit 0 em segundos (visto na VPS:
+# loop de restart com logs vazios e 502). O touch força o cargo a recompilar o
+# bin do crate (as ~200 crates de dependencia continuam em cache).
 COPY rs/bigducks-rs/src ./src
 COPY rs/bigducks-rs/web ./web
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release \
+    find src web -type f -exec touch {} + \
+ && cargo build --release \
  && cp -f /src/target/release/Desjanjador /Desjanjador.build
 
 # Cache mounts NAO entram na imagem: o `target` e' so' um volume de cache. Por
