@@ -12,8 +12,32 @@
 //
 // Este arquivo e injetado varias vezes pelo preload (o webpack so fica completo
 // depois que o bundle carrega), entao e idempotente.
+//
+// RODADA NOVA (7 patches, TODOS guardados - ancora que nao casa so LOGA, nunca
+// lanca): 1 codec forcado (H264) | 2 portoes do Nitro | 3 experimentos do Flux |
+// 4 nitidez do stream | 5 upload 100 MB | 6 fundo de camera | 7 clips +fps/duracao.
+// Os itens 2/5/6/7 seguem a MESMA via de factory (EARLY_RULES no push +
+// patchFactories no cache); 1/3/4/6 embrulham o objeto VIVO (runtime, guardado).
 
 (function () {
+  // ---- constantes de comportamento (mexa AQUI, nao na logica) --------------
+  //
+  // item 1 - codec forcado. H264 e o unico que celular/browser decodificam de
+  // forma confiavel; AV1/VP9 deixam a nossa live PRETA no celular. A chave tem
+  // que bater com a do mapa `videoDecoders` do cliente (H264/VP8/VP9/H265/AV1).
+  const FORCE_CODEC = "H264";
+  // item 3 - experimentos do Flux: `variant` vai como 2o argumento.
+  const FLUX_VARIANT = 1;
+  const FLUX_EXPERIMENTS = ["2026-05-frontier-tuning", "2026-08-video-guard"];
+  const EXPERIMENT_NAME = /^\d{4}-\d{2}-[a-z0-9-]+$/i;
+  // item 4 - agucamento do stream (texto compartilhado nitido). false desliga.
+  const SHARPEN_STREAM = true;
+  // item 5 - teto de upload (100 MB).
+  const UPLOAD_LIMIT_BYTES = 100 * 1024 * 1024;
+  // item 6 - fundo de camera virtual. Vazio = DESLIGADO; com URL/caminho, liga
+  // (o preset de fabrica + o embrulho do graph handler passam a agir).
+  const CAMERA_BACKGROUND = "";
+
   function report(name, data) {
     const text = String(data == null ? "" : data);
     try {
@@ -47,7 +71,15 @@
   const EARLY_RULES = [
     { needle: "STREAM_HIGH_QUALITY", mutate: grantStreamPerk },
     { needle: "stream-settings-fps-", mutate: forceMaxAllowed },
-    { needle: '"canStreamWithSettings"', mutate: allowAll }
+    { needle: '"canStreamWithSettings"', mutate: allowAll },
+    // itens novos desta rodada. A lista e ENCADEADA (patchIncoming sem `break`):
+    // um modulo pode ser, ao mesmo tempo, da perk e de um portao.
+    { needle: "canStreamQuality", mutate: hardenGates },
+    { needle: "getMaxFileSize", mutate: raiseUploadLimit },
+    { needle: "photoshop", mutate: raiseUploadLimit },
+    { needle: "CLIPS_FRAME_RATE", mutate: extendClips },
+    { needle: "CLIPS_LENGTH", mutate: extendClips },
+    { needle: "backgroundReplacement", mutate: injectCameraBackgroundPreset }
   ];
 
   function patchIncoming(data) {
@@ -59,18 +91,29 @@
       if (typeof factory !== "function") continue;
       let source;
       try { source = Function.prototype.toString.call(factory); } catch (_) { continue; }
+      // Encadeia TODAS as regras que casam (antes era `break` na primeira): um
+      // modulo pode ser, ao mesmo tempo, da perk e de um portao. O resultado so e
+      // trocado se compilar - senao a factory original fica intacta.
+      let out = source;
+      const applied = [];
       for (const rule of EARLY_RULES) {
-        if (source.indexOf(rule.needle) === -1) continue;
-        const rewritten = rule.mutate(source);
-        if (!rewritten || rewritten === source) continue;
-        try {
-          modules[id] = new Function("return (" + normalize(rewritten) + ")")();
-          patched += 1;
-          report("nitro-chunk", "modulo " + id + " " + rule.needle + " (antes de executar)");
-        } catch (error) {
+        if (out.indexOf(rule.needle) === -1) continue;
+        let rewritten = null;
+        try { rewritten = rule.mutate(out); } catch (error) {
           report("nitro-chunk-erro", id + ": " + String(error && error.message).slice(0, 80));
+          continue;
         }
-        break;
+        if (!rewritten || rewritten === out) continue;
+        out = rewritten;
+        applied.push(rule.needle);
+      }
+      if (!applied.length) continue;
+      try {
+        modules[id] = new Function("return (" + normalize(out) + ")")();
+        patched += 1;
+        report("nitro-chunk", "modulo " + id + " " + applied.join(",") + " (antes de executar)");
+      } catch (error) {
+        report("nitro-chunk-erro", id + ": " + String(error && error.message).slice(0, 80));
       }
     }
     return patched;
@@ -150,7 +193,11 @@
         module = require.c[id];
         factory = require.m && require.m[id];
       } catch (_) { continue; }
-      if (!module || typeof factory !== "function" || module.__bdPatched) continue;
+      if (!module || typeof factory !== "function") continue;
+      // Guarda por AGULHA (needle), nao por modulo: o MESMO modulo pode ser, ao
+      // mesmo tempo, o da perk e o de um portao - e os dois precisam entrar.
+      module.__bdNeedles = module.__bdNeedles || {};
+      if (module.__bdNeedles[needle]) continue;
 
       let source;
       try { source = Function.prototype.toString.call(factory); } catch (_) { continue; }
@@ -177,6 +224,7 @@
           }
         }
         module.__bdPatched = true;
+        module.__bdNeedles[needle] = true;
         if (needle.indexOf("STREAM_HIGH_QUALITY") !== -1) state.perkModule = id;
         patched += 1;
         report("nitro-patch", "modulo " + id + " " + needle);
@@ -431,6 +479,387 @@
     return added;
   }
 
+  // ==========================================================================
+  // RODADA NOVA (itens 1-7). Fonte-rewrite (2/5/6/7) usa as MESMAS vias de cima;
+  // runtime (1/3/4/6) embrulha o objeto vivo. Tudo guardado: ancora que nao casa
+  // so LOGA (via `note`/report) - nunca lanca.
+  // ==========================================================================
+
+  // Injeta `return <expr>;` no comeco do corpo da funcao/metodo `name`. Cobre as
+  // formas minificadas (`name(a){`, `name:function(a){`, `name=(a)=>{`) e NAO
+  // casa chamada (`x.name(a)`) porque exige `{` depois do `)` e posicao de
+  // definicao antes do nome. O marcador `/*bd-name*/` torna a re-entrada no-op.
+  function injectReturn(source, name, expr) {
+    const marker = "/*bd-" + name + "*/";
+    if (source.indexOf(marker) !== -1) return null; // ja patchado
+    const re = new RegExp(
+      "([\\s,{;(]|^)" + name
+        + "\\s*(?:[:=]\\s*(?:async\\s+)?(?:function\\s*)?)?\\([^)]*\\)\\s*(?:=>\\s*)?\\{"
+    );
+    const match = re.exec(source);
+    if (!match) return null;
+    const openBrace = match.index + match[0].length;
+    return source.slice(0, openBrace) + "return " + expr + ";" + marker + source.slice(openBrace);
+  }
+
+  // item 2 - os PORTOES do Nitro (a versao a prova de build da perk).
+  //
+  // Em vez de patchear cada preset, libera os PROPRIOS portoes que o cliente
+  // consulta. Nomes estaveis (sao API publica do modulo premium). Loga cada um.
+  function hardenGates(source) {
+    let out = source;
+    let flipped = 0;
+    for (const gate of ["canStreamQuality", "canUseHighVideoUploadQuality", "canUseClientThemes"]) {
+      const next = injectReturn(out, gate, "!0");
+      if (next) { out = next; flipped += 1; report("gate-liberado", gate); }
+    }
+    if (flipped) {
+      // getFeatureValue e generico (WIDGETs alheios usam): so entra quando o
+      // modulo ja era um modulo de portao nosso.
+      const generic = injectReturn(out, "getFeatureValue", "!0");
+      if (generic) { out = generic; flipped += 1; report("gate-liberado", "getFeatureValue"); }
+    }
+    return flipped ? out : null;
+  }
+
+  // item 5 - teto de upload (100 MB). Modulo achado pela ancora "photoshop"
+  // (o modulo que tem getMaxFileSize/exceedsMessageSizeLimit).
+  function raiseUploadLimit(source) {
+    let out = source;
+    let touched = 0;
+    const size = injectReturn(out, "getMaxFileSize", String(UPLOAD_LIMIT_BYTES));
+    if (size) { out = size; touched += 1; report("upload-teto", "getMaxFileSize -> " + UPLOAD_LIMIT_BYTES + " bytes"); }
+    const limit = injectReturn(out, "exceedsMessageSizeLimit", "!1");
+    if (limit) { out = limit; touched += 1; report("upload-teto", "exceedsMessageSizeLimit -> false"); }
+    return touched ? out : null;
+  }
+
+  // item 7 - clips com mais fps e mais duracao. As listas moram DENTRO do objeto
+  // logo depois das ancoras `.CLIPS_FRAME_RATE,{` e `.CLIPS_LENGTH,{`. Acha esse
+  // objeto (ancora + proximo `{`, tolerante a espaco) e acrescenta na PRIMEIRA
+  // lista so-de-numeros - idempotente pela presenca do valor.
+  function matchingBrace(source, open) {
+    let depth = 0;
+    for (let i = open; i < source.length; i += 1) {
+      const ch = source.charAt(i);
+      if (ch === "{") depth += 1;
+      else if (ch === "}") { depth -= 1; if (depth === 0) return i; }
+    }
+    return -1;
+  }
+
+  function injectClipValues(source, anchor, values) {
+    const at = source.indexOf(anchor);
+    if (at === -1) return null;
+    const open = source.indexOf("{", at + anchor.length);
+    if (open === -1) return null;
+    const close = matchingBrace(source, open);
+    if (close === -1) return null;
+    const body = source.slice(open + 1, close);
+    const array = body.match(/\[([0-9,\s]*)\]/);
+    if (!array) return null;
+    const current = array[1].split(",").map((part) => part.trim()).filter((part) => part !== "");
+    const added = [];
+    for (const value of values) {
+      if (current.indexOf(String(value)) === -1) { current.push(String(value)); added.push(value); }
+    }
+    if (!added.length) return null;
+    const rebuilt = body.slice(0, array.index) + "[" + current.join(",") + "]" + body.slice(array.index + array[0].length);
+    return { source: source.slice(0, open + 1) + rebuilt + source.slice(close), added };
+  }
+
+  function extendClips(source) {
+    let out = source;
+    let added = 0;
+    const fps = injectClipValues(out, ".CLIPS_FRAME_RATE", [120, 144]);
+    if (fps) { out = fps.source; added += fps.added.length; report("clips-opcoes", "CLIPS_FRAME_RATE + " + fps.added.join("/") + " FPS"); }
+    const length = injectClipValues(out, ".CLIPS_LENGTH", [180, 300]);
+    if (length) { out = length.source; added += length.added.length; report("clips-opcoes", "CLIPS_LENGTH + " + length.added.join("/") + "s"); }
+    return added ? out : null;
+  }
+
+  // item 6 (parte de fabrica) - preset de fundo de camera. Entra como PRIMEIRO
+  // item da primeira lista de objetos com cara de fundo (tem url/image/thumbnail)
+  // do modulo de backgroundReplacement. Desligado por padrao: o runtime ainda
+  // embrulha o graph handler em wrapCameraBackground().
+  function injectCameraBackgroundPreset(source) {
+    if (!CAMERA_BACKGROUND) return null;
+    if (source.indexOf("ackground") === -1) return null;
+    if (source.indexOf('"bd-custom"') !== -1) return null;
+    const array = source.match(/\[\s*\{[^{}]*?(?:thumbnail|url|image|src)\s*:/);
+    if (!array) return null;
+    const at = array.index + 1;
+    const url = JSON.stringify(CAMERA_BACKGROUND);
+    const preset = "{id:\"bd-custom\",name:\"bigducks\",url:" + url + ",image:" + url + ",thumbnail:" + url + "},";
+    return source.slice(0, at) + preset + source.slice(at);
+  }
+
+  // item 1 - codec forcado (runtime, no PROTOTIPO da RTCConnection).
+  //
+  // `getCodecOptions` devolve {audioEncoder,...,videoEncoder,videoDecoders}.
+  // Trocando `videoEncoder` por `videoDecoders[FORCE_CODEC]` o proprio cliente
+  // negocia H264 - que celular/browser decodificam (AV1 nao).
+  function codecDecoder(options) {
+    const decoders = options && options.videoDecoders;
+    if (!decoders || typeof decoders !== "object") return null;
+    const want = String(FORCE_CODEC).toLowerCase().replace(/[^a-z0-9]/g, "");
+    for (const key of Object.keys(decoders)) {
+      if (String(key).toLowerCase().replace(/[^a-z0-9]/g, "") === want) return decoders[key];
+    }
+    return null;
+  }
+
+  function forceCodec(options) {
+    const chosen = codecDecoder(options);
+    if (!chosen || options.videoEncoder === chosen) return false;
+    options.videoEncoder = chosen;
+    if (!state.codecLogged) {
+      state.codecLogged = true;
+      report("codec-forcado", FORCE_CODEC + " (videoEncoder = videoDecoders[" + FORCE_CODEC + "])");
+    }
+    return true;
+  }
+
+  function codecWrapper(original) {
+    const wrapper = function () {
+      const ret = original.apply(this, arguments);
+      try { forceCodec(ret); } catch (_) {}
+      return ret;
+    };
+    wrapper.__bdCodec = true;
+    return wrapper;
+  }
+
+  // Embrulha getCodecOptions onde ele estiver: no PROTOTIPO (classe
+  // RTCConnection) e/ou como propriedade propria do objeto/namespace exportado.
+  function wrapCodecHolder(value) {
+    let count = 0;
+    const proto = typeof value === "function" ? value.prototype : null;
+    if (proto && proto !== Object.prototype) {
+      let desc;
+      try { desc = Object.getOwnPropertyDescriptor(proto, "getCodecOptions"); } catch (_) { desc = null; }
+      if (desc && typeof desc.value === "function" && !desc.value.__bdCodec) {
+        try {
+          Object.defineProperty(proto, "getCodecOptions", {
+            configurable: true, writable: true, enumerable: !!desc.enumerable, value: codecWrapper(desc.value),
+          });
+          count += 1;
+        } catch (_) {}
+      }
+    }
+    if (typeof value.getCodecOptions === "function" && !value.getCodecOptions.__bdCodec) {
+      try {
+        Object.defineProperty(value, "getCodecOptions", {
+          configurable: true, writable: true, value: codecWrapper(value.getCodecOptions),
+        });
+        count += 1;
+      } catch (_) {}
+    }
+    return count;
+  }
+
+  function wrapCodecOptions() {
+    if (state.codecWrapped) return true;
+    let count = 0;
+    for (const id of Object.keys(require.c)) {
+      let exports;
+      try { exports = require.c[id] && require.c[id].exports; } catch (_) { continue; }
+      if (!exports || typeof exports !== "object") continue;
+      let values;
+      try { values = [exports, exports.default].concat(Object.values(exports)); } catch (_) { continue; }
+      for (const value of values) {
+        if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
+        try { count += wrapCodecHolder(value); } catch (_) {}
+      }
+    }
+    if (count) {
+      state.codecWrapped = true;
+      report("codec-hook", count + " getCodecOptions embrulhado(s) p/ " + FORCE_CODEC);
+      return true;
+    }
+    note("codec", "codec-sem-alvo", "getCodecOptions nao achado (nenhum alvo embrulhado)");
+    return false;
+  }
+
+  // item 3 - experimentos do Flux (createOverride + emitChange; so runtime).
+  function findExperimentStore() {
+    for (const id of Object.keys(require.c)) {
+      let exports;
+      try { exports = require.c[id] && require.c[id].exports; } catch (_) { continue; }
+      if (!exports || typeof exports !== "object") continue;
+      let values;
+      try { values = [exports, exports.default].concat(Object.values(exports)); } catch (_) { continue; }
+      for (const value of values) {
+        if (!value || typeof value !== "object") continue;
+        try {
+          if (typeof value.createOverride === "function" && typeof value.emitChange === "function") return value;
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  function unlockExperiments() {
+    if (state.fluxDone) return true;
+    const store = findExperimentStore();
+    if (!store) { note("flux", "experimentos-sem-store", "ApexExperimentStore ausente (createOverride/emitChange)"); return false; }
+
+    const names = FLUX_EXPERIMENTS.slice();
+    // descoberta: nomes de experimento que o proprio store conhece e que sao de
+    // stream/clips (nomes fora do nosso radar entram de graca).
+    for (const prop of ["getExperiments", "getAllExperiments"]) {
+      let list;
+      try { list = typeof store[prop] === "function" ? store[prop]() : null; } catch (_) { list = null; }
+      if (!list) continue;
+      let keys = [];
+      try { keys = Array.isArray(list) ? list : Object.keys(list); } catch (_) { keys = []; }
+      for (const key of keys) {
+        const name = String(key);
+        if (EXPERIMENT_NAME.test(name) && /stream|clip|video|screen|frontier|quality|rtc/i.test(name)) names.push(name);
+      }
+    }
+
+    const seen = {};
+    let overrides = 0;
+    for (const name of names) {
+      if (seen[name]) continue;
+      seen[name] = true;
+      try {
+        store.createOverride(name, FLUX_VARIANT);
+        overrides += 1;
+        report("experimento", name + " -> variante " + FLUX_VARIANT);
+      } catch (error) {
+        report("experimento-erro", name + ": " + String(error && error.message).slice(0, 60));
+      }
+    }
+    try { if (overrides) store.emitChange(); } catch (_) {}
+    state.fluxDone = true;
+    report("experimentos", overrides + " override(s) via ApexExperimentStore.createOverride");
+    return overrides > 0;
+  }
+
+  // item 4 - agucamento do stream: um filtro SVG (feConvolveMatrix) UMA vez, e
+  // `style.filter` no player (mesma jogada do tile por-usuario da referencia, com
+  // a var CSS reutilizavel). E o que deixa o TEXTO de tela-compartilhada nitido.
+  function installSharpening() {
+    if (!SHARPEN_STREAM) { note("sharpen", "nitidez-off", "SHARPEN_STREAM=false"); return false; }
+    if (state.sharpenInstalled) return true;
+    try {
+      if (!document.getElementById("bd-sharpen-filter")) {
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(NS, "svg");
+        svg.setAttribute("width", "0");
+        svg.setAttribute("height", "0");
+        svg.setAttribute("aria-hidden", "true");
+        svg.style.position = "absolute";
+        const filter = document.createElementNS(NS, "filter");
+        filter.setAttribute("id", "bd-sharpen-filter");
+        filter.setAttribute("color-interpolation-filters", "sRGB");
+        const kernel = document.createElementNS(NS, "feConvolveMatrix");
+        // Kernel de sharpen suave: realca o texto sem halo forte.
+        kernel.setAttribute("order", "3");
+        kernel.setAttribute("kernelMatrix", "0 -1 0 -1 5 -1 0 -1 0");
+        kernel.setAttribute("preserveAlpha", "true");
+        filter.appendChild(kernel);
+        svg.appendChild(filter);
+        (document.body || document.documentElement).appendChild(svg);
+      }
+      // Reaproveitavel por CSS: as tiles podem usar var(--bd-sharpen).
+      document.documentElement.style.setProperty("--bd-sharpen", "url(#bd-sharpen-filter)");
+    } catch (error) {
+      note("sharpen-erro", "nitidez-erro", String(error && error.message).slice(0, 80));
+      return false;
+    }
+
+    const apply = () => {
+      try {
+        for (const video of document.querySelectorAll("video")) {
+          const rect = video.getBoundingClientRect();
+          if (rect.width < 300 || rect.height < 170) continue; // so o player de verdade
+          if (video.style.filter === "url(#bd-sharpen-filter)") continue;
+          video.style.filter = "url(#bd-sharpen-filter)";
+        }
+      } catch (_) {}
+    };
+    try {
+      apply();
+      new MutationObserver(apply).observe(document.documentElement, { childList: true, subtree: true });
+      setInterval(apply, 3000);
+    } catch (_) {}
+    state.sharpenInstalled = true;
+    report("nitidez", "feConvolveMatrix no player (opt-out SHARPEN_STREAM)");
+    return true;
+  }
+
+  // item 6 (parte de runtime) - embrulha o graph handler do fundo de camera.
+  // Guardado pelo proprio CAMERA_BACKGROUND: vazio = desligado.
+  function wrapCameraBackground() {
+    if (!CAMERA_BACKGROUND) { note("camera-off", "camera-bg", "desligado (CAMERA_BACKGROUND vazio)"); return false; }
+    if (state.cameraWrapped) return true;
+    let handlers = 0;
+    let presets = 0;
+    for (const id of Object.keys(require.c)) {
+      let exports;
+      try { exports = require.c[id] && require.c[id].exports; } catch (_) { continue; }
+      if (!exports || typeof exports !== "object") continue;
+      let values;
+      try { values = [exports, exports.default].concat(Object.values(exports)); } catch (_) { continue; }
+      for (const value of values) {
+        if (!value || typeof value !== "object") continue;
+        let keys;
+        try { keys = Object.getOwnPropertyNames(value); } catch (_) { continue; }
+        for (const key of keys) {
+          let item;
+          try { item = value[key]; } catch (_) { continue; }
+          // (a) lista de presets de fundo: acrescenta o nosso.
+          if (Array.isArray(item) && item.length && item[0] && typeof item[0] === "object"
+            && ("thumbnail" in item[0] || "url" in item[0] || "image" in item[0] || "src" in item[0])) {
+            let has = false;
+            for (const entry of item) { try { if (entry && entry.id === "bd-custom") has = true; } catch (_) {} }
+            if (!has) {
+              try {
+                item.push({ id: "bd-custom", name: "bigducks", url: CAMERA_BACKGROUND, image: CAMERA_BACKGROUND, thumbnail: CAMERA_BACKGROUND });
+                presets += 1;
+              } catch (_) {}
+            }
+            continue;
+          }
+          // (b) graph handler: funcao exportada com "background" no nome.
+          if (typeof item !== "function" || item.__bdCamera || !/background/i.test(key)) continue;
+          const wrapper = function () {
+            try {
+              const args = Array.prototype.slice.call(arguments);
+              for (const arg of args) {
+                if (arg && typeof arg === "object" && arg.backgroundImage == null && arg.imageUrl == null) {
+                  arg.backgroundImage = CAMERA_BACKGROUND;
+                }
+              }
+            } catch (_) {}
+            return item.apply(this, arguments);
+          };
+          wrapper.__bdCamera = true;
+          try { value[key] = wrapper; handlers += 1; } catch (_) {}
+        }
+      }
+    }
+    state.cameraWrapped = true;
+    if (handlers || presets) {
+      report("camera-bg", "presets=" + presets + " handlers=" + handlers + " url=" + String(CAMERA_BACKGROUND).slice(0, 60));
+      return true;
+    }
+    note("camera", "camera-bg-sem-alvo", "modulo de background nao achado");
+    return false;
+  }
+
+  // Relata UMA vez por sessao (a injecao repete a cada modulo novo).
+  function note(key, name, data) {
+    state.notes = state.notes || {};
+    if (state.notes[key]) return false;
+    state.notes[key] = true;
+    report(name, data);
+    return true;
+  }
+
   // ---- patchear a FABRICA antes da primeira execucao ------------------------
   //
   // Esta e a tecnica definitiva (a mesma do Vencord): o `require.m` guarda as
@@ -477,6 +906,14 @@
   patchFactoriesEarly("stream-settings-fps-", forceMaxAllowed);
   patchFactoriesEarly('"canStreamWithSettings"', allowAll);
   patchFactoriesEarly("2026-05-frontier-tuning", killTierExperiment);
+  // itens novos da rodada (2/5/6/7): mesma via "a tempo" pra factory ja
+  // registrada mas ainda nao executada.
+  patchFactoriesEarly("canStreamQuality", hardenGates);
+  patchFactoriesEarly("getMaxFileSize", raiseUploadLimit);
+  patchFactoriesEarly("photoshop", raiseUploadLimit);
+  patchFactoriesEarly("CLIPS_FRAME_RATE", extendClips);
+  patchFactoriesEarly("CLIPS_LENGTH", extendClips);
+  patchFactoriesEarly("backgroundReplacement", injectCameraBackgroundPreset);
 
   const patched = patchFactories('"canStreamWithSettings"', allowAll);
   // o menu (mesma tecnica): solta o clamp do limite do tier
@@ -490,6 +927,22 @@
   // e, ate o banner cair, mostra TODO mundo que fala da perk (o cheque de
   // entitlement esta nessa lista - e o log diz qual patchear)
   findPerkConsumers();
+
+  // ---- itens novos: via TARDIA (modulos que executaram antes do gancho) -----
+  patchFactories("canStreamQuality", hardenGates);
+  patchFactories("getMaxFileSize", raiseUploadLimit);
+  patchFactories("photoshop", raiseUploadLimit);
+  patchFactories("CLIPS_FRAME_RATE", extendClips);
+  patchFactories("CLIPS_LENGTH", extendClips);
+  patchFactories("backgroundReplacement", injectCameraBackgroundPreset);
+
+  // ---- itens novos: RUNTIME (nao reescrevem factory - so embrulham objeto) --
+  // Cada um e guardado por `state`: a injecao repetida e no-op. O try/catch
+  // externo garante que um item quebrado nunca derrube os outros.
+  try { wrapCodecOptions(); } catch (error) { report("codec-erro", String(error && error.message).slice(0, 80)); }
+  try { unlockExperiments(); } catch (error) { report("experimentos-erro", String(error && error.message).slice(0, 80)); }
+  try { installSharpening(); } catch (error) { report("nitidez-erro", String(error && error.message).slice(0, 80)); }
+  try { wrapCameraBackground(); } catch (error) { report("camera-bg-erro", String(error && error.message).slice(0, 80)); }
 
   // So reporta quando AUMENTA: na varredura seguinte o modulo ja esta patchado
   // e a contagem volta a 0 - isso nao e informacao, e ruido.
