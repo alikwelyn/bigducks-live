@@ -46,10 +46,16 @@ RUN apt-get update \
 
 COPY --from=build /src/target/release/Desjanjador /Desjanjador
 
+# Canal de atualizacao: o exe que vai pra pasta de release do repo vira
+# /release.json + o proprio binario servidos pelo relay. Assim, publicar versao
+# nova e' copiar o exe pra rs/bigducks-rs/release/ e dar push (o Dokploy
+# rebuilda no On Push e todas as maquinas se atualizam sozinhas).
+COPY rs/bigducks-rs/release /release
+
 USER bigducks
 EXPOSE 8791
 
 # --relay: escuta em 0.0.0.0, exige ?secret= nas conexoes e nao instala nada no
 # Discord (esse container nao tem Discord).
 ENTRYPOINT ["/Desjanjador"]
-CMD ["--relay", "--port", "8791"]
+CMD ["--relay", "--port", "8791", "--release-dir", "/release"]

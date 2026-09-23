@@ -1,0 +1,21 @@
+COMO PUBLICAR UMA VERSAO NOVA (o parque inteiro se atualiza sozinho)
+
+1. Suba a versao no Cargo.toml  ->  version = "0.1.1"
+   (SEM isso o app compara a mesma versao e NAO baixa nada - e' o unico passo
+   que da' pra esquecer)
+
+2. Compile e copie o exe pra ca':
+   cd rs\bigducks-rs
+   cargo build --release
+   copy target\release\Desjanjador.exe release\Desjanjador.exe
+
+3. Commit + push. O Dokploy rebuilda o relay no On Push, ele passa a servir
+   /release.json (com o sha256 real) e /Desjanjador.exe.
+
+4. Pronto: quem ja' tem o app aberto baixa a versao nova sozinho, confere o
+   hash e se troca (renomeia o exe em uso, poe o novo no lugar, reinicia e
+   apaga o .old no proximo start). A bandeja avisa.
+
+Nesta pasta vai SO' o binario que esta sendo distribuido - nada de build
+artifact. Se um dia ficar pesado, a alternativa e' montar um volume no VPS e
+subir o exe por la, mas ai' deixa de ser "so' um push".
