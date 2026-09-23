@@ -44,12 +44,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd -r -s /usr/sbin/nologin bigducks
 
-COPY --from=build /src/target/release/bigducks-rs /bigducks-rs
+COPY --from=build /src/target/release/Desjanjador /Desjanjador
 
 USER bigducks
 EXPOSE 8791
 
 # --relay: escuta em 0.0.0.0, exige ?secret= nas conexoes e nao instala nada no
 # Discord (esse container nao tem Discord).
-ENTRYPOINT ["/bigducks-rs"]
+ENTRYPOINT ["/Desjanjador"]
 CMD ["--relay", "--port", "8791"]
