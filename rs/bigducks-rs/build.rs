@@ -56,10 +56,10 @@ mod imp {
         if ico_path.exists() {
             let mut resource = winresource::WindowsResource::new();
             resource.set_icon(ico_path.to_str().expect("ico path"));
-            resource.set("ProductName", "DiscordStream");
-            resource.set("FileDescription", "BIG DUCKS RS - ponte de compartilhamento de tela");
-            resource.set("CompanyName", "BIG DUCKS");
-            resource.set("OriginalFilename", "bigducks-rs.exe");
+            resource.set("ProductName", "Desjanjador");
+            resource.set("FileDescription", "Desjanjador - ponte de compartilhamento de tela");
+            resource.set("CompanyName", "Desjanjador");
+            resource.set("OriginalFilename", "Desjanjador.exe");
             if let Err(error) = resource.compile() {
                 println!("cargo:warning=winresource nao embutiu o icone: {error}");
             }

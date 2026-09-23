@@ -46,24 +46,61 @@ pub struct Instance {
     pub started: Option<SystemTime>,
 }
 
-/// Todos os processos das familias do Discord que estao rodando.
-pub fn running() -> Vec<Instance> {
+/// Nosso proprio pid. NUNCA e' candidato: nem para diagnostico, nem para
+/// WM_CLOSE. O caminho deste repo (`D:\discord\rs\bigducks-rs\dist\...`) contem
+/// "discord", entao qualquer casamento por CAMINHO acertaria o proprio motor.
+fn own_pid() -> u32 {
+    std::process::id()
+}
+
+/// O nome do arquivo executavel e' de uma das familias do Discord?
+///
+/// Comparacao SEMPRE pelo NOME do arquivo (`szExeFile`), case-insensitive (do
+/// jeito que o Windows trata nome de arquivo). NUNCA pelo diretorio pai.
+fn is_discord_exe(name: &str) -> bool {
+    NAMES.iter().any(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
+/// Resultado de um scan: os candidatos verificados + a identidade do NOSSO
+/// processo (para logar explicitamente que ele foi ignorado).
+struct Scan {
+    /// Processos do Discord de verdade (nome exato, nunca o nosso).
+    candidates: Vec<Instance>,
+    /// (pid, nome, caminho) do nosso processo.
+    own: (u32, String, Option<PathBuf>),
+}
+
+fn scan() -> Scan {
+    let our_pid = own_pid();
+    let mut candidates = Vec::new();
+    let mut own_name = String::new();
+    let mut own_path = None;
+
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot as isize == -1 {
-        return Vec::new();
+        return Scan {
+            candidates,
+            own: (our_pid, own_name, own_path),
+        };
     }
-    let mut found = Vec::new();
+
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
     let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
     while ok {
         let name = utf16_field(&entry.szExeFile);
-        if NAMES.iter().any(|candidate| candidate.eq_ignore_ascii_case(&name)) {
-            found.push(Instance {
+        let pid = entry.th32ProcessID;
+        if pid == our_pid {
+            // Pulado EXPLICITAMENTE: e' o nosso proprio exe (que vive num
+            // caminho com "discord" e por isso jamais pode ser alvo).
+            own_name = name;
+            own_path = process_path(pid);
+        } else if is_discord_exe(&name) {
+            candidates.push(Instance {
                 name,
-                pid: entry.th32ProcessID,
-                path: process_path(entry.th32ProcessID),
-                started: process_started(entry.th32ProcessID),
+                pid,
+                path: process_path(pid),
+                started: process_started(pid),
             });
         }
         ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
@@ -71,11 +108,54 @@ pub fn running() -> Vec<Instance> {
     unsafe {
         CloseHandle(snapshot);
     }
-    found
+    Scan {
+        candidates,
+        own: (our_pid, own_name, own_path),
+    }
+}
+
+/// Todos os processos das familias do Discord que estao rodando (o nosso
+/// proprio processo e' sempre descartado).
+pub fn running() -> Vec<Instance> {
+    scan().candidates
 }
 
 pub fn is_running() -> bool {
     !running().is_empty()
+}
+
+/// Caminho do processo, ou "?" quando nao conseguimos ler.
+fn path_text(instance: &Instance) -> String {
+    instance
+        .path
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+/// Uma linha de candidato com TUDO (nome, pid, caminho) + veredito, para um
+/// casamento errado ser impossivel de nao ver.
+fn candidate_line(instance: &Instance, verdict: &str) -> String {
+    format!(
+        "discord: candidato nome={} pid={} caminho={} -> {verdict}",
+        instance.name,
+        instance.pid,
+        path_text(instance),
+    )
+}
+
+/// Linha explicita de que o nosso proprio processo foi ignorado.
+fn own_ignored_line(own: &(u32, String, Option<PathBuf>)) -> String {
+    let name = if own.1.is_empty() { "?" } else { own.1.as_str() };
+    let path = own
+        .2
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "?".to_string());
+    format!(
+        "discord: ignorando o proprio processo pid={} (nome={name}, caminho={path})",
+        own.0
+    )
 }
 
 /// Veredito da verificacao de reinicio: uma linha por processo do Discord.
@@ -96,10 +176,16 @@ pub struct Decision {
 /// Se comecou DEPOIS, ja' leu a injecao atual -> ok, deixar quieto (nada de
 /// reinicio desnecessario). O que conta e' a HORA, nao se o JS mudou de bytes.
 pub fn check(stamp: Option<SystemTime>) -> Decision {
-    let instances = running();
+    let scan = scan();
+    let mut lines = Vec::new();
+    // Primeiro de tudo: prova que o nosso proprio processo NAO entrou na lista.
+    lines.push(own_ignored_line(&scan.own));
+
+    let instances = scan.candidates;
     if instances.is_empty() {
+        lines.push("discord: nenhum processo rodando - nada para reiniciar".to_string());
         return Decision {
-            lines: vec!["discord: nenhum processo rodando - nada para reiniciar".to_string()],
+            lines,
             stale: false,
             note: "Discord fechado - nada a reiniciar".to_string(),
         };
@@ -108,11 +194,9 @@ pub fn check(stamp: Option<SystemTime>) -> Decision {
     let injected = stamp
         .map(crate::install::fmt_time)
         .unwrap_or_else(|| "sem carimbo".to_string());
-    let mut lines = Vec::with_capacity(instances.len());
     let mut stale_count = 0usize;
 
     for instance in &instances {
-        let flavour = instance.name.trim_end_matches(".exe").to_lowercase();
         let started = instance
             .started
             .map(crate::install::fmt_time)
@@ -132,9 +216,12 @@ pub fn check(stamp: Option<SystemTime>) -> Decision {
                 "sem hora de inicio, reiniciando"
             }
         };
+        // Nome, pid, caminho COMPLETO e veredito - um match errado salta aos olhos.
         lines.push(format!(
-            "discord: {flavour} pid={} started={started} injetado={injected} -> {verdict}",
-            instance.pid
+            "discord: candidato nome={} pid={} caminho={} started={started} injetado={injected} -> {verdict}",
+            instance.name,
+            instance.pid,
+            path_text(instance),
         ));
     }
 
@@ -152,9 +239,14 @@ pub fn check(stamp: Option<SystemTime>) -> Decision {
 
 /// Fecha (educadamente) e reabre todos os Discords que estao rodando.
 pub fn restart() -> Result<Vec<String>> {
-    let instances = running();
+    let scan = scan();
+    let instances = scan.candidates;
+    let mut report = Vec::new();
+    // Deixa registrado que o nosso proprio processo nunca entrou na lista.
+    report.push(own_ignored_line(&scan.own));
     if instances.is_empty() {
-        return Ok(vec!["Discord nao esta aberto - nada para reiniciar".to_string()]);
+        report.push("Discord nao esta aberto - nada para reiniciar".to_string());
+        return Ok(report);
     }
 
     let mut paths: Vec<PathBuf> = Vec::new();
@@ -173,7 +265,10 @@ pub fn restart() -> Result<Vec<String>> {
         }
     }
 
-    let mut report = Vec::new();
+    // Loga CADA candidato verificado (nome, pid, caminho completo) antes de agir.
+    for instance in &instances {
+        report.push(candidate_line(instance, "fechando para reiniciar"));
+    }
     report.push(format!(
         "fechando {} processos ({})",
         instances.len(),
@@ -244,7 +339,9 @@ unsafe extern "system" fn enum_close_callback(window: HWND, lparam: LPARAM) -> B
     unsafe {
         GetWindowThreadProcessId(window, &mut pid);
     }
-    if pid != 0 && pids.contains(&pid) {
+    // So janelas de um candidato VERIFICADO - e NUNCA a nossa propria (a janela
+    // escondida do balao vive no nosso processo).
+    if pid != 0 && pid != own_pid() && pids.contains(&pid) {
         unsafe {
             PostMessageW(window, WM_CLOSE, 0, 0);
         }

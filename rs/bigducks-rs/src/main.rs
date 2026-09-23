@@ -331,7 +331,7 @@ fn main() {
 
     logging::init(args.console);
     logging::write_line(&format!(
-        "bigducks-rs {} iniciando (pid {}) | log: {}",
+        "Desjanjador {} iniciando (pid {}) | log: {}",
         env!("CARGO_PKG_VERSION"),
         std::process::id(),
         logging::log_path().display()
@@ -488,7 +488,7 @@ fn relay_serve(state: AppState, port: u16) -> anyhow::Result<()> {
     runtime.block_on(async move {
         let app = router(state);
         let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-        logging::write_line(&format!("bigducks-rs RELAY (so sinalizacao) em 0.0.0.0:{port}"));
+        logging::write_line(&format!("Desjanjador RELAY (so sinalizacao) em 0.0.0.0:{port}"));
         logging::write_line(&format!(
             "  hub P2P:   ws://SEU_HOST:{port}/hub      <- os motores conectam aqui"
         ));
@@ -579,7 +579,7 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
         let app = router(server_state);
         match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => {
-                logging::write_line(&format!("bigducks-rs ouvindo em http://127.0.0.1:{port}/"));
+                logging::write_line(&format!("Desjanjador ouvindo em http://127.0.0.1:{port}/"));
                 logging::write_line(&format!("  painel:    http://127.0.0.1:{port}/"));
                 logging::write_line(&format!("  captura:   ws://127.0.0.1:{port}/ws"));
                 logging::write_line(&format!("  hub P2P:   ws://127.0.0.1:{port}/hub"));
@@ -598,8 +598,9 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
     // A REGRA (corrige o bridge "velho"): nao importa se o CONTEUDO mudou nesta
     // execucao. O que importa e' se o Discord que esta rodando subiu ANTES ou
     // DEPOIS do carimbo da injecao atual. Se subiu antes, ele leu o asar velho e
-    // continua com codigo velho -> reiniciar. (O gate antigo era `report.changed`,
-    // que vira false a partir da 2a execucao e deixava o Discord stale.)
+    // continua com codigo velho -> reiniciar. (O gate antigo era um flag de
+    // "mudou nesta execucao", que virava false a partir da 2a execucao e deixava
+    // o Discord stale.)
     if discord::is_running() {
         let stamp = report
             .as_ref()
@@ -668,7 +669,7 @@ async fn page(State(state): State<AppState>) -> impl IntoResponse {
     // Connection closed" em loop nos logs do Dokploy.
     if state.relay {
         return Html(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><title>bigducks relay</title></head><body style=\"font:14px system-ui;background:#0b0b0b;color:#57f287;padding:40px\">RELAY de sinalizacao ativo. Nenhuma midia passa por aqui.</body></html>",
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>Desjanjador relay</title></head><body style=\"font:14px system-ui;background:#0b0b0b;color:#57f287;padding:40px\">RELAY de sinalizacao ativo. Nenhuma midia passa por aqui.</body></html>",
         ).into_response();
     }
     Html(PAGE).into_response()
@@ -1244,7 +1245,7 @@ fn start_capture(state: &AppState) {
 }
 
 const PAGE: &str = r#"<!doctype html>
-<html><head><meta charset="utf-8"><title>bigducks-rs</title>
+<html><head><meta charset="utf-8"><title>Desjanjador</title>
 <style>html,body{margin:0;height:100%;background:#0b0b0b;overflow:hidden}
 canvas{display:block;width:100vw;height:100vh;object-fit:contain}
 #bar{position:fixed;top:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:6px 10px;background:rgba(20,21,26,.92);font:12px/1 system-ui,sans-serif;color:#dbdee1;z-index:9}

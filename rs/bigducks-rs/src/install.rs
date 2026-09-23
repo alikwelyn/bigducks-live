@@ -8,9 +8,10 @@
 //!
 //! Resultado: o Discord sobe ja com o bridge ativo. Nada de colar no console.
 //!
-//! O `install()` agora devolve um relatorio com `changed`/`installed`: o `changed`
-//! diz se a injecao MUDOU nesta execucao (a partir dai faz sentido reiniciar o
-//! Discord, que so' le o asar no boot).
+//! O `install()` devolve um relatorio (`installed`/`flavours`/`stamp`). A decisao
+//! de reiniciar o Discord NAO vem de o JS ter mudado de bytes nesta execucao: quem
+//! decide e' o carimbo da injecao comparado com a hora de inicio do processo (ver
+//! `src/discord.rs`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,8 +28,6 @@ const INSTALLS: [&str; 4] = ["Discord", "DiscordCanary", "DiscordPTB", "DiscordD
 /// Resultado de uma rodada de instalacao.
 pub struct InstallReport {
     pub lines: Vec<String>,
-    /// A injecao mudou nesta rodada (precisa reiniciar o Discord).
-    pub changed: bool,
     /// Pelo menos uma instalacao do Discord tem o bridge.
     pub installed: bool,
     /// Sabores (Discord/Canary/...) que receberam a injecao.
@@ -91,25 +90,24 @@ fn js_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// Escreve so' quando o conteudo muda; devolve se mudou.
-fn write_if_changed(path: &Path, contents: &[u8]) -> Result<bool> {
+/// Escreve so' quando o conteudo muda.
+fn write_if_changed(path: &Path, contents: &[u8]) -> Result<()> {
     if let Ok(existing) = fs::read(path) {
         if existing == contents {
-            return Ok(false);
+            return Ok(());
         }
     }
     fs::write(path, contents).with_context(|| format!("escrever {}", path.display()))?;
-    Ok(true)
+    Ok(())
 }
 
-/// Grava os arquivos do bridge no diretorio de dados. Devolve se algum mudou.
-fn write_bridges(dir: &Path) -> Result<bool> {
+/// Grava os arquivos do bridge no diretorio de dados (so' quando o conteudo muda).
+fn write_bridges(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("criar {}", dir.display()))?;
-    let mut changed = false;
-    changed |= write_if_changed(&dir.join("bigducks_rs_bridge.js"), MAIN_BRIDGE.as_bytes())?;
-    changed |= write_if_changed(&dir.join("bigducks_rs_preload.js"), PRELOAD.as_bytes())?;
-    changed |= write_if_changed(&dir.join("bigducks_rs_renderer.js"), RENDERER_BRIDGE.as_bytes())?;
-    Ok(changed)
+    write_if_changed(&dir.join("bigducks_rs_bridge.js"), MAIN_BRIDGE.as_bytes())?;
+    write_if_changed(&dir.join("bigducks_rs_preload.js"), PRELOAD.as_bytes())?;
+    write_if_changed(&dir.join("bigducks_rs_renderer.js"), RENDERER_BRIDGE.as_bytes())?;
+    Ok(())
 }
 
 /// Encontra a instalacao mais recente (app-x.y.z) de cada sabor presente.
@@ -179,18 +177,18 @@ fn stub_contents(bridge: &Path, backup: &str) -> (Vec<u8>, Vec<u8>) {
     (package, index)
 }
 
-fn write_stub_files(stub_dir: &Path, bridge: &Path, backup: &str) -> Result<bool> {
+fn write_stub_files(stub_dir: &Path, bridge: &Path, backup: &str) -> Result<()> {
     fs::create_dir_all(stub_dir)?;
     let (package, index) = stub_contents(bridge, backup);
-    let mut changed = write_if_changed(&stub_dir.join("package.json"), &package)?;
-    changed |= write_if_changed(&stub_dir.join("index.js"), &index)?;
-    Ok(changed)
+    write_if_changed(&stub_dir.join("package.json"), &package)?;
+    write_if_changed(&stub_dir.join("index.js"), &index)?;
+    Ok(())
 }
 
 /// Instala (ou atualiza) o bridge em todas as instalacoes presentes.
 pub fn install() -> Result<InstallReport> {
     let data = data_dir();
-    let mut changed = write_bridges(&data)?;
+    write_bridges(&data)?;
     let bridge = data.join("bigducks_rs_bridge.js");
     let backup_dir = data.join("injection-backups");
     fs::create_dir_all(&backup_dir)?;
@@ -211,8 +209,7 @@ pub fn install() -> Result<InstallReport> {
             }
             fs::remove_file(&asar).with_context(|| format!("remover {}", asar.display()))?;
             write_stub_files(&stub_dir, &bridge, &js_path(&backup))?;
-            // Converteu asar -> pasta: e' sempre uma mudanca de injecao.
-            changed = true;
+            // Converteu asar -> pasta: injecao aplicada.
             installed = true;
             flavours.push(flavour.clone());
             report.push(format!(
@@ -228,7 +225,7 @@ pub fn install() -> Result<InstallReport> {
                 ));
             match backup {
                 Ok(backup) => {
-                    changed |= write_stub_files(&stub_dir, &bridge, &backup)?;
+                    write_stub_files(&stub_dir, &bridge, &backup)?;
                     installed = true;
                     flavours.push(flavour.clone());
                     report.push(format!("{flavour} {version}: atualizado"));
@@ -266,7 +263,6 @@ pub fn install() -> Result<InstallReport> {
 
     Ok(InstallReport {
         lines: report,
-        changed,
         installed,
         flavours,
         stamp,

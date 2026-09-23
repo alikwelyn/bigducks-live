@@ -122,7 +122,7 @@ pub fn create_balloon_window() {
         // Se ja existir (segunda chamada), RegisterClassW falha e seguimos - a
         // classe continua registrada.
         RegisterClassW(&window_class);
-        let window_name = wide("DiscordStream");
+        let window_name = wide("Desjanjador");
         let handle = CreateWindowExW(
             0,
             class_name.as_ptr(),
@@ -156,7 +156,7 @@ pub fn balloon(title: &str, body: &str) {
     data.uID = 1;
     data.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
     data.hIcon = unsafe { LoadIconW(NULL_HANDLE, IDI_APPLICATION) };
-    fill_utf16(&mut data.szTip, "DiscordStream");
+    fill_utf16(&mut data.szTip, "Desjanjador");
     fill_utf16(&mut data.szInfoTitle, title);
     fill_utf16(&mut data.szInfo, body);
     data.dwInfoFlags = NIIF_INFO;

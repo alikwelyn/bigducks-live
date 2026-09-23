@@ -97,7 +97,7 @@ impl Status {
         } else {
             format!(" | {}", self.restart_note)
         };
-        format!("DiscordStream - {bridge}, {relay}{streaming}{update}{restart}")
+        format!("Desjanjador - {bridge}, {relay}{streaming}{update}{restart}")
     }
 }
 

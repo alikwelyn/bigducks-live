@@ -15,13 +15,29 @@ use winreg::RegKey;
 use crate::platform;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const VALUE_NAME: &str = "BigDucksRS";
+const VALUE_NAME: &str = "Desjanjador";
+/// Nome ANTIGO do valor (era "BigDucksRS"). Removido no boot/registro para o app
+/// nao iniciar DUAS vezes (dois valores em Run = dois processos no login).
+const LEGACY_VALUE_NAME: &str = "BigDucksRS";
 
 fn run_key() -> Result<RegKey> {
     RegKey::predef(HKEY_CURRENT_USER)
         .create_subkey(RUN_KEY)
         .map(|(key, _)| key)
         .context("abrir a chave Run do usuario")
+}
+
+/// Apaga o valor antigo ("BigDucksRS"), se ainda existir.
+fn remove_legacy() {
+    if let Ok(key) = run_key() {
+        match key.delete_value(LEGACY_VALUE_NAME) {
+            Ok(()) => crate::log_info!("autostart: valor antigo '{LEGACY_VALUE_NAME}' removido do Run"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                crate::log_warn!("autostart: nao consegui remover '{LEGACY_VALUE_NAME}': {error}")
+            }
+        }
+    }
 }
 
 /// Linha de comando registrada (entre aspas, com `--startup`).
@@ -72,6 +88,8 @@ pub fn set_enabled(enabled: bool) -> Result<()> {
             Err(error) => return Err(error).context("remover valor de autostart"),
         }
     }
+    // Nunca deixar o valor antigo para tras (senao inicia duas vezes).
+    remove_legacy();
     Ok(())
 }
 
@@ -79,6 +97,8 @@ pub fn set_enabled(enabled: bool) -> Result<()> {
 /// aponta para o executavel atual se o caminho registrado estiver velho.
 /// Devolve o estado final (ligado/desligado).
 pub fn ensure_enabled_first_run() -> bool {
+    // Remove o valor legado ("BigDucksRS") antes de qualquer coisa.
+    remove_legacy();
     if is_enabled() && matches_current() {
         return true;
     }

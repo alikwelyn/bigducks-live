@@ -49,12 +49,12 @@ pub fn run(status: Shared) {
     };
 
     let mut builder = TrayIconBuilder::new()
-        .with_id("bigducks-rs")
+        .with_id("Desjanjador")
         .with_menu(Box::new(menu))
         // Clique ESQUERDO nao faz nada (nao abre menu, nao abre nada): o menu so'
         // aparece no botao direito, que e' o que todo mundo espera no Windows.
         .with_menu_on_left_click(false)
-        .with_tooltip("DiscordStream");
+        .with_tooltip("Desjanjador");
     if let Some(icon) = initial {
         builder = builder.with_icon(icon);
     }

@@ -214,7 +214,7 @@ fn run_once(status: &Shared) {
                     notify(
                         status,
                         "Atualizacao baixada",
-                        &format!("DiscordStream v{} sera instalada em instantes", manifest.version),
+                        &format!("Desjanjador v{} sera instalada em instantes", manifest.version),
                     );
                     if applying_now(status) {
                         set_update(status, Update::Installing, "instalando atualizacao");
