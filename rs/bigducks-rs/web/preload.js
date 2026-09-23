@@ -961,14 +961,18 @@ function hideNitroBanner() {
     const TEXTS = [
       "Transmita em resolu", "Obter o Nitro", "Desbloqueie", "Desbloquear",
       "Stream in HD", "Unlock 4k", "Unlock 4K", "Get Nitro",
+      // Novos! O upsell mudou de texto no cliente do amigo (popup sem a palavra
+      // "Nitro" escapan da condicao antiga - nem fechava nem logava).
+      "Potencialize", "Assine o Nitro", "Transmita em qualidade",
+      "Assine para transmitir", "Eleve sua transmiss",
     ];
-    const CLOSE_MODAL = ["Desbloqueie", "Unlock", "Desbloquear"];
     // Ancora ESTRUTURAL do grupo de upsell do picker.
     const UPSELL_GROUP = "#stream-option-notify";
 
     let lastCloseAt = 0;
     let loggedHide = false;
     let loggedModal = false;
+    const seenDialogs = new Set();
 
     // O MODAL de upsell ("Desbloqueie a transmissao em HD 4k a 60 fps") trava a
     // UI atras do backdrop: esconder um pedaco nao resolve, tem que FECHAR o
@@ -1024,16 +1028,27 @@ function hideNitroBanner() {
 
     const scan = function () {
       // (1) Modal de upsell inteiro? Fecha antes de esconder pedacos.
+      // DOIS SINAIS independentes, os dois tem que aparecer: venda (upsell) e
+      // streaming. Nao exige mais a palavra "Nitro" literal - o popup novo diz
+      // "Potencialize sua transmissao"/"Transmita em qualidade" e escapava.
+      const UPSELL_SIGNAL = /desbloque|unlock|nitro|potencialize|premium|upgrade|assin/i;
+      const STREAM_SIGNAL = /transmi|stream|compartilh|share|qualidade|quality|\bhd\b|4k|fps/i;
       let dialogs = [];
       try { dialogs = document.querySelectorAll('[role="dialog"]'); } catch (_) {}
       for (const dialog of dialogs) {
         try {
           const own = dialog.textContent || "";
-          const isUpsell = /nitro/i.test(own) && own.length < 900
-            && (CLOSE_MODAL.some((t) => own.includes(t))
-              || !!dialog.querySelector(UPSELL_GROUP)
-              || /transmi|stream/i.test(own));
+          const isUpsell = own.length < 1200
+            && UPSELL_SIGNAL.test(own)
+            && STREAM_SIGNAL.test(own);
           if (isUpsell) { closeModal(dialog); continue; }
+          // DIAGNOSTICO: dialog com cara de venda que NAO fechou - loga o texto
+          // uma vez por texto. E' assim que a proxima iteracao acerta o alvo
+          // sem adivinhar (o log diz o popup EXATO que o cliente renderizou).
+          if (UPSELL_SIGNAL.test(own) && own.length < 400 && !seenDialogs.has(own)) {
+            seenDialogs.add(own);
+            try { report("nitro-modal-visto", own.replace(/\s+/g, " ").slice(0, 110)); } catch (_) {}
+          }
         } catch (_) {}
       }
 

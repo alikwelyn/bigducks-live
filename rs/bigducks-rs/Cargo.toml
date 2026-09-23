@@ -1,6 +1,6 @@
 [package]
 name = "bigducks-rs"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Desjanjador (Rust) - screen capture engine that feeds the native Discord client"
 # O build.rs (icone do exe via winresource) e detectado automaticamente pelo cargo
