@@ -38,7 +38,7 @@ static BALLOON_WINDOW: AtomicIsize = AtomicIsize::new(0);
 
 /// Caminho do executavel atual.
 pub fn exe_path() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("bigducks-rs.exe"))
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("Desjanjador.exe"))
 }
 
 /// Um caminho parece temporario? Usado para NUNCA registrar autostart apontando

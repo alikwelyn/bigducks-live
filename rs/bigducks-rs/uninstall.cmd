@@ -7,8 +7,8 @@ echo  FECHE O DISCORD E O CANARY ANTES DE CONTINUAR.
 echo.
 pause
 
-echo Removendo a injecao do bigducks-rs...
-target\release\bigducks-rs.exe --console --uninstall
+echo Removendo a injecao do Desjanjador...
+target\release\Desjanjador.exe --console --uninstall
 
 echo.
 echo  Pronto. O app.asar original foi restaurado.

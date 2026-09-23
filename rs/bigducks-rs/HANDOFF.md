@@ -110,7 +110,7 @@ fetch do renderer para 127.0.0.1 -> bloqueado pela CSP da pagina (usar o preload
 5. Compartilhar tela (janela ou tela) e conferir `source selecionada: ...`
 6. Mexer no painel de qualidade e conferir `qualidade: ...` + `capture: ...`
 
-Build/instalar: `cargo build --release` e `target\release\bigducks-rs.exe --install`.
+Build/instalar: `cargo build --release` e `target\release\Desjanjador.exe --install`.
 
 ## 6. BYPASS DE NITRO — parte 1 FEITA; parte 2 (UI) escolhida pelo usuario
 
@@ -361,11 +361,11 @@ caminho temporario). Resolve tambem a ORDEM: o asar e' reescrito antes do Discor
 ### 9.6 Auto-update (`src/update.rs`)
 Manifest JSON em `https://desjanjador.skillup.com.br/release.json`, checado no
 boot (~20s depois) e a cada 4h (desligue com `--no-update`). Compara versao
-(`CARGO_PKG_VERSION`), baixa `bigducks-rs.exe`, confere SHA-256 + tamanho, e troca
+(`CARGO_PKG_VERSION`), baixa `Desjanjador.exe`, confere SHA-256 + tamanho, e troca
 o binario EM EXECUCAO (renomeia o atual para `.old`, poe o novo no lugar, reabre,
 apaga o `.old` no proximo boot). Nunca troca no meio de uma transmissao.
 O lado servidor vive no MESMO binario (`--relay`): rotas `/release.json`,
-`/bigducks-rs.exe` e `/release/<arquivo>` a partir de `--release-dir`
+`/Desjanjador.exe` e `/release/<arquivo>` a partir de `--release-dir`
 (ou `BIGDUCKS_RELEASE_DIR`). Para publicar: jogue o exe em `releases/` + um
 `version.txt` (gera o manifest na hora), ou o `release.json` pronto.
 

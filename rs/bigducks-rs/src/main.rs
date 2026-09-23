@@ -1,4 +1,4 @@
-//! bigducks-rs
+//! Desjanjador
 //!
 //! Dois papeis no mesmo binario:
 //!   1. motor de captura + hub de sinalizacao P2P (o app de bandeja no Windows)
@@ -13,7 +13,7 @@
 //!
 //! Rotas do relay (auto-update):
 //!   GET  /release.json        manifest da ultima versao
-//!   GET  /bigducks-rs.exe     o executavel novo
+//!   GET  /Desjanjador.exe     o executavel novo
 //!
 //! Sem `--console` o exe e' buildado com `windows_subsystem = "windows"` (nenhum
 //! terminal) e TODO o diagnostico vai para `%LOCALAPPDATA%\DiscordStream\engine.log`.
@@ -71,7 +71,7 @@ const DEFAULT_SECRET: &str = "troque-este-segredo-por-um-seu";
 /// renderer achar o canal de voz, a sala dinamica dele tem prioridade.
 const DEFAULT_ROOM: &str = "bigducks";
 /// Nome do executavel no manifesto de release.
-const RELEASE_ASSET: &str = "bigducks-rs.exe";
+const RELEASE_ASSET: &str = "Desjanjador.exe";
 
 /// O bridge do renderer servido pelo exe (o mesmo arquivo vai embutido no
 /// instalador, que o coloca em DiscordStream/bigducks_rs_renderer.js).
@@ -159,6 +159,9 @@ struct Args {
     check_restart: bool,
     /// Forca o reinicio do Discord (ignora a comparacao) e sai.
     restart_discord: bool,
+    /// Diagnostico: sobe o app normalmente mas NAO reinicia o Discord sozinho.
+    /// Serve para isolar o reinicio automatico do resto do app.
+    no_restart: bool,
     release_dir: PathBuf,
 }
 
@@ -180,6 +183,7 @@ impl Default for Args {
             no_update: false,
             check_restart: false,
             restart_discord: false,
+            no_restart: false,
             release_dir: default_release_dir(),
         }
     }
@@ -304,6 +308,12 @@ impl Args {
                     args.restart_discord = true;
                     i += 1;
                 }
+                // Diagnostico: NAO reinicia o Discord automaticamente. Isola o
+                // reinicio automatico do resto do app (o processo sobe normal).
+                "--no-restart" => {
+                    args.no_restart = true;
+                    i += 1;
+                }
                 // Marcador colocado pelo autostart; sem efeito proprio.
                 "--startup" => i += 1,
                 other => {
@@ -322,6 +332,8 @@ impl Args {
 // --------------------------------------------------------------------- main --
 
 fn main() {
+    install_panic_hook();
+
     let args = Args::parse();
 
     #[cfg(windows)]
@@ -339,8 +351,40 @@ fn main() {
 
     if let Err(error) = run(args) {
         logging::write_line(&format!("WARN [ERRO] {error:#}"));
+        logging::write_line("saindo: run() retornou erro (codigo 1)");
         std::process::exit(1);
     }
+    // Saida limpa (uninstall/install/check-restart/restart-discord/relay): deixa
+    // registrado POR QUE o processo acabou - o app nunca mais some sem explicacao.
+    logging::write_line("saindo: run() terminou sem erro (codigo 0)");
+    std::process::exit(0);
+}
+
+/// Rede de seguranca: num exe `windows_subsystem = "windows"` um panic nao tem
+/// console nenhum e o processo simplesmente desaparecia sem deixar rastro. Aqui
+/// TODO panic vira uma linha no `engine.log` - e o `write_line` grava direto no
+/// arquivo mesmo quando o log ainda nao foi inicializado (panic no boot).
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            })
+            .unwrap_or_else(|| "local desconhecido".to_string());
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic sem mensagem".to_string());
+        logging::write_line(&format!("PANIC em {location}: {message}"));
+    }));
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
@@ -475,7 +519,7 @@ fn router(state: AppState) -> Router {
         // Auto-update: o usuario so' joga o exe novo (e opcionalmente o
         // release.json ou version.txt) no diretorio apontado por --release-dir.
         .route("/release.json", get(release_manifest))
-        .route("/bigducks-rs.exe", get(release_asset))
+        .route("/Desjanjador.exe", get(release_asset))
         .route("/release/{file}", get(release_file))
         .with_state(state)
 }
@@ -601,7 +645,9 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
     // continua com codigo velho -> reiniciar. (O gate antigo era um flag de
     // "mudou nesta execucao", que virava false a partir da 2a execucao e deixava
     // o Discord stale.)
-    if discord::is_running() {
+    if args.no_restart {
+        logging::write_line("--no-restart: nao vou reiniciar o Discord nesta execucao");
+    } else if discord::is_running() {
         let stamp = report
             .as_ref()
             .and_then(|report| report.stamp)
@@ -644,6 +690,8 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
         } else {
             logging::write_line("Discord ja tem a injecao atual: nada a reiniciar");
         }
+    } else {
+        logging::write_line("discord: nenhum processo rodando - nada a reiniciar");
     }
 
     // Auto-update: limpa o `.old` da rodada anterior e checa em background.

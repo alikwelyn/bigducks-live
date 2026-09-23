@@ -294,6 +294,9 @@ pub fn restart() -> Result<Vec<String>> {
     }
 
     for path in &paths {
+        // Registra a TENTATIVA antes de tentar: se o spawn travar/morrer, o log
+        // ja mostra qual executavel estava sendo reaberto.
+        log_info!("discord: tentando reabrir {}", path.display());
         match relaunch(path) {
             Ok(pid) => {
                 report.push(format!("reaberto {} (pid {pid})", path.display()));
@@ -326,15 +329,43 @@ fn relaunch(path: &PathBuf) -> Result<u32> {
     Ok(child.id())
 }
 
+/// Ponteiro + tamanho da lista de pids, passada ao callback do `EnumWindows`
+/// (o `LPARAM` e' um unico `isize`, entao a fatia vai por um struct `repr(C)`).
+#[repr(C)]
+struct CloseList {
+    pids: *const u32,
+    len: usize,
+}
+
+/// Manda `WM_CLOSE` para as janelas de topo dos pids VERIFICADOS.
+///
+/// CAUSA do bug "o app fecha a si mesmo com o Discord aberto": antes o `LPARAM`
+/// era o BUFFER da fatia reinterpretado como `&Vec<u32>`. O `Vec::contains` lia
+/// os pids como se fossem o cabecalho de um Vec (ptr/len/cap) e dereferenciava
+/// um ponteiro-lixo -> STATUS_ACCESS_VIOLATION (0xC0000005) e o processo morria
+/// silenciosamente aqui, exatamente quando havia Discord para fechar (este era o
+/// unico caminho que chamava `post_close`). Agora passa-se um `CloseList` de
+/// verdade, que o callback remonta como fatia. NUNCA mais "fingir" um tipo.
 fn post_close(pids: &[u32]) {
-    let pointer = pids as *const [u32] as *const Vec<u32>;
+    let list = CloseList {
+        pids: pids.as_ptr(),
+        len: pids.len(),
+    };
+    log_info!("discord: WM_CLOSE para os pids verificados {pids:?}");
     unsafe {
-        EnumWindows(Some(enum_close_callback), pointer as isize as LPARAM);
+        EnumWindows(
+            Some(enum_close_callback),
+            &list as *const CloseList as isize as LPARAM,
+        );
     }
 }
 
 unsafe extern "system" fn enum_close_callback(window: HWND, lparam: LPARAM) -> BOOL {
-    let pids = unsafe { &*(lparam as *const Vec<u32>) };
+    let list = unsafe { &*(lparam as *const CloseList) };
+    if list.pids.is_null() || list.len == 0 {
+        return 1;
+    }
+    let pids = unsafe { std::slice::from_raw_parts(list.pids, list.len) };
     let mut pid: u32 = 0;
     unsafe {
         GetWindowThreadProcessId(window, &mut pid);
@@ -342,6 +373,7 @@ unsafe extern "system" fn enum_close_callback(window: HWND, lparam: LPARAM) -> B
     // So janelas de um candidato VERIFICADO - e NUNCA a nossa propria (a janela
     // escondida do balao vive no nosso processo).
     if pid != 0 && pid != own_pid() && pids.contains(&pid) {
+        log_info!("discord: WM_CLOSE -> janela do pid verificado {pid}");
         unsafe {
             PostMessageW(window, WM_CLOSE, 0, 0);
         }

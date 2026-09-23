@@ -2,10 +2,17 @@
 name = "bigducks-rs"
 version = "0.1.0"
 edition = "2021"
-description = "BIG DUCKS (Rust) - screen capture engine that feeds the native Discord client"
+description = "Desjanjador (Rust) - screen capture engine that feeds the native Discord client"
 # O build.rs (icone do exe via winresource) e detectado automaticamente pelo cargo
 # quando existe. No container Linux do relay (Dockerfile) ele NAO e copiado, entao
 # simplesmente nao roda - o build do relay continua identico.
+
+# O executavel distribuido se chama Desjanjador: `target/release/Desjanjador.exe`
+# (a copia em dist tambem). O nome do PACOTE continua "bigducks-rs" (interno; o
+# Cargo.lock e o diretorio %LOCALAPPDATA%\DiscordStream nao mudam).
+[[bin]]
+name = "Desjanjador"
+path = "src/main.rs"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }

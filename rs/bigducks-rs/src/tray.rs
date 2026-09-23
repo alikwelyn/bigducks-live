@@ -19,10 +19,16 @@ use crate::logging;
 use crate::status::{Relay, Shared, Update};
 use crate::{autostart, discord, icon, install, platform};
 
-/// Roda a bandeja na thread atual (bloqueia ate' "Sair").
-pub fn run(status: Shared) {
-    platform::create_balloon_window();
+/// Bandeja construida + o item de autostart (o refresh sincroniza o checkbox).
+struct TrayUi {
+    tray: TrayIcon,
+    autostart_item: CheckMenuItem,
+}
 
+/// Monta a bandeja do zero. Devolve o erro como `String` sem encerrar nada -
+/// quem chama decide o que fazer. Registra os ids desta montagem no handler
+/// global de cliques (a cada retentativa os ids mudam junto com o menu).
+fn build_tray(status: &Shared) -> Result<TrayUi, String> {
     let menu = Menu::new();
     let view_log = MenuItem::new("Ver log", true, None);
     // "Reiniciar Discord" tambem REINSTALA o bridge: pra quem recebeu o exe,
@@ -58,13 +64,7 @@ pub fn run(status: Shared) {
     if let Some(icon) = initial {
         builder = builder.with_icon(icon);
     }
-    let tray = match builder.build() {
-        Ok(tray) => tray,
-        Err(error) => {
-            crate::log_warn!("bandeja: nao consegui criar o icone: {error}");
-            return;
-        }
-    };
+    let tray = builder.build().map_err(|error| error.to_string())?;
 
     // Handler de cliques: so' ids + status compartilhado (Send + Sync).
     let log_id = view_log.id().clone();
@@ -88,9 +88,53 @@ pub fn run(status: Shared) {
         }
     }));
 
-    // Timer da thread principal: atualiza icone/tooltip/checkbox e mostra baloes.
+    Ok(TrayUi {
+        tray,
+        autostart_item,
+    })
+}
+
+/// Roda a bandeja na thread atual (bloqueia ate' "Sair").
+///
+/// HARD REQUIREMENT: uma falha ao criar o icone NAO pode derrubar o app. Antes,
+/// `build()` falhando fazia esta funcao retornar, o `desktop_main` seguia para
+/// `std::process::exit(0)` e o processo inteiro sumia em silencio. Agora o erro
+/// e' registrado ALTO e o app continua rodando "sem bandeja" (headless),
+/// tentando recriar o icone de tempo em tempo.
+pub fn run(status: Shared) {
+    platform::create_balloon_window();
+
+    let mut ui = match build_tray(&status) {
+        Ok(ui) => {
+            crate::log_info!("bandeja: icone criado (id Desjanjador)");
+            Some(ui)
+        }
+        Err(error) => {
+            crate::log_warn!(
+                "bandeja: FALHA ao criar o icone: {error} - seguindo SEM bandeja \
+                 (headless) e tentando de novo a cada 30s"
+            );
+            None
+        }
+    };
+
+    let mut next_retry = std::time::Instant::now() + Duration::from_secs(30);
     platform::pump_messages(Duration::from_millis(2000), move || {
-        refresh(&tray, &autostart_item, &status);
+        if ui.is_none() && std::time::Instant::now() >= next_retry {
+            next_retry = std::time::Instant::now() + Duration::from_secs(30);
+            match build_tray(&status) {
+                Ok(fresh) => {
+                    crate::log_info!("bandeja: icone criado na retentativa - seguindo normal");
+                    ui = Some(fresh);
+                }
+                Err(error) => {
+                    crate::log_warn!("bandeja: ainda sem icone ({error}) - seguindo headless")
+                }
+            }
+        }
+        if let Some(ui) = ui.as_ref() {
+            refresh(&ui.tray, &ui.autostart_item, &status);
+        }
     });
     crate::log_info!("bandeja: loop de mensagens terminou");
 }

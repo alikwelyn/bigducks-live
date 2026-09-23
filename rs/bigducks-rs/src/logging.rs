@@ -68,15 +68,25 @@ pub fn init(console: bool) {
 }
 
 /// Escreve uma linha (com timestamp UTC) no arquivo e, se ligado, no console.
+///
+/// NUNCA perde a linha: se o log ainda nao foi inicializado (um panic ou um
+/// argumento invalido ANTES do `init`) escreve direto no `engine.log`. Num exe
+/// `windows_subsystem = "windows"` o stderr NAO existe, entao jogar a mensagem
+/// para la era o mesmo que descarta-la - e era assim que um panic sumia sem
+/// deixar rastro.
 pub fn write_line(text: &str) {
     let stamp = timestamp();
     let line = format!("{stamp} {text}");
     if let Some(handle) = LOGGER.get() {
         if let Ok(mut guard) = handle.lock() {
             guard.write(&line);
+            return;
         }
+    }
+    let _ = fs::create_dir_all(data_dir());
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path()) {
+        let _ = writeln!(file, "{line}");
     } else {
-        // Sem init (raro): nao perder a linha.
         let _ = writeln!(std::io::stderr(), "{line}");
     }
 }

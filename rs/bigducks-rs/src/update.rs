@@ -23,7 +23,7 @@ use crate::status::{Shared, Update};
 /// Base do relay (o mesmo host do `wss://.../hub`).
 pub const RELEASE_BASE: &str = "https://desjanjador.skillup.com.br";
 const MANIFEST_PATH: &str = "/release.json";
-pub const ASSET_NAME: &str = "bigducks-rs.exe";
+pub const ASSET_NAME: &str = "Desjanjador.exe";
 const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 
 /// Flags de CreateProcess para reabrir o app destacado, sem herdar console.
@@ -151,7 +151,7 @@ pub fn apply(staged: &PathBuf) -> Result<()> {
         target
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "bigducks-rs.exe".to_string())
+            .unwrap_or_else(|| "Desjanjador.exe".to_string())
     ));
 
     std::fs::copy(staged, &incoming).context("preparar o novo executavel")?;
