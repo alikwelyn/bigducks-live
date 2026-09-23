@@ -1,7 +1,12 @@
 //! Icone da bandeja: o MESMO desenho do exe (`imgs/big-ducks.png`), decodificado
-//! em runtime e com um "ponto de estado" no canto para dizer, de relance:
-//! verde = relay conectado, ambar = sem canal de voz, azul = so' o bridge local,
-//! vermelho = bridge nao instalado, roxo = atualizacao pronta.
+//! em runtime e com um "ponto de estado" no canto para dizer, de relance.
+//!
+//! As cores sao VIVIDAS (saturadas) pra sobreviver a 16 px numa barra escura -
+//! nada da paleta suave do Discord. A legenda completa vai no tooltip da bandeja
+//! (ver `status::tooltip`): verde = relay conectado, ambar = sem canal de voz,
+//! azul = so' o bridge local, vermelho = bridge nao instalado, roxo = atualizando,
+//! cinza = ainda sem noticia. O rotulo em palavras (`status::state_label`) usa a
+//! MESMA precedencia de `state_color` pra que a cor nunca seja o unico canal.
 
 use std::sync::OnceLock;
 
@@ -21,19 +26,24 @@ fn base_logo() -> &'static RgbaImage {
     })
 }
 
-/// Cor do ponto de estado.
+/// Cor VIVIDA do ponto de estado (saturada, legivel a 16 px numa barra escura).
+///
+/// A precedencia aqui tem que casar com `status::state_label` (o texto do
+/// tooltip): roxo vence tudo, depois o bridge ausente, depois o relay. Os seis
+/// tons sao escolhidos pra nao se confundirem entre si nem com o logo (o cinza
+/// e' o unico dessaturado, de proposito, pra dizer "ainda nao sei").
 fn state_color(installed: bool, relay: Relay, update: Update) -> [u8; 3] {
     if matches!(update, Update::Staged | Update::Installing) {
-        return [0x8b, 0x5c, 0xf6];
+        return [0xb4, 0x4c, 0xff]; // roxo
     }
     if !installed {
-        return [0xed, 0x42, 0x45];
+        return [0xff, 0x2e, 0x3a]; // vermelho
     }
     match relay {
-        Relay::Connected => [0x23, 0xa5, 0x5a],
-        Relay::NoVoice => [0xfe, 0xa1, 0x1c],
-        Relay::Local => [0x58, 0x65, 0xf2],
-        Relay::Unknown => [0x80, 0x8a, 0x9a],
+        Relay::Connected => [0x1b, 0xff, 0x6b], // verde
+        Relay::NoVoice => [0xff, 0xb3, 0x00],   // ambar
+        Relay::Local => [0x2e, 0x7b, 0xff],     // azul
+        Relay::Unknown => [0x9a, 0xa4, 0xb2],   // cinza
     }
 }
 
@@ -47,11 +57,14 @@ pub fn tray_icon(installed: bool, relay: Relay, update: Update) -> Option<Icon> 
 }
 
 /// Circulo na parte inferior-direita, com um anel branco pra destacar.
+///
+/// O anel e' mais grosso que antes (2 px em vez de 1.5) pra o ponto "saltar" em
+/// qualquer fundo (barra clara ou escura) sem depender do logo por baixo.
 fn draw_status_dot(image: &mut RgbaImage, color: [u8; 3]) {
     let size = image.width() as f32;
     let center = (size - 9.0, size - 9.0);
-    let radius = 6.5_f32;
-    let ring = 1.5_f32;
+    let radius = 7.0_f32;
+    let ring = 2.0_f32;
     for y in 0..image.height() {
         for x in 0..image.width() {
             let dx = x as f32 + 0.5 - center.0;

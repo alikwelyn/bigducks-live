@@ -6,6 +6,15 @@
 
 use std::sync::{Arc, Mutex};
 
+/// Legenda das cores do ponto da bandeja: vai na 2a linha do tooltip pra que o
+/// usuario decodifique a cor sem perguntar. Os rotulos casam com `state_label`
+/// (e, por tabela, com `icon::state_color`).
+///
+/// Fica curto de proposito: o `szTip` do Windows e' `[u16; 128]`, entao o
+/// tooltip inteiro tem que caber em ~127 caracteres pra legenda nao ser cortada.
+const LEGEND: &str =
+    "verde:conectado|ambar:sem voz|azul:local|vermelho:sem bridge|roxo:atualizando|cinza:aguardando";
+
 /// Estado do relay P2P, derivado do que o preload reporta.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Relay {
@@ -71,24 +80,32 @@ impl Status {
         self.balloon = Some((title.into(), body.into()));
     }
 
-    /// Texto curto do tooltip.
-    pub fn tooltip(&self) -> String {
-        let relay = match self.relay {
+    /// Rotulo do estado em palavras, seguindo a MESMA precedencia de
+    /// `icon::state_color` (atualizacao > bridge ausente > relay). Serve pra que
+    /// a cor do ponto nunca seja o unico canal de informacao no tooltip.
+    fn state_label(&self) -> &'static str {
+        if matches!(self.update, Update::Staged | Update::Installing) {
+            return "atualizando";
+        }
+        if !self.bridge_installed {
+            return "sem bridge";
+        }
+        match self.relay {
             Relay::Connected => "relay conectado",
             Relay::NoVoice => "sem canal de voz",
-            Relay::Local => "relay remoto parado",
-            Relay::Unknown => "aguardando o Discord",
-        };
-        let bridge = if self.bridge_installed {
-            "bridge instalado"
-        } else {
-            "bridge NAO instalado"
-        };
+            Relay::Local => "so local",
+            Relay::Unknown => "aguardando",
+        }
+    }
+
+    /// Texto do tooltip: 1a linha = app + estado atual EM PALAVRAS (cor
+    /// redundante); 2a linha = legenda das cores do ponto.
+    pub fn tooltip(&self) -> String {
         let streaming = if self.streaming { " | TRANSMITINDO" } else { "" };
         let update = match self.update {
-            Update::Staged => " | atualizacao pronta",
+            // "atualizando" ja' e' o rotulo do estado (roxo): nao repetir.
+            Update::Staged | Update::Installing => "",
             Update::Checking => " | checando atualizacao",
-            Update::Installing => " | instalando atualizacao",
             Update::Failed => " | update falhou",
             Update::Idle => "",
         };
@@ -97,7 +114,10 @@ impl Status {
         } else {
             format!(" | {}", self.restart_note)
         };
-        format!("Desjanjador - {bridge}, {relay}{streaming}{update}{restart}")
+        format!(
+            "Desjanjador - {}{streaming}{update}{restart}\n{LEGEND}",
+            self.state_label()
+        )
     }
 }
 
