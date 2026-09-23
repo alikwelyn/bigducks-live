@@ -5,6 +5,7 @@
 !rs/bigducks-rs/Cargo.lock
 !rs/bigducks-rs/src/**
 !rs/bigducks-rs/web/**
+!rs/bigducks-rs/release/**
 
 rs/bigducks-rs/target
 **/node_modules
