@@ -45,8 +45,9 @@ tray-icon = "0.25"
 winreg = "0.56"
 # Decodifica o logo para o icone da bandeja (o mesmo do exe) e gera as variantes.
 image = { version = "0.25", default-features = false, features = ["png"] }
-# Cliente HTTPS do auto-update (schannel no Windows, sem compilador C).
-ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
+# Cliente HTTPS do auto-update. Backend rustls: e' auto-contido (sem schannel
+# nem OpenSSL) entao funciona igual no Windows e no container do relay.
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 # Gera o .ico multi-tamanho (16/24/32/48/64/256) do logo do app Go
 # (imgs/big-ducks.png) e embute no exe. So no Windows (host do build script).
