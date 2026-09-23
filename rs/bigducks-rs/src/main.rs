@@ -343,7 +343,10 @@ fn main() {
         platform::attach_console();
     }
 
-    logging::init(args.console);
+    // No modo relay o log tem que sair no STDOUT tambem: e' o que o `docker
+    // logs` (e o painel do Dokploy) le. Sem isso o container fica MUDO - um
+    // restart loop era invisivel, sem nem o motivo do erro.
+    logging::init(args.console || args.relay);
     logging::write_line(&format!(
         "Desjanjador {} iniciando (pid {}) | log: {}",
         env!("CARGO_PKG_VERSION"),
@@ -447,7 +450,10 @@ fn run(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let report = if args.no_install {
+    // Relay NAO instala nada: nao ha Discord no container, e o WORKDIR (/) nem
+    // permite criar a pasta de dados (dava WARN a cada boot, poluindo o log que
+    // agora sai no stdout pro docker logs/Dokploy).
+    let report = if args.no_install || args.relay {
         None
     } else {
         match install::install() {

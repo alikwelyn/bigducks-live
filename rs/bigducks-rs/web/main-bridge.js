@@ -86,6 +86,19 @@ if (!global.__bigducksRsMainBridge) {
       addPath("electron");
       addPath("electron/main");
 
+      // O entry do electron no require.cache expoe `exports` como propriedade
+      // SOMENTE-LEITURA (getter sem setter): atribuir direto estoura
+      // "Cannot set property exports ... which has only a getter". O `delete`
+      // remove o descritor e a atribuicao seguinte cria uma propriedade nova,
+      // own e writable. O codigo antigo fazia o delete; a refatoracao do Proxy
+      // o perdeu - e o swap morreu em silencio (o catch do fallback engolia o
+      // MESMO TypeError, e o log dizia "nenhum cache de electron" com o cache
+      // presente). Sem o preload anexado, a bandeja nunca sai do cinza.
+      const replaceExports = (entry, value) => {
+        delete entry.exports;
+        entry.exports = value;
+      };
+
       const swap = (modulePath) => {
         const entry = require.cache[modulePath];
         const target = entry.exports;
@@ -93,7 +106,7 @@ if (!global.__bigducksRsMainBridge) {
         // Alvo congelado/selado (ou BrowserWindow nao-configuravel): um Proxy
         // violaria os invariantes - volta pro comportamento antigo.
         if (Object.isFrozen(target) || Object.isSealed(target) || (descriptor && !descriptor.configurable)) {
-          entry.exports = Object.assign({}, target, { BrowserWindow: BigDucksBrowserWindow });
+          replaceExports(entry, Object.assign({}, target, { BrowserWindow: BigDucksBrowserWindow }));
           return "fallback";
         }
         const proxy = new Proxy(target, {
@@ -122,7 +135,7 @@ if (!global.__bigducksRsMainBridge) {
         });
         if (proxy.BrowserWindow !== BigDucksBrowserWindow) throw new Error("getter nao pegou");
         Reflect.ownKeys(proxy);
-        entry.exports = proxy;
+        replaceExports(entry, proxy);
         return "proxy";
       };
 
@@ -133,9 +146,15 @@ if (!global.__bigducksRsMainBridge) {
         } catch (error) {
           try {
             const entry = require.cache[modulePath];
-            entry.exports = Object.assign({}, entry.exports, { BrowserWindow: BigDucksBrowserWindow });
+            replaceExports(entry, Object.assign({}, entry.exports, { BrowserWindow: BigDucksBrowserWindow }));
             done.push(modulePath + ": fallback (" + (error && error.message) + ")");
-          } catch (_) {}
+          } catch (fallbackError) {
+            // NUNCA engolir em silencio: este catch mudo e' o que fazia o swap
+            // falhar sem dizer nada (so' sobrava o "nenhum cache", que era
+            // mentira - o cache existia, a atribuicao e' que estourava).
+            done.push(modulePath + ": FALHOU (" + (error && error.message)
+              + " | fallback: " + (fallbackError && fallbackError.message) + ")");
+          }
         }
       }
       console.log("[bigducks-rs] BrowserWindow (Proxy/fallback): " + (done.join(" | ") || "nenhum cache de electron"));
