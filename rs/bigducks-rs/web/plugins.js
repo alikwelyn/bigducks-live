@@ -431,6 +431,52 @@
     return reported;
   }
 
+  // ---- fechar o gap do `perk-consumers`: CONSUMIR o entitlement -------------
+  //
+  // O `findPerkConsumers` so LOGA quem fala da perk (HANDOFF 6.2 registra como
+  // aberto). Aqui a gente acha o consumidor do entitlement pelo CORPO do export
+  // (via __bdWebpack.getByBody, do preload) e o embrulha pra responder "tem
+  // direito" mesmo sem o Nitro - e o que derruba o banner do picker e o modal.
+  // Tudo guardado: sem primitiva, sem alvo ou export nao-atribuivel, so LOGA.
+  function bindPerkConsumer() {
+    if (state.perkBound) return true;
+    const api = globalThis.__bdWebpack;
+    const wrap = globalThis.__bdWrap;
+    if (!api || typeof api.getByBody !== "function" || !wrap || typeof wrap.after !== "function") {
+      note("perk-bind", "perk-bind-sem-primitivas", "getByBody/__bdWrap ausentes (preload novo?)");
+      return false;
+    }
+    const hit = api.getByBody((body) => {
+      if (body.indexOf("STREAM_HIGH_QUALITY") === -1) return false;
+      // o consumidor do entitlement cita uma checagem de premium/entitlement
+      return /hasPremium|hasEntitlement|hasBoost|hasFreePremium|isPremium|isEntitled|isAvailable|isOwned/i.test(body);
+    });
+    if (!hit) {
+      note("perk-bind", "perk-bind-sem-alvo", "nenhum consumidor de STREAM_HIGH_QUALITY + entitlement");
+      return false;
+    }
+    if (state.perkModule != null && String(state.perkModule) === String(hit.id)) {
+      note("perk-bind", "perk-bind-ignorado", "casou o proprio modulo da perk (" + hit.id + ")");
+      return false;
+    }
+    try {
+      const bound = wrap.after(hit.exports, hit.key, function (value) {
+        // So mexe no que ja era "sem direito"; devolver objeto/true fica intacto.
+        return (value === false || value == null) ? true : value;
+      }, { replace: true });
+      if (!bound || !bound.__bdAfter) {
+        note("perk-bind", "perk-bind-leitura", "export " + hit.id + ":" + String(hit.key).slice(0, 24) + " nao e atribuivel");
+        return false;
+      }
+      state.perkBound = true;
+      report("perk-consumido", "modulo " + hit.id + " fn " + String(hit.key).slice(0, 24) + " (entitlement forcado)");
+      return true;
+    } catch (error) {
+      note("perk-bind", "perk-bind-erro", String(error && error.message).slice(0, 80));
+      return false;
+    }
+  }
+
   // ---- o que faltava: distribuir as perks nos objetos VIVOS -----------------
   //
   // O mapa de tiers e `Object.freeze`, e os consumidores guardaram a REFERENCIA
@@ -927,6 +973,8 @@
   // e, ate o banner cair, mostra TODO mundo que fala da perk (o cheque de
   // entitlement esta nessa lista - e o log diz qual patchear)
   findPerkConsumers();
+  // e CONSOME de fato o entitlement (fecha o gap do `perk-consumers`).
+  bindPerkConsumer();
 
   // ---- itens novos: via TARDIA (modulos que executaram antes do gancho) -----
   patchFactories("canStreamQuality", hardenGates);

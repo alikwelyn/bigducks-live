@@ -35,6 +35,86 @@ function report(name, data) {
   try { console.log("[bigducks-rs]", name, text); } catch (_) {}
 }
 
+// ------------------------------------------------- primitivas compartilhadas --
+//
+// O preload roda ANTES dos scripts da pagina e no MESMO global (sandbox: false,
+// sem contextIsolation). Estas primitivas ficam prontas aqui para o renderer e
+// os plugins consumirem depois - por isso moram no preload, e nao no arquivo
+// que as usa.
+
+// Envolve target[method] para chamar cb(returnValue, thisArg, args) DEPOIS do
+// original. Com opts.replace, o retorno de cb substitui o resultado. O wrapper e
+// marcado (__bdAfter) para a reinjecao ser idempotente.
+globalThis.__bdWrap = globalThis.__bdWrap || (function () {
+  const warned = new Set();
+  function after(target, method, cb, opts) {
+    if (!target || typeof target[method] !== "function") {
+      const key = String(method);
+      if (!warned.has(key)) {
+        warned.add(key);
+        console.log("[bigducks-rs] __bdWrap.after:", key, "nao e funcao (ignorado)");
+      }
+      return target ? target[method] : undefined;
+    }
+    const original = target[method];
+    if (original.__bdAfter) return original; // ja embrulhado
+    const replace = !!(opts && opts.replace);
+    const wrapper = function () {
+      const args = Array.prototype.slice.call(arguments);
+      const value = original.apply(this, args);
+      let next;
+      try { next = cb(value, this, args); } catch (_) { return value; }
+      return replace ? next : value;
+    };
+    wrapper.__bdAfter = true;
+    try { target[method] = wrapper; } catch (_) { return original; }
+    return target[method];
+  }
+  return { after: after };
+})();
+
+// Varredura por CORPO de funcao no require.c do webpack (nao pela fonte da
+// factory): acha um export sem depender de id/offset de build.
+globalThis.__bdWebpack = globalThis.__bdWebpack || (function () {
+  let cached = null;
+  function getRequire() {
+    if (cached && cached.c) return cached;
+    try {
+      const chunk = globalThis.webpackChunkdiscord_app;
+      if (!chunk || typeof chunk.push !== "function") return null;
+      const returned = chunk.push([[Symbol("bd-getbybody")], {}, (require) => require]);
+      if (returned && returned.c) { cached = returned; return cached; }
+    } catch (_) {}
+    return null;
+  }
+  function getByBody(pred) {
+    const require = getRequire();
+    if (!require || !require.c) {
+      console.log("[bigducks-rs] __bdWebpack.getByBody: webpack ainda nao esta pronto");
+      return null;
+    }
+    for (const id of Object.keys(require.c)) {
+      let exports;
+      try { exports = require.c[id] && require.c[id].exports; } catch (_) { continue; }
+      if (!exports || (typeof exports !== "object" && typeof exports !== "function")) continue;
+      let names;
+      try { names = Object.getOwnPropertyNames(exports); } catch (_) { continue; }
+      for (const key of names) {
+        let fn;
+        try { fn = exports[key]; } catch (_) { continue; }
+        if (typeof fn !== "function") continue;
+        let body;
+        try { body = Function.prototype.toString.call(fn); } catch (_) { continue; }
+        let hit = false;
+        try { hit = !!pred(body, key, exports); } catch (_) { hit = false; }
+        if (hit) return { fn: fn, key: key, id: id, exports: exports };
+      }
+    }
+    return null;
+  }
+  return { getByBody: getByBody, getRequire: getRequire };
+})();
+
 // Traduz o que o Discord manda para o formato que o motor entende.
 //
 // O log mostrou dois formatos:

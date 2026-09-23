@@ -62,10 +62,83 @@ if (!global.__bigducksRsMainBridge) {
     // getFocusedWindow() e o Discord estranha.
     Object.defineProperty(BigDucksBrowserWindow, "name", { value: "BrowserWindow", configurable: true });
 
+    // TROCA do BrowserWindow: o objeto VIVO do electron continua sendo o alvo e
+    // um Proxy intercepta SO `BrowserWindow` - todo o resto (app, ipcMain, os
+    // getters lazy) passa intacto. O `Object.assign` antigo LIA esses getters na
+    // hora (congelando o valor de hoje, as vezes undefined) e ainda criava um
+    // objeto novo que quem ja tinha a referencia nunca via.
     try {
-      const electronPath = require.resolve("electron");
-      delete require.cache[electronPath].exports;
-      require.cache[electronPath].exports = Object.assign({}, electron, { BrowserWindow: BigDucksBrowserWindow });
+      const targets = [];
+      const seen = [];
+      const addPath = (request) => {
+        let resolved;
+        try { resolved = require.resolve(request); } catch (_) { return; }
+        if (seen.indexOf(resolved) !== -1) return;
+        seen.push(resolved);
+        let entry = require.cache[resolved];
+        if (!entry) {
+          try { require(request); } catch (_) {}
+          entry = require.cache[resolved];
+        }
+        if (entry && entry.exports) targets.push(resolved);
+      };
+      // "electron" sempre; "electron/main" quando o runtime expoe esse caminho.
+      addPath("electron");
+      addPath("electron/main");
+
+      const swap = (modulePath) => {
+        const entry = require.cache[modulePath];
+        const target = entry.exports;
+        const descriptor = Object.getOwnPropertyDescriptor(target, "BrowserWindow");
+        // Alvo congelado/selado (ou BrowserWindow nao-configuravel): um Proxy
+        // violaria os invariantes - volta pro comportamento antigo.
+        if (Object.isFrozen(target) || Object.isSealed(target) || (descriptor && !descriptor.configurable)) {
+          entry.exports = Object.assign({}, target, { BrowserWindow: BigDucksBrowserWindow });
+          return "fallback";
+        }
+        const proxy = new Proxy(target, {
+          get(_, prop) {
+            if (prop === "BrowserWindow") return BigDucksBrowserWindow;
+            return Reflect.get(target, prop, target);
+          },
+          getOwnPropertyDescriptor(_, prop) {
+            if (prop === "BrowserWindow") {
+              const own = Reflect.getOwnPropertyDescriptor(target, prop);
+              return { value: BigDucksBrowserWindow, writable: true, enumerable: own ? own.enumerable : true, configurable: true };
+            }
+            return Reflect.getOwnPropertyDescriptor(target, prop);
+          },
+          has(_, prop) {
+            return prop === "BrowserWindow" ? true : Reflect.has(target, prop);
+          },
+          set(_, prop, value) {
+            if (prop === "BrowserWindow") return true;
+            return Reflect.set(target, prop, value, target);
+          },
+          defineProperty(_, prop, value) {
+            if (prop === "BrowserWindow") return true;
+            return Reflect.defineProperty(target, prop, value);
+          },
+        });
+        if (proxy.BrowserWindow !== BigDucksBrowserWindow) throw new Error("getter nao pegou");
+        Reflect.ownKeys(proxy);
+        entry.exports = proxy;
+        return "proxy";
+      };
+
+      const done = [];
+      for (const modulePath of targets) {
+        try {
+          done.push(modulePath + ": " + swap(modulePath));
+        } catch (error) {
+          try {
+            const entry = require.cache[modulePath];
+            entry.exports = Object.assign({}, entry.exports, { BrowserWindow: BigDucksBrowserWindow });
+            done.push(modulePath + ": fallback (" + (error && error.message) + ")");
+          } catch (_) {}
+        }
+      }
+      console.log("[bigducks-rs] BrowserWindow (Proxy/fallback): " + (done.join(" | ") || "nenhum cache de electron"));
     } catch (error) {
       console.error("[bigducks-rs] nao consegui trocar o BrowserWindow:", error && error.message);
     }

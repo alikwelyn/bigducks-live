@@ -1604,7 +1604,16 @@
       let message = null;
       try { message = JSON.parse(event.data); } catch { return; }
       if (message.type === 'welcome') {
+        const previousHubId = hubId;
         hubId = message.id;
+        // A identidade do hub mudou (reconexao / troca de servico de voz): o
+        // override do APEX pode ter sido resetado e o botao do Go Live travado
+        // de novo. Re-arma o latch - o poll de 2s ja chama unlock() de novo
+        // (nenhum timer novo aqui).
+        if (previousHubId !== null && previousHubId !== hubId && unlocked) {
+          unlocked = false;
+          log('unlock re-armado (hub ' + previousHubId + ' -> ' + hubId + ')');
+        }
         // Se alguem ja estiver transmitindo, pede a oferta de novo (senao quem
         // abre o Discord depois do inicio da live perderia o stream).
         setTimeout(() => { if (!publishing) send({ type: 'request-offer' }); }, 1500);
