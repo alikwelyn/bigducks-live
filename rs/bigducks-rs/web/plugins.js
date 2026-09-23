@@ -203,7 +203,14 @@
       try { source = Function.prototype.toString.call(factory); } catch (_) { continue; }
       if (source.indexOf(needle) === -1) continue;
 
-      const rewritten = mutate(source);
+      let rewritten = null;
+      try { rewritten = mutate(source); } catch (error) {
+        // Um mutate que estoura NAO pode abortar o plugin inteiro: hoje um throw
+        // aqui derruba as regras seguintes E os itens de runtime (tudo abaixo).
+        // Isola por modulo e segue (o `patchIncoming` ja' faz isto).
+        report("nitro-mutate-erro", id + " " + needle + ": " + String(error && error.message).slice(0, 80));
+        continue;
+      }
       if (!rewritten || rewritten === source) continue;
 
       try {
@@ -941,7 +948,14 @@
       try { source = Function.prototype.toString.call(factory); } catch (_) { continue; }
       if (source.indexOf(needle) === -1) continue;
 
-      const rewritten = mutate(source);
+      let rewritten = null;
+      try { rewritten = mutate(source); } catch (error) {
+        // Um mutate que estoura NAO pode abortar o plugin inteiro: hoje um throw
+        // aqui derruba as regras seguintes E os itens de runtime (tudo abaixo).
+        // Isola por modulo e segue (o `patchIncoming` ja' faz isto).
+        report("nitro-mutate-erro", id + " " + needle + ": " + String(error && error.message).slice(0, 80));
+        continue;
+      }
       if (!rewritten || rewritten === source) continue;
 
       try {

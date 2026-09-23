@@ -48,12 +48,36 @@ fn state_color(installed: bool, relay: Relay, update: Update) -> [u8; 3] {
 }
 
 /// Monta o icone da bandeja para o estado atual.
+///
+/// NUNCA deve devolver `None` na pratica: se a conversao do logo falhar, cai num
+/// icone solido de fallback - um `None` virava uma entrada VAZIA na bandeja (o
+/// "icone sem bitmap" do bug). O `tray.rs` tambem recusa criar a entrada sem
+/// bitmap, entao este caminho e' a ultima linha de defesa.
 pub fn tray_icon(installed: bool, relay: Relay, update: Update) -> Option<Icon> {
     let mut pixels = base_logo().clone();
     let color = state_color(installed, relay, update);
     draw_status_dot(&mut pixels, color);
     let (width, height) = pixels.dimensions();
-    Icon::from_rgba(pixels.into_raw(), width, height).ok()
+    match Icon::from_rgba(pixels.into_raw(), width, height) {
+        Ok(icon) => Some(icon),
+        Err(error) => {
+            crate::log_warn!(
+                "icone: from_rgba com o logo falhou ({error}) - usando fallback solido"
+            );
+            solid_icon(color)
+        }
+    }
+}
+
+/// Fallback: bloco solido escuro com o mesmo ponto de estado. So' usado se o
+/// logo embutido nao puder virar `Icon` (nao deve acontecer).
+fn solid_icon(color: [u8; 3]) -> Option<Icon> {
+    let mut pixels = RgbaImage::new(SIZE, SIZE);
+    for pixel in pixels.pixels_mut() {
+        pixel.0 = [0x1e, 0x1f, 0x22, 0xff];
+    }
+    draw_status_dot(&mut pixels, color);
+    Icon::from_rgba(pixels.into_raw(), SIZE, SIZE).ok()
 }
 
 /// Circulo na parte inferior-direita, com um anel branco pra destacar.

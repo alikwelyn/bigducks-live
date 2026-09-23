@@ -34,6 +34,8 @@ mod icon;
 #[cfg(windows)]
 mod platform;
 #[cfg(windows)]
+mod single_instance;
+#[cfg(windows)]
 mod tray;
 #[cfg(windows)]
 mod update;
@@ -352,11 +354,15 @@ fn main() {
     if let Err(error) = run(args) {
         logging::write_line(&format!("WARN [ERRO] {error:#}"));
         logging::write_line("saindo: run() retornou erro (codigo 1)");
+        #[cfg(windows)]
+        single_instance::release();
         std::process::exit(1);
     }
     // Saida limpa (uninstall/install/check-restart/restart-discord/relay): deixa
     // registrado POR QUE o processo acabou - o app nunca mais some sem explicacao.
     logging::write_line("saindo: run() terminou sem erro (codigo 0)");
+    #[cfg(windows)]
+    single_instance::release();
     std::process::exit(0);
 }
 
@@ -388,6 +394,52 @@ fn install_panic_hook() {
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
+    // GUARD DE INSTANCIA UNICA (Windows): o autostart sobe o app no login e um
+    // segundo clique no exe subia um SEGUNDO motor - duas bandejas (um icone sem
+    // bitmap) e a porta 8791 perdida. Quem nao for o primeiro SAI AQUI, antes de
+    // injetar no Discord ou de criar qualquer bandeja. Os modos de uso unico
+    // (uninstall/install/check-restart/restart-discord) rodam e saem rapido e
+    // nao disputam a bandeja, entao ficam de fora do guard.
+    #[cfg(windows)]
+    {
+        let one_shot = args.uninstall
+            || args.install_only
+            || args.check_restart
+            || args.restart_discord;
+        if !one_shot {
+            match single_instance::acquire() {
+                single_instance::Status::First => {
+                    logging::write_line(&format!(
+                        "single-instance: guard ativo (mutex '{}', pid {})",
+                        single_instance::MUTEX_NAME,
+                        std::process::id()
+                    ));
+                }
+                single_instance::Status::AlreadyRunning(pids) => {
+                    let other = if pids.is_empty() {
+                        "desconhecido".to_string()
+                    } else {
+                        pids.iter()
+                            .map(|pid| pid.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    };
+                    logging::write_line(&format!(
+                        "single-instance: OUTRA instancia ja esta rodando (pid {other}) - \
+                         saindo sem criar bandeja, sem injetar e sem tocar no Discord"
+                    ));
+                    return Ok(());
+                }
+                single_instance::Status::Failed(error) => {
+                    logging::write_line(&format!(
+                        "WARN single-instance: nao consegui criar o mutex ({error}) - \
+                         seguindo sem o guard"
+                    ));
+                }
+            }
+        }
+    }
+
     if args.uninstall {
         for line in install::uninstall()? {
             logging::write_line(&format!("uninstall: {line}"));
@@ -705,6 +757,9 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
     // Bandeja na thread principal; bloqueia ate' "Sair".
     tray::run(state.status.clone());
     logging::write_line("bandeja encerrada");
+    // Fecha o mutex do guard antes de sair (o Windows tambem libera sozinho,
+    // mas assim o "Sair" e' explicitamente limpo e o app reabre na hora).
+    single_instance::release();
     std::process::exit(0);
 }
 

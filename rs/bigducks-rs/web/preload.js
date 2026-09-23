@@ -941,24 +941,46 @@ try {
 
 // ------------------------------------------------- esconder o banner --------
 //
-// O banner roxo "Transmita em resolucao HD com Nitro" no Go Live picker e
-// renderizado pelo Discord com classes CSS moduladas (hash aleatorio). Nao
-// da pra acertar o seletor sem saber o hash. Mas o CONTEUDO e sempre o mesmo:
-// tem um botao "Obter o Nitro" e um texto sobre "HD" ou "4k". Um MutationObserver
-// leve que procura o texto e esconde o ancestral e mais confiavel que CSS.
+// O banner roxo "Transmita em resolucao HD com Nitro" no Go Live picker e o
+// modal de upsell que ele abre. Duas armadilhas que o audit achou:
+//   1. as classes CSS sao moduladas (hash aleatorio por build) - nao da' pra
+//      acertar seletor por classe;
+//   2. os TEXTOS em ingles ("Stream in HD", "Unlock 4k", "Get Nitro") NAO EXISTEM
+//      no nosso cliente pt-BR: eram codigo morto (o banner nunca caia por eles).
+// A ancora que sobrevive a build E a i18n e' ESTRUTURAL: o grupo de upsell do
+// picker tem o id `stream-option-notify` (o mesmo que o Equicord patcheia) e o
+// modal de upsell e' um `[role="dialog"]`. O texto pt-BR fica so' como FALLBACK.
+//
+// Roda no PRELOAD, independente do plugins.js: este observer e' registrado ANTES
+// do loadPlugins() e cada patch do plugin ja' tem try/catch + .catch no
+// executeJavaScript, entao um throw no plugin nao aborta o esconder do banner.
 function hideNitroBanner() {
   try {
-    const TEXTS = ["Transmita em resolu", "Stream in HD", "Unlock 4k", "Obter o Nitro", "Get Nitro"];
-    // O MODAL de upsell ("Desbloqueie a transmissao em HD 4k a 60 fps") e outra peca:
-    // esconder um pedaco nao fecha o backdrop que bloqueia a UI. Aqui a jogada e
-    // FECHAR o dialog (botao fechar ou ESC). Ancora: "Desbloqueie"/"Unlock" + Nitro
-    // no mesmo dialog - o banner do picker nao tem "Desbloqueie".
+    // Ancoras TEXTUAIS (FALLBACK). pt-BR primeiro; o ingles quase nunca casa no
+    // nosso cliente, mas nao custa manter.
+    const TEXTS = [
+      "Transmita em resolu", "Obter o Nitro", "Desbloqueie", "Desbloquear",
+      "Stream in HD", "Unlock 4k", "Unlock 4K", "Get Nitro",
+    ];
     const CLOSE_MODAL = ["Desbloqueie", "Unlock", "Desbloquear"];
+    // Ancora ESTRUTURAL do grupo de upsell do picker.
+    const UPSELL_GROUP = "#stream-option-notify";
+
     let lastCloseAt = 0;
+    let loggedHide = false;
+    let loggedModal = false;
+
+    // O MODAL de upsell ("Desbloqueie a transmissao em HD 4k a 60 fps") trava a
+    // UI atras do backdrop: esconder um pedaco nao resolve, tem que FECHAR o
+    // dialog (botao fechar ou ESC).
     const closeModal = function (dialog) {
       const now = Date.now();
       if (now - lastCloseAt < 600) return;
       lastCloseAt = now;
+      if (!loggedModal) {
+        loggedModal = true;
+        try { report("nitro-modal-fechado", 'ancora estrutural role="dialog"'); } catch (_) {}
+      }
       try {
         const closeBtn = dialog.querySelector('[aria-label="Fechar"],[aria-label="Close"]');
         if (closeBtn) { closeBtn.click(); return; }
@@ -968,54 +990,98 @@ function hideNitroBanner() {
           document.dispatchEvent(new KeyboardEvent(type, { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }));
         }
       } catch (_) {}
-      try { report("upsell-modal-fechado", ""); } catch (_) {}
     };
-    const observer = new MutationObserver(function () {
-      try {
-        // Procura apenas dentro de modais e dialogs (onde o picker de stream vive)
-        const dialogs = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="layer"]');
-        for (const dialog of dialogs) {
-          // Modal de upsell inteiro? Fecha. Antes de esconder pedacos: um dialog
-          // pequeno cujo conteudo e so o upsell nao pode ficar na frente da UI.
-          try {
-            const own = dialog.textContent || "";
-            const isModal = dialog.getAttribute && dialog.getAttribute("role") === "dialog";
-            if (isModal && CLOSE_MODAL.some((t) => own.includes(t)) && /nitro/i.test(own) && own.length < 900) {
-              closeModal(dialog);
-              continue;
-            }
-          } catch (_) {}
-          const walker = document.createTreeWalker(dialog, NodeFilter.SHOW_TEXT);
+
+    // Esconde o ANCESTRAL que tem cara de banner (fundo em gradiente ou classe de
+    // upsell/premium/nitro/banner); se nenhum aparecer, esconde o proprio no'.
+    const hideBanner = function (start) {
+      let banner = null;
+      let node = start;
+      for (let i = 0; i < 6 && node; i++) {
+        node = node.parentElement;
+        if (!node || !node.style) break;
+        let hit = false;
+        try {
+          const style = getComputedStyle(node);
+          if (style.backgroundImage && style.backgroundImage.indexOf("gradient") !== -1) hit = true;
+          const cls = node.className;
+          if (typeof cls === "string" && /upsell|premium|nitro|banner/i.test(cls)) hit = true;
+        } catch (_) {}
+        if (hit) { banner = node; break; }
+      }
+      const target = banner || start;
+      if (target && target.style) target.style.display = "none";
+      return target;
+    };
+
+    // Loga UMA vez (pro motor) que o banner caiu - e' assim que a gente confirma
+    // pelo `engine.log` (linha `preload: nitro-banner-escondido ...`).
+    const noteHide = function (how) {
+      if (loggedHide) return;
+      loggedHide = true;
+      try { report("nitro-banner-escondido", how); } catch (_) {}
+    };
+
+    const scan = function () {
+      // (1) Modal de upsell inteiro? Fecha antes de esconder pedacos.
+      let dialogs = [];
+      try { dialogs = document.querySelectorAll('[role="dialog"]'); } catch (_) {}
+      for (const dialog of dialogs) {
+        try {
+          const own = dialog.textContent || "";
+          const isUpsell = /nitro/i.test(own) && own.length < 900
+            && (CLOSE_MODAL.some((t) => own.includes(t))
+              || !!dialog.querySelector(UPSELL_GROUP)
+              || /transmi|stream/i.test(own));
+          if (isUpsell) { closeModal(dialog); continue; }
+        } catch (_) {}
+      }
+
+      // (2) ANCORA ESTRUTURAL: o grupo de upsell do picker.
+      let groups = [];
+      try { groups = document.querySelectorAll(UPSELL_GROUP); } catch (_) {}
+      for (const group of groups) {
+        try {
+          hideBanner(group);
+          noteHide("ancora estrutural " + UPSELL_GROUP);
+        } catch (_) {}
+      }
+
+      // (3) FALLBACK textual (pt-BR; o ingles raramente casa). Procura dentro de
+      // modais/layers, onde o picker de stream vive.
+      let regions = [];
+      try { regions = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="layer"]'); } catch (_) {}
+      for (const region of regions) {
+        try {
+          const walker = document.createTreeWalker(region, NodeFilter.SHOW_TEXT);
           let node;
           while ((node = walker.nextNode())) {
             const text = node.textContent || "";
             for (const t of TEXTS) {
-              if (text.includes(t)) {
-                // Sobe ate achar o container com background de gradiente
-                let banner = node.parentElement;
-                for (let i = 0; i < 6 && banner; i++) {
-                  banner = banner.parentElement;
-                  if (!banner) break;
-                  const style = getComputedStyle(banner);
-                  if (style.backgroundImage && style.backgroundImage.includes("gradient")) {
-                    banner.style.display = "none";
-                    break;
-                  }
-                  // Ou se for um container com classe de upsell
-                  if (banner.className && typeof banner.className === "string"
-                    && /upsell|premium|nitro/i.test(banner.className)) {
-                    banner.style.display = "none";
-                    break;
-                  }
-                }
-                break;
-              }
+              if (!text.includes(t)) continue;
+              hideBanner(node.parentElement);
+              noteHide("texto: " + t);
+              break;
             }
           }
-        }
-      } catch (_) {}
-    });
+        } catch (_) {}
+      }
+    };
+
+    // Coalesce: o Discord muta o DOM MUITO. Uma varredura sincrona por mutacao
+    // era churn; agora roda no maximo ~6x/s e so' quando algo mudou.
+    let pending = false;
+    const schedule = function () {
+      if (pending) return;
+      pending = true;
+      setTimeout(function () {
+        pending = false;
+        try { scan(); } catch (_) {}
+      }, 150);
+    };
+    const observer = new MutationObserver(schedule);
     observer.observe(document.documentElement, { childList: true, subtree: true });
+    scan(); // uma passada imediata (o DOM pode ja existir na injecao tardia)
   } catch (_) {}
 }
 

@@ -166,12 +166,21 @@ pub fn apply(staged: &PathBuf) -> Result<()> {
     }
     log_update(&format!("trocado por {}; reabrindo", staged.display()));
 
+    // O processo NOVO reabre ENQUANTO este ainda esta vivo. Sem liberar antes, o
+    // guard de instancia unica faria o processo novo detectar "outra instancia"
+    // e SAIR na hora - o app nao voltaria depois do update. Libera o mutex agora
+    // e, se a reabertura falhar, retoma o guard (o app continua rodando aqui).
+    crate::single_instance::release();
+
     let mut command = std::process::Command::new(&target);
     if let Some(parent) = target.parent() {
         command.current_dir(parent);
     }
     command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-    command.spawn().context("reabrir o app atualizado")?;
+    if let Err(error) = command.spawn() {
+        let _ = crate::single_instance::acquire();
+        return Err(error).context("reabrir o app atualizado");
+    }
     Ok(())
 }
 

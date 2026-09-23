@@ -61,9 +61,14 @@ fn build_tray(status: &Shared) -> Result<TrayUi, String> {
         // aparece no botao direito, que e' o que todo mundo espera no Windows.
         .with_menu_on_left_click(false)
         .with_tooltip("Desjanjador");
-    if let Some(icon) = initial {
-        builder = builder.with_icon(icon);
-    }
+    // SEM BITMAP NAO CRIAMOS A ENTRADA. O `TrayIconBuilder::build()` aceita ser
+    // chamado sem icone e cria um icone VAZIO na area de notificacao - era o
+    // "icone sem icone" do bug dos dois icones. Aqui, se o bitmap faltar, devolve
+    // Err: o `run()` loga ALTO e tenta de novo - nunca aparece entrada vazia.
+    let icon = initial.ok_or_else(|| {
+        "sem bitmap para o icone da bandeja (Icon indisponivel) - nao crio entrada vazia".to_string()
+    })?;
+    builder = builder.with_icon(icon);
     let tray = builder.build().map_err(|error| error.to_string())?;
 
     // Handler de cliques: so' ids + status compartilhado (Send + Sync).
@@ -84,6 +89,9 @@ fn build_tray(status: &Shared) -> Result<TrayUi, String> {
             toggle_autostart(&handler_status);
         } else if id == &quit_id {
             crate::log_info!("bandeja: sair");
+            // Libera o mutex do guard ANTES de sair: um reinicio imediato do app
+            // nao esbarra no mutex de uma instancia que ja esta morrendo.
+            crate::single_instance::release();
             std::process::exit(0);
         }
     }));
