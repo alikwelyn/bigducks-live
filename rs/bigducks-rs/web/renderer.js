@@ -1775,6 +1775,27 @@
   let streamBitrate = 12_000_000;
   let streamFps = 30;
 
+  // O painel do Discord manda setTransportOptions repetidas vezes e CADA peer
+  // novo reaplica o bitrate (ensurePublisherPeer -> applyBitrate). Reportar a
+  // cada chamada enchia o hub de "bitrate" (dezenas por segundo, puro ruido -
+  // ninguem consome). So sai um report quando o valor muda de verdade e, no
+  // maximo, 1 por segundo.
+  let reportedBitrate = -1;
+  let reportedFps = -1;
+  let lastBitrateReportAt = 0;
+
+  function reportBitrate() {
+    const value = Math.round(streamBitrate);
+    const fps = Math.round(streamFps);
+    if (value === reportedBitrate && fps === reportedFps) return;
+    const now = Date.now();
+    if (lastBitrateReportAt && now - lastBitrateReportAt < 1000) return;
+    reportedBitrate = value;
+    reportedFps = fps;
+    lastBitrateReportAt = now;
+    report("bitrate", { bitrate: value, fps });
+  }
+
   async function applyBitrate(bitrate, fps) {
     if (!bitrate || bitrate < 100_000) return;
     streamBitrate = bitrate;
@@ -1795,7 +1816,7 @@
           await sender.setParameters(params);
         }
       }
-      report("bitrate", { bitrate: streamBitrate, fps: streamFps });
+      reportBitrate();
     } catch (error) {
       // Transitorio (sender ainda sem getParameters): a proxima settings message
       // reaplica. Nao e fatal - os encodings ja nascem certos na oferta.
