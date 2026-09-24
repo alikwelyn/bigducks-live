@@ -43,6 +43,22 @@
   // (o preset de fabrica + o embrulho do graph handler passam a agir).
   const CAMERA_BACKGROUND = "";
 
+  // item 3b - OVERRIDE do experimento via DISPATCHER do Flux: o caminho
+  // PRIMARIO, porque foi ESTE que o usuario provou a mao (DevTools do Canary
+  // 1.0.1190): o botao Go Live destrava E FICA destravado. O dispatch e
+  // literalmente
+  //   dispatch({ type: "APEX_EXPERIMENT_OVERRIDE_CREATE",
+  //              experimentName: "2026-08-video-guard", variantId: -1 })
+  // Para cobrir mais experimentos, so acrescentar o nome A LISTA abaixo (o
+  // tipo e a variante sao compartilhados).
+  const APEX_DISPATCH_TYPE = "APEX_EXPERIMENT_OVERRIDE_CREATE";
+  const APEX_DISPATCH_VARIANT = -1; // -1 = "sem variante" = ALLOWED
+  const APEX_DISPATCH_EXPERIMENTS = ["2026-08-video-guard"];
+  // Resiliencia: o dispatcher so nasce depois do boot do webpack -> 1 tentativa
+  // por segundo, ate 60, e depois desiste (com uma ultima linha no log).
+  const APEX_DISPATCH_TRIES = 60;
+  const APEX_DISPATCH_EVERY_MS = 1000;
+
   function report(name, data) {
     const text = String(data == null ? "" : data);
     try {
@@ -62,6 +78,11 @@
   }
 
   const state = window.__bdNitroState || (window.__bdNitroState = { modules: 0, patched: 0, warned: false });
+
+  // PROVA DE VIDA do plugin no engine.log. Sem isto, "o fetch falhou" e "o
+  // script rodou mas nao casou nada" ficavam identicos no log ("nao aconteceu
+  // nada"). `note` so fala UMA vez por sessao mesmo com a injecao repetida.
+  note("plugin-rodou", "plugins-executou", "plugins.js rodou (injetado pelo preload)");
 
   // ---- hook no PUSH do webpack: patchear antes de o modulo existir ----------
   //
@@ -143,6 +164,13 @@
   }
 
   installChunkHook();
+
+  // Caminho PRIMARIO (provado): dispara o override pelo DISPATCHER do Flux.
+  // Comeca JA - e sobrevive ao `return` abaixo de proposito (no boot o webpack
+  // ainda pode nao existir; o retry de 1s cuida disso).
+  try { startApexDispatch(); } catch (error) {
+    report("apex-dispatch-erro", String(error && error.message).slice(0, 80));
+  }
 
   const require = webpackRequire();
   if (!require || !require.c) {
@@ -803,8 +831,106 @@
     }
     try { if (overrides) store.emitChange(); } catch (_) {}
     state.fluxDone = true;
-    report("experimentos", overrides + " override(s) via ApexExperimentStore.createOverride");
+    report("experimentos", overrides + " override(s) via ApexExperimentStore.createOverride (SECUNDARIO)");
     return overrides > 0;
+  }
+
+  // ---- item 3b: o dispatcher do Flux (PRIMARIO) -----------------------------
+  //
+  // Este e' O caminho provado a mao, no cliente do usuario (Canary 1.0.1190):
+  //     dispatcher.dispatch({
+  //       type: "APEX_EXPERIMENT_OVERRIDE_CREATE",
+  //       experimentName: "2026-08-video-guard",
+  //       variantId: -1
+  //     });
+  // e o override PERSISTE (o botao Go Live fica liberado). A descoberta do
+  // dispatcher e' a MESMA do snippet dele: achatar os exports do `require.c` e
+  // achar o objeto com `dispatch` + `_actionHandlers._orderedActionHandlers`.
+  // Preferimos essa varredura a qualquer palpite de metodo de store, e usamos o
+  // `webpackRequire()` do proprio arquivo (push SEM pop - ver renderer.js, onde
+  // o pop() removeu um chunk real e deixou o global indefinido).
+  function findApexDispatcher() {
+    const req = webpackRequire();
+    if (!req || !req.c) return null;
+    let ids;
+    try { ids = Object.keys(req.c); } catch (_) { return null; }
+    for (const id of ids) {
+      let exports;
+      try { exports = req.c[id] && req.c[id].exports; } catch (_) { continue; }
+      if (!exports || (typeof exports !== "object" && typeof exports !== "function")) continue;
+      let values;
+      try { values = Object.values(exports); } catch (_) { continue; }
+      for (const value of values) {
+        if (!value || typeof value !== "object") continue;
+        try {
+          if (typeof value.dispatch === "function"
+            && value._actionHandlers && value._actionHandlers._orderedActionHandlers) {
+            return { dispatcher: value, moduleId: id };
+          }
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  // Idempotente por `state.apexDone` e pelo proprio dispatch (mandar o MESMO
+  // override duas vezes e' inofensivo). Devolve true quando o dispatcher foi
+  // achado e o(s) override(s) foram mandados.
+  function dispatchApexOverrides() {
+    if (state.apexDone) return true;
+    const found = findApexDispatcher();
+    if (!found) return false;
+    if (!state.apexFound) {
+      state.apexFound = true;
+      report("apex-dispatcher", "achado: modulo " + found.moduleId + " (dispatch + _actionHandlers)");
+    }
+    let sent = 0;
+    for (const name of APEX_DISPATCH_EXPERIMENTS) {
+      try {
+        found.dispatcher.dispatch({
+          type: APEX_DISPATCH_TYPE,
+          experimentName: name,
+          variantId: APEX_DISPATCH_VARIANT,
+        });
+        sent += 1;
+        report("apex-dispatch", name + " -> variante " + APEX_DISPATCH_VARIANT + " (" + APEX_DISPATCH_TYPE + ")");
+      } catch (error) {
+        report("apex-dispatch-erro", name + ": " + String(error && error.message).slice(0, 80));
+      }
+    }
+    if (sent) {
+      state.apexDone = true;
+      report("experimentos", "override via DISPATCHER do Flux (PRIMARIO): " + sent + " experimento(s)");
+      return true;
+    }
+    return false;
+  }
+
+  // O dispatcher so existe DEPOIS do boot do webpack. Retry de 1s ate
+  // `APEX_DISPATCH_TRIES`; se nunca aparecer, desiste em silencio (uma linha no
+  // log) e a via SECUNDARIA (ApexExperimentStore) fica valendo. Guardado por
+  // `state.apexLoop`: a injecao repetida do preload nao cria outro loop.
+  function startApexDispatch() {
+    if (state.apexLoop) return;
+    state.apexLoop = true;
+    let attempt = 0;
+    const tick = () => {
+      if (state.apexDone) return;
+      attempt += 1;
+      let ok = false;
+      try { ok = dispatchApexOverrides(); } catch (error) {
+        report("apex-dispatch-erro", String(error && error.message).slice(0, 80));
+      }
+      if (ok) return; // achou + disparou: nao precisa mais
+      if (attempt >= APEX_DISPATCH_TRIES) {
+        report("apex-desistiu", "dispatcher do Flux nao apareceu em " + attempt + " tentativas (~"
+          + Math.round((attempt * APEX_DISPATCH_EVERY_MS) / 1000) + "s) | via secundaria ApexExperimentStore: "
+          + (state.fluxDone ? "aplicada" : "ausente"));
+        return;
+      }
+      setTimeout(tick, APEX_DISPATCH_EVERY_MS);
+    };
+    tick();
   }
 
   // item 4 - agucamento do stream: um filtro SVG (feConvolveMatrix) UMA vez, e
@@ -1018,6 +1144,10 @@
   // Cada um e guardado por `state`: a injecao repetida e no-op. O try/catch
   // externo garante que um item quebrado nunca derrube os outros.
   try { wrapCodecOptions(); } catch (error) { report("codec-erro", String(error && error.message).slice(0, 80)); }
+  // O override do experimento agora tem DOIS caminhos, nesta ordem de
+  // importancia: (1) o DISPATCHER do Flux (PRIMARIO - disparado no boot, com
+  // retry proprio, ver startApexDispatch); (2) o ApexExperimentStore
+  // (SECUNDARIO, abaixo) - mantido como rede caso o dispatcher nao exista.
   try { unlockExperiments(); } catch (error) { report("experimentos-erro", String(error && error.message).slice(0, 80)); }
   try { installSharpening(); } catch (error) { report("nitidez-erro", String(error && error.message).slice(0, 80)); }
   try { wrapCameraBackground(); } catch (error) { report("camera-bg-erro", String(error && error.message).slice(0, 80)); }

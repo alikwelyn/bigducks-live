@@ -20,11 +20,29 @@ use crate::logging;
 use crate::platform;
 use crate::status::{Shared, Update};
 
-/// Base do relay (o mesmo host do `wss://.../hub`).
+/// Base padrao do relay (o mesmo host do `wss://.../hub`).
 pub const RELEASE_BASE: &str = "https://desjanjador.skillup.com.br";
 const MANIFEST_PATH: &str = "/release.json";
 pub const ASSET_NAME: &str = "Desjanjador.exe";
 const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
+
+/// Retorna a URL base do relay/update (permite override por env var ou arquivo local).
+pub fn release_base() -> String {
+    if let Ok(val) = std::env::var("BIGDUCKS_UPDATE_URL") {
+        let trimmed = val.trim().trim_end_matches('/').to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    let override_file = logging::data_dir().join("update-url.txt");
+    if let Ok(val) = std::fs::read_to_string(&override_file) {
+        let trimmed = val.trim().trim_end_matches('/').to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    RELEASE_BASE.to_string()
+}
 
 /// Flags de CreateProcess para reabrir o app destacado, sem herdar console.
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
@@ -69,11 +87,11 @@ fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
 }
 
 fn manifest_url() -> String {
-    format!("{RELEASE_BASE}{MANIFEST_PATH}")
+    format!("{}{MANIFEST_PATH}", release_base())
 }
 
 fn asset_url(manifest: &Manifest) -> String {
-    format!("{RELEASE_BASE}/{}", manifest.asset.trim_start_matches('/'))
+    format!("{}/{}", release_base(), manifest.asset.trim_start_matches('/'))
 }
 
 /// Baixa e compara o manifest. `Ok(None)` quando ja estamos na ultima versao.
@@ -200,14 +218,22 @@ pub fn spawn_checker(status: Shared) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(20));
         loop {
-            run_once(&status);
+            run_once(&status, false);
             std::thread::sleep(CHECK_INTERVAL);
         }
     });
 }
 
-fn run_once(status: &Shared) {
+/// Dispara checagem manual (ex: acionada pelo menu da bandeja).
+pub fn trigger_manual_check(status: &Shared) {
+    run_once(status, true);
+}
+
+fn run_once(status: &Shared, manual: bool) {
     set_update(status, Update::Checking, "checando atualizacao");
+    if manual {
+        notify(status, "Desjanjador", "Verificando atualizações...");
+    }
     match check() {
         Ok(Some(manifest)) => {
             let note = manifest.notes.clone().unwrap_or_default();
@@ -222,8 +248,8 @@ fn run_once(status: &Shared) {
                     );
                     notify(
                         status,
-                        "Atualizacao baixada",
-                        &format!("Desjanjador v{} sera instalada em instantes", manifest.version),
+                        "Atualização baixada",
+                        &format!("Desjanjador v{} será instalado silenciosamente em instantes", manifest.version),
                     );
                     if applying_now(status) {
                         set_update(status, Update::Installing, "instalando atualizacao");
@@ -245,13 +271,28 @@ fn run_once(status: &Shared) {
                 Err(error) => {
                     log_update(&format!("falha no download: {error:#}"));
                     set_update(status, Update::Failed, &format!("{error:#}"));
+                    if manual {
+                        notify(status, "Falha no download", &format!("{error:#}"));
+                    }
                 }
             }
         }
-        Ok(None) => set_update(status, Update::Idle, ""),
+        Ok(None) => {
+            set_update(status, Update::Idle, "");
+            if manual {
+                notify(
+                    status,
+                    "Desjanjador atualizado",
+                    &format!("Você já está na versão mais recente (v{}).", current_version()),
+                );
+            }
+        }
         Err(error) => {
             log_update(&format!("checagem falhou: {error:#}"));
             set_update(status, Update::Failed, &format!("{error:#}"));
+            if manual {
+                notify(status, "Erro ao verificar atualização", &format!("{error:#}"));
+            }
         }
     }
 }

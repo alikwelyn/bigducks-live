@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Desjanjador — Diagnóstico WebRTC</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c111a;
+      --surface: #131c29;
+      --surface-raised: #182333;
+      --line: #2a394c;
+      --text: #eef3fa;
+      --muted: #a4b2c4;
+      --accent: #a8bbff;
+      --accent-strong: #6c86ef;
+      --good: #80dfb2;
+      --warn: #f2c879;
+      --bad: #ff8d96;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 16px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; line-height: 1.5; }
+    a { color: var(--accent); }
+    button, input, select { font: inherit; }
+    button, select, input { min-height: 44px; }
+    button {
+      border: 1px solid #5369b7;
+      border-radius: 8px;
+      padding: 9px 14px;
+      color: #fff;
+      background: #435cb7;
+      cursor: pointer;
+      transition: background-color 160ms ease, border-color 160ms ease;
+    }
+    button:hover:not(:disabled) { background: #526ecc; }
+    button:active:not(:disabled) { background: #344b9e; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    button.secondary { color: var(--text); background: #202c3b; border-color: #3a4a5f; }
+    button.secondary:hover:not(:disabled) { background: #2b3a4d; }
+    :focus-visible { outline: 3px solid #bdcbff; outline-offset: 2px; }
+    header {
+      border-bottom: 1px solid var(--line);
+      background: #101722;
+    }
+    .header-inner, main { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+    .header-inner { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .brand { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 700; letter-spacing: .01em; }
+    .brand-mark { width: 12px; height: 28px; border-radius: 6px; background: var(--accent-strong); }
+    .brand small { display: block; color: var(--muted); font-size: 13px; font-weight: 500; letter-spacing: 0; }
+    nav { display: flex; gap: 18px; }
+    nav a { text-decoration: none; padding: 8px 4px; }
+    nav a[aria-current="page"] { color: #fff; border-bottom: 2px solid var(--accent); }
+    main { padding: 32px 0 56px; }
+    .intro { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+    h1 { margin: 0 0 8px; font-size: clamp(27px, 4vw, 36px); line-height: 1.2; }
+    h2 { margin: 0; font-size: 21px; line-height: 1.3; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    p { margin: 8px 0; color: var(--muted); }
+    .intro p { max-width: 680px; margin-bottom: 0; }
+    .privacy { max-width: 250px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 13px; }
+    .stack { display: grid; gap: 18px; }
+    .card { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 22px; box-shadow: 0 12px 32px #0002; }
+    .card-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .step { display: inline-grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; border: 1px solid #7188dc; border-radius: 9px; color: #d4ddff; font-size: 13px; font-weight: 700; }
+    .section-state { margin-left: auto; color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .form-row { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 18px; }
+    .field { display: grid; flex: 1 1 180px; gap: 5px; min-width: 150px; }
+    label { color: #dbe5f2; font-size: 14px; font-weight: 600; }
+    input, select { width: 100%; border: 1px solid #415268; border-radius: 8px; padding: 8px 11px; color: var(--text); background: #0d1520; }
+    .field-help { color: var(--muted); font-size: 13px; }
+    .notice { margin-top: 14px; padding: 11px 13px; border-left: 3px solid #8da5ff; border-radius: 5px; background: #182239; color: #d8e1f0; }
+    .notice.warn { border-color: var(--warn); background: #2a2418; }
+    .checks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 0; margin: 18px 0 0; list-style: none; }
+    .checks li { min-height: 75px; display: flex; flex-direction: column; justify-content: space-between; gap: 4px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-raised); }
+    .checks span { color: var(--muted); font-size: 13px; }
+    .checks strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .metric { padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; }
+    .metric span { display: block; color: var(--muted); font-size: 12px; }
+    .metric strong { font-size: 17px; font-variant-numeric: tabular-nums; }
+    .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+    .grid-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .85fr); gap: 16px; margin-top: 18px; }
+    .video-frame { width: 100%; min-height: 200px; aspect-ratio: 16 / 9; border: 1px solid #3a4b61; border-radius: 10px; background: #070b11; object-fit: contain; }
+    .video-label { display: flex; justify-content: space-between; gap: 12px; margin: 0 0 7px; color: var(--muted); font-size: 13px; }
+    .stats-box { display: grid; align-content: start; gap: 10px; }
+    .log { max-height: 250px; overflow: auto; margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #0a111a; color: #d5dfec; font: 13px/1.55 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .event-empty { color: var(--muted); }
+    .good { color: var(--good) !important; }
+    .warn-text { color: var(--warn) !important; }
+    .bad { color: var(--bad) !important; }
+    .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, Consolas, monospace; }
+    .card-footer { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 16px; }
+    @media (max-width: 760px) {
+      .header-inner, main { width: min(100% - 28px, 600px); }
+      .header-inner { min-height: 64px; }
+      nav { gap: 8px; }
+      .intro { align-items: start; flex-direction: column; }
+      .privacy { max-width: none; }
+      .checks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid-two { grid-template-columns: 1fr; }
+      .card { padding: 17px; }
+    }
+    @media (max-width: 420px) {
+      .header-inner, main { width: calc(100% - 24px); }
+      .brand { font-size: 16px; }
+      nav { gap: 6px; font-size: 14px; }
+      .checks { grid-template-columns: 1fr 1fr; }
+      .checks li { min-height: 70px; }
+      .section-state { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div>Desjanjador<small>Diagnóstico de transmissão</small></div></div>
+      <nav aria-label="Navegação principal"><a href="/">Captura local</a><a href="/webrtc-test" aria-current="page">WebRTC</a></nav>
+    </div>
+  </header>
+  <main>
+    <div class="intro">
+      <div><h1>Descubra em qual etapa a live para</h1><p>Teste em duas abas no mesmo PC ou pareie PCs em redes diferentes. Primeiro valide WebRTC e vídeo sem Discord; depois compare com os eventos da integração.</p></div>
+      <div class="privacy">O relatório omite endereços IP. Candidate details ficam somente na memória para a negociação WebRTC.</div>
+    </div>
+
+    <div class="stack">
+      <section class="card" aria-labelledby="network-title">
+        <div class="card-heading"><span class="step" aria-hidden="true">01</span><h2 id="network-title">Rede e ICE</h2><span id="network-state" class="section-state" role="status" aria-live="polite">Aguardando teste</span></div>
+        <p>Abre um DataChannel, verifica o par ICE selecionado e mede RTT. Para testar NAT, use dispositivos em redes diferentes (por exemplo, fibra e hotspot).</p>
+        <div class="form-row">
+          <div class="field"><label for="hub-mode">Sinalização</label><select id="hub-mode"></select><span id="hub-help" class="field-help">Carregando configuração local…</span></div>
+          <div class="field"><label for="session-code">Código compartilhado</label><input id="session-code" autocomplete="off" autocapitalize="characters" maxlength="24" aria-describedby="session-help"><span id="session-help" class="field-help">Use o mesmo código nos dois peers. No modo remoto, digite-o no outro PC.</span></div>
+          <button id="generate-code" class="secondary" type="button">Gerar código</button>
+          <button id="local-pair" class="secondary" type="button" hidden>Abrir par local</button>
+          <button id="connect-test" type="button">Conectar e testar</button>
+          <button id="disconnect-test" class="secondary" type="button" disabled>Desconectar</button>
+        </div>
+        <div id="network-notice" class="notice" role="status" aria-live="polite">Local: abra um par em outra aba deste PC. Remoto: conecte PCs em redes diferentes com o mesmo código. O relay só sinaliza; mídia não passa por ele.</div>
+        <ul class="checks" aria-label="Etapas da rede">
+          <li><span>Sinalização</span><strong id="check-signaling">Aguardando</strong></li>
+          <li><span>Host candidates</span><strong id="check-host">0</strong></li>
+          <li><span>STUN / srflx</span><strong id="check-srflx">0</strong></li>
+          <li><span>TURN / relay</span><strong id="check-relay">Não detectado</strong></li>
+          <li><span>ICE</span><strong id="check-ice">Aguardando</strong></li>
+          <li><span>DataChannel</span><strong id="check-channel">Aguardando</strong></li>
+          <li><span>Rota selecionada</span><strong id="check-route">—</strong></li>
+          <li><span>ICE restart</span><strong id="check-restart">Não testado</strong></li>
+        </ul>
+        <div class="metrics">
+          <div class="metric"><span>Conexão ICE</span><strong id="connection-ms">—</strong></div>
+          <div class="metric"><span>RTT ICE</span><strong id="ice-rtt">—</strong></div>
+          <div class="metric"><span>Ping DataChannel</span><strong id="dc-rtt">—</strong></div>
+          <div class="metric"><span>Família / transporte</span><strong id="route-details">—</strong></div>
+        </div>
+        <div class="actions"><button id="restart-ice" class="secondary" type="button" disabled>Testar ICE restart</button><button id="copy-report" class="secondary" type="button">Copiar relatório sanitizado</button></div>
+      </section>
+
+      <section class="card" aria-labelledby="media-title">
+        <div class="card-heading"><span class="step" aria-hidden="true">02</span><h2 id="media-title">Mídia sem Discord</h2><span id="media-state" class="section-state" role="status" aria-live="polite">Aguardando conexão ICE</span></div>
+        <p>Use canvas sintético para testar encode/decode sem captura; use captura Rust para incluir o feed local `/ws`. O vídeo segue pelo WebRTC, não pelo relay.</p>
+        <div class="form-row">
+          <div class="field"><label for="media-preset">Perfil de captura</label><select id="media-preset"><option value="1280x720:30:2500000">720p · 30 FPS (início recomendado)</option><option value="1280x720:60:5000000">720p · 60 FPS</option><option value="1920x1080:30:6000000">1080p · 30 FPS</option><option value="1920x1080:60:9000000">1080p · 60 FPS</option></select></div>
+          <button id="send-synthetic" type="button" disabled>Enviar vídeo sintético</button>
+          <button id="send-rust-capture" class="secondary" type="button" disabled>Enviar captura Rust</button>
+          <button id="stop-media" class="secondary" type="button" disabled>Parar mídia</button>
+        </div>
+        <div class="grid-two">
+          <div><div class="video-label"><span>Vídeo recebido</span><span id="video-state">Nenhum frame</span></div><video id="remote-video" class="video-frame" autoplay muted playsinline aria-label="Vídeo de diagnóstico recebido pelo WebRTC"></video></div>
+          <div class="stats-box"><h3>Contadores da mídia</h3><div class="metrics">
+            <div class="metric"><span>Frames fonte</span><strong id="source-fps">—</strong></div>
+            <div class="metric"><span>Encode FPS</span><strong id="encode-fps">—</strong></div>
+            <div class="metric"><span>Decode FPS</span><strong id="decode-fps">—</strong></div>
+            <div class="metric"><span>Perda de pacotes</span><strong id="packets-lost">—</strong></div>
+          </div><p id="media-notice" class="notice">Conecte primeiro o DataChannel na etapa 01. A troca de qualidade aqui não altera a UI do Discord.</p></div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="e2e-title">
+        <div class="card-heading"><span class="step" aria-hidden="true">03</span><h2 id="e2e-title">Discord E2E</h2><span id="e2e-state" class="section-state" role="status" aria-live="polite">Monitor local</span></div>
+        <p>Esta página observa os eventos do bridge neste PC. Para validar a integração completa, mantenha os Discords conectados na mesma call e inicie/alterne a live pela UI nativa.</p>
+        <div id="e2e-notice" class="notice warn" role="status" aria-live="polite">Aguardando o bridge do Discord. Abra/recarregue o Discord depois de iniciar o Desjanjador.</div>
+        <div class="metrics">
+          <div class="metric"><span>Bridge(s) local(is)</span><strong id="bridge-count">0</strong></div>
+          <div class="metric"><span>Track anexada</span><strong id="e2e-track">—</strong></div>
+          <div class="metric"><span>Primeiro frame</span><strong id="e2e-frame">—</strong></div>
+          <div class="metric"><span>Última rota P2P</span><strong id="e2e-route">—</strong></div>
+        </div>
+        <div class="card-footer"><span class="field-help">`player-ok` agora só significa sucesso depois de um frame decodificado; track `live` isolada não conta.</span><button id="clear-e2e" class="secondary" type="button">Limpar eventos</button></div>
+        <div id="e2e-log" class="log" role="log" aria-live="polite"><span class="event-empty">Nenhum evento de Discord ainda.</span></div>
+      </section>
+    </div>
+
+    <p class="field-help" style="margin-top:18px">IP, endereços de candidate e credenciais de TURN não entram no relatório copiado. O código de sala é temporário; não reutilize um código de sessão antigo.</p>
+  </main>
+  <script src="/webrtc-test.js" defer></script>
+</body>
+</html>

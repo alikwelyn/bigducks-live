@@ -36,6 +36,21 @@ Rust + **Discord original**. Sem Activity, sem proxy, sem `*.discord.media`.
 O painel no outro cliente aparece sozinho. O **x** fecha nesta sessão
 (`Ctrl+R` no Discord reabre).
 
+### Iterar no diagnóstico WebRTC sem reiniciar o Discord
+
+Para desenvolvimento local, inicie uma vez:
+
+```powershell
+.\target\release\Desjanjador.exe --web-dev --no-install --no-restart --no-update
+```
+
+Com `--web-dev`, `/webrtc-test` e `/webrtc-test.js` são lidos do diretório `web/`
+do checkout a cada requisição. Edite os arquivos e recarregue a página com
+`Ctrl+F5`; não é preciso recompilar/reiniciar o Desjanjador nem reiniciar o
+Discord. `--no-install` e `--no-restart` evitam tocar na injeção ou reiniciar o
+Discord durante esse ciclo. O bridge precisa já estar instalado para os testes
+integrados com o Discord.
+
 ## Como cada peça foi resolvida
 
 ### Injeção (modelo Vencord)
@@ -104,10 +119,20 @@ está indo por P2P.
 | `src/capture.rs` | captura de tela + downscale |
 | `src/install.rs` | injeta/remove o stub no `app.asar` |
 
-## Limites honestos
+## Rede entre PCs
 
-- **Mesmo PC.** O hub é `ws://127.0.0.1:8791`. Para PCs diferentes ele precisa ser
-  alcançável pelos dois (o WebRTC/ICE já usa STUN público; falta o rendezvous).
+O hub local sinaliza ofertas e candidatos; o relay remoto também leva apenas
+sinalização. O vídeo usa WebRTC direto. Para redes cujo NAT/firewall bloqueia
+essa ligação direta, configure um servidor TURN acessível pelos dois clientes.
+No `%LOCALAPPDATA%\DiscordStream\remote-hub.txt`, mantenha URL/segredo na linha
+1 e sala na linha 2; a linha 3 opcional recebe os servidores ICE em JSON, por
+exemplo:
+
+```json
+[{"urls":"turn:turn.example.net:3478","username":"usuario","credential":"senha"}]
+```
+
+Sem TURN válido, STUN sozinho não garante conexão entre redes diferentes.
 - **Sem áudio** ainda.
 - O painel é uma janelinha sobre o Discord (levar para o `<video>` nativo do
   stream é o passo seguinte).
@@ -125,3 +150,20 @@ hub[1] <- {"type":"stats","data":{"frames":372}}
 
 `GET /test-publish?publisher=<id>` testa o P2P sem clique (um publica, o outro
 assiste). No console do Discord: `__BD_RS__.probe()`.
+
+O diagnóstico visual fica em `http://127.0.0.1:8791/webrtc-test` (também no
+menu da bandeja). Ele reúne três testes independentes:
+
+1. **Rede/ICE:** DataChannel com ping, rota ICE selecionada, STUN/TURN e ICE
+   restart. Para validar o loop local, selecione Local e clique em **Abrir par
+   local**: o app abre uma segunda aba com o mesmo código e conecta as duas. Isso
+   não mede NAT/Internet. Para testar NAT, selecione Relay nos dois PCs e use o
+   mesmo código em redes diferentes. O relay carrega sinalização, não mídia.
+2. **Mídia sem Discord:** canvas sintético testa WebRTC encode/decode. Captura
+   Rust usa a fonte/configuração atuais do motor e envia os frames ao outro peer;
+   não altere configurações enquanto uma live nativa estiver ativa.
+3. **Discord E2E:** monitor passivo dos eventos locais do bridge; ele diferencia
+   track anexada de primeiro frame realmente decodificado no player.
+
+O relatório copiado omite IPs, candidates crus, código de sessão e credenciais.
+Os logs do hub também resumem SDP/candidates sem registrar endereços de rede.

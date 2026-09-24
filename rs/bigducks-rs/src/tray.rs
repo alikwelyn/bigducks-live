@@ -28,9 +28,11 @@ struct TrayUi {
 /// Monta a bandeja do zero. Devolve o erro como `String` sem encerrar nada -
 /// quem chama decide o que fazer. Registra os ids desta montagem no handler
 /// global de cliques (a cada retentativa os ids mudam junto com o menu).
-fn build_tray(status: &Shared) -> Result<TrayUi, String> {
+fn build_tray(status: &Shared, port: u16) -> Result<TrayUi, String> {
     let menu = Menu::new();
+    let diagnostics = MenuItem::new("Diagnóstico de conexão", true, None);
     let view_log = MenuItem::new("Ver log", true, None);
+    let check_update = MenuItem::new("Verificar atualizações", true, None);
     // "Reiniciar Discord" tambem REINSTALA o bridge: pra quem recebeu o exe,
     // "reinstalar" e' detalhe interno - um item so' resolve os dois casos.
     let restart_discord = MenuItem::new("Reiniciar Discord", true, None);
@@ -38,7 +40,9 @@ fn build_tray(status: &Shared) -> Result<TrayUi, String> {
         CheckMenuItem::new("Iniciar com o Windows", true, autostart::is_enabled(), None);
     let quit = MenuItem::new("Sair", true, None);
     let _ = menu.append_items(&[
+        &diagnostics,
         &view_log,
+        &check_update,
         &PredefinedMenuItem::separator(),
         &restart_discord,
         &autostart_item,
@@ -72,7 +76,9 @@ fn build_tray(status: &Shared) -> Result<TrayUi, String> {
     let tray = builder.build().map_err(|error| error.to_string())?;
 
     // Handler de cliques: so' ids + status compartilhado (Send + Sync).
+    let diagnostics_id = diagnostics.id().clone();
     let log_id = view_log.id().clone();
+    let update_id = check_update.id().clone();
     let restart_id = restart_discord.id().clone();
     let autostart_id = autostart_item.id().clone();
     let quit_id = quit.id().clone();
@@ -80,8 +86,13 @@ fn build_tray(status: &Shared) -> Result<TrayUi, String> {
     let handler_status = status.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         let id = event.id();
-        if id == &log_id {
+        if id == &diagnostics_id {
+            platform::open_target(&format!("http://127.0.0.1:{port}/webrtc-test"));
+        } else if id == &log_id {
             platform::open_target(&logging::log_path().to_string_lossy());
+        } else if id == &update_id {
+            let status = handler_status.clone();
+            std::thread::spawn(move || crate::update::trigger_manual_check(&status));
         } else if id == &restart_id {
             let status = handler_status.clone();
             std::thread::spawn(move || restart_discord_app(status));
@@ -89,6 +100,7 @@ fn build_tray(status: &Shared) -> Result<TrayUi, String> {
             toggle_autostart(&handler_status);
         } else if id == &quit_id {
             crate::log_info!("bandeja: sair");
+            crate::logging::cleanup_logs();
             // Libera o mutex do guard ANTES de sair: um reinicio imediato do app
             // nao esbarra no mutex de uma instancia que ja esta morrendo.
             crate::single_instance::release();
@@ -109,10 +121,10 @@ fn build_tray(status: &Shared) -> Result<TrayUi, String> {
 /// `std::process::exit(0)` e o processo inteiro sumia em silencio. Agora o erro
 /// e' registrado ALTO e o app continua rodando "sem bandeja" (headless),
 /// tentando recriar o icone de tempo em tempo.
-pub fn run(status: Shared) {
+pub fn run(status: Shared, port: u16) {
     platform::create_balloon_window();
 
-    let mut ui = match build_tray(&status) {
+    let mut ui = match build_tray(&status, port) {
         Ok(ui) => {
             crate::log_info!("bandeja: icone criado (id Desjanjador)");
             Some(ui)
@@ -130,7 +142,7 @@ pub fn run(status: Shared) {
     platform::pump_messages(Duration::from_millis(2000), move || {
         if ui.is_none() && std::time::Instant::now() >= next_retry {
             next_retry = std::time::Instant::now() + Duration::from_secs(30);
-            match build_tray(&status) {
+            match build_tray(&status, port) {
                 Ok(fresh) => {
                     crate::log_info!("bandeja: icone criado na retentativa - seguindo normal");
                     ui = Some(fresh);

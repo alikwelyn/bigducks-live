@@ -78,6 +78,7 @@ const RELEASE_ASSET: &str = "Desjanjador.exe";
 /// O bridge do renderer servido pelo exe (o mesmo arquivo vai embutido no
 /// instalador, que o coloca em DiscordStream/bigducks_rs_renderer.js).
 const BRIDGE_JS: &str = include_str!("../web/renderer.js");
+const WEBRTC_TEST_JS: &str = include_str!("../web/webrtc-test.js");
 
 /// Plugins opcionais (bypass de Nitro etc). So e servido com `--nitro`: e patch
 /// de cliente, entao fica isolado do bridge de video, que e estavel.
@@ -134,6 +135,8 @@ struct AppState {
     max_height: u32,
     /// Modo relay: sem captura, so sinalizacao, e exige o segredo.
     relay: bool,
+    /// Serve os arquivos locais da pagina WebRTC em cada requisicao (dev).
+    web_dev_assets: bool,
     secret: String,
     /// Estado compartilhado com a bandeja/auto-update (so' usado no desktop).
     status: status::Shared,
@@ -164,6 +167,8 @@ struct Args {
     /// Diagnostico: sobe o app normalmente mas NAO reinicia o Discord sozinho.
     /// Serve para isolar o reinicio automatico do resto do app.
     no_restart: bool,
+    /// Lê HTML/JS do teste WebRTC do checkout, sem recompilar para cada ajuste.
+    web_dev: bool,
     release_dir: PathBuf,
 }
 
@@ -186,6 +191,7 @@ impl Default for Args {
             check_restart: false,
             restart_discord: false,
             no_restart: false,
+            web_dev: false,
             release_dir: default_release_dir(),
         }
     }
@@ -314,6 +320,11 @@ impl Args {
                 // reinicio automatico do resto do app (o processo sobe normal).
                 "--no-restart" => {
                     args.no_restart = true;
+                    i += 1;
+                }
+                // Servir a pagina de diagnostico diretamente do checkout local.
+                "--web-dev" => {
+                    args.web_dev = true;
                     i += 1;
                 }
                 // Marcador colocado pelo autostart; sem efeito proprio.
@@ -556,6 +567,7 @@ fn build_state(args: &Args, relay: bool) -> AppState {
         max_width: args.max_width,
         max_height: args.max_height,
         relay,
+        web_dev_assets: args.web_dev,
         secret: DEFAULT_SECRET.to_string(),
         status: status::shared(),
         release_dir: args.release_dir.clone(),
@@ -569,6 +581,9 @@ fn router(state: AppState) -> Router {
         .route("/hub", get(hub_handler))
         .route("/hub/{room}", get(hub_room_handler))
         .route("/bridge.js", get(bridge_js))
+        .route("/webrtc-test", get(webrtc_test_page))
+        .route("/webrtc-test.js", get(webrtc_test_js))
+        .route("/test-config", get(test_config))
         .route("/plugins.js", get(plugins_js))
         .route("/test-publish", get(test_publish))
         .route("/source", get(set_source))
@@ -652,6 +667,9 @@ fn run_restart_cli(args: &Args, report: Option<&install::InstallReport>) {
 fn desktop_main(args: Args, report: Option<install::InstallReport>) {
     let port = args.port;
     let state = build_state(&args, false);
+    if args.web_dev {
+        logging::write_line("web-dev: pagina de diagnostico lida do checkout em cada requisicao");
+    }
 
     if let Some(report) = &report {
         if let Ok(mut status) = state.status.lock() {
@@ -761,7 +779,7 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
     }
 
     // Bandeja na thread principal; bloqueia ate' "Sair".
-    tray::run(state.status.clone());
+    tray::run(state.status.clone(), port);
     logging::write_line("bandeja encerrada");
     // Fecha o mutex do guard antes de sair (o Windows tambem libera sozinho,
     // mas assim o "Sair" e' explicitamente limpo e o app reabre na hora).
@@ -782,6 +800,94 @@ async fn page(State(state): State<AppState>) -> impl IntoResponse {
         ).into_response();
     }
     Html(PAGE).into_response()
+}
+
+async fn webrtc_test_page(State(state): State<AppState>) -> axum::response::Response {
+    if state.relay {
+        return (StatusCode::NOT_FOUND, "diagnostico disponivel apenas no app local").into_response();
+    }
+    let page = web_test_asset(state.web_dev_assets, "webrtc-test.html", WEBRTC_TEST_PAGE);
+    (
+        [("cache-control", "no-store")],
+        Html(page),
+    )
+        .into_response()
+}
+
+async fn webrtc_test_js(State(state): State<AppState>) -> axum::response::Response {
+    if state.relay {
+        return (StatusCode::NOT_FOUND, "diagnostico disponivel apenas no app local").into_response();
+    }
+    let script = web_test_asset(state.web_dev_assets, "webrtc-test.js", WEBRTC_TEST_JS);
+    (
+        [
+            ("content-type", "application/javascript; charset=utf-8"),
+            ("cache-control", "no-store"),
+        ],
+        script,
+    )
+        .into_response()
+}
+
+/// Configuracao local usada pela pagina de diagnostico. A rota so existe no
+/// motor preso a 127.0.0.1; o relay publico nunca revela URL/segredo/ICE.
+async fn test_config(State(state): State<AppState>) -> axum::response::Response {
+    if state.relay {
+        return (StatusCode::NOT_FOUND, "configuracao indisponivel").into_response();
+    }
+
+    let config_path = install::data_dir().join("remote-hub.txt");
+    let contents = std::fs::read_to_string(config_path).unwrap_or_default();
+    let mut lines = contents.lines();
+    let mut hub_parts = lines.next().unwrap_or_default().split_whitespace();
+    let hub_url = hub_parts.next().unwrap_or_default();
+    let secret = hub_parts.next().unwrap_or_default();
+    let room = lines.next().unwrap_or_default().trim();
+    let ice_servers = lines
+        .next()
+        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|server| {
+            let Some(urls) = server.get("urls") else {
+                return false;
+            };
+            urls.is_string()
+                || urls
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(|item| item.is_string()))
+        })
+        .collect::<Vec<_>>();
+
+    let body = serde_json::json!({
+        "hubUrl": hub_url,
+        "secret": secret,
+        "room": room,
+        "iceServers": ice_servers,
+    });
+    (
+        [
+            ("content-type", "application/json; charset=utf-8"),
+            ("cache-control", "no-store"),
+        ],
+        body.to_string(),
+    )
+        .into_response()
+}
+
+const WEBRTC_TEST_PAGE: &str = include_str!("../web/webrtc-test.html");
+
+fn web_test_asset(dev_mode: bool, file_name: &str, embedded: &str) -> String {
+    if dev_mode {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("web")
+            .join(file_name);
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            return contents;
+        }
+    }
+    embedded.to_string()
 }
 
 async fn bridge_js() -> impl IntoResponse {
@@ -859,12 +965,14 @@ struct SourceQuery {
 /// metralhadora e ainda queima CPU a toa. Loga quando o conteudo MUDA ou, no
 /// maximo, a cada 30s por tipo.
 fn should_log_event(name: &str, data: &str) -> bool {
-    const NOISY: [&str; 5] = [
+    const NOISY: [&str; 7] = [
         "stats",
         "store-scan",
         "native-poll",
         "voice-room-diag",
         "probe",
+        "signaling",
+        "diag-signal",
     ];
     if !NOISY.contains(&name) {
         return true;
@@ -887,6 +995,84 @@ fn should_log_event(name: &str, data: &str) -> bool {
             guard.insert(name.to_string(), (now, data.to_string()));
             true
         }
+    }
+}
+
+/// Resumo de signaling para logs: SDP e candidates carregam IPs de rede.
+/// Registramos apenas tipo, protocolo e tamanho, nunca o endereco/candidate raw.
+fn safe_signaling_summary(text: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return "signaling type=invalid".to_string();
+    };
+    let kind = value
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let data = value.get("data").unwrap_or(&serde_json::Value::Null);
+    let signal_kind = if kind == "diag-signal" {
+        data.get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+    } else {
+        kind
+    };
+
+    if signal_kind == "ice" {
+        let candidate = if kind == "diag-signal" {
+            data.get("candidate")
+        } else {
+            value.get("candidate")
+        };
+        let candidate_text = candidate
+            .and_then(|candidate| candidate.get("candidate"))
+            .and_then(|candidate| candidate.as_str())
+            .unwrap_or_default();
+        let fields = candidate_text.split_whitespace().collect::<Vec<_>>();
+        let protocol = fields.get(2).copied().unwrap_or("unknown");
+        let candidate_type = fields
+            .iter()
+            .position(|field| *field == "typ")
+            .and_then(|index| fields.get(index + 1).copied())
+            .unwrap_or("end");
+        return format!("signaling type={kind} candidate={candidate_type} protocol={protocol}");
+    }
+
+    if signal_kind == "offer" || signal_kind == "answer" {
+        let sdp = if kind == "diag-signal" {
+            data.get("sdp")
+        } else {
+            value.get("sdp")
+        }
+        .and_then(|sdp| sdp.as_str())
+        .unwrap_or_default();
+        return format!("signaling type={kind} bytes={}", sdp.len());
+    }
+
+    format!("signaling type={kind}")
+}
+
+#[cfg(test)]
+mod signaling_log_tests {
+    use super::safe_signaling_summary;
+
+    #[test]
+    fn candidate_log_omits_ip_and_port() {
+        let summary = safe_signaling_summary(
+            r#"{"from":7,"type":"ice","candidate":{"candidate":"candidate:1 1 udp 2122260223 203.0.113.7 54012 typ srflx raddr 192.168.1.2 rport 54012"}}"#,
+        );
+        assert_eq!(summary, "signaling type=ice candidate=srflx protocol=udp");
+        assert!(!summary.contains("203.0.113.7"));
+        assert!(!summary.contains("54012"));
+    }
+
+    #[test]
+    fn diagnostic_sdp_log_only_keeps_size() {
+        let summary = safe_signaling_summary(
+            r#"{"from":8,"type":"diag-signal","data":{"kind":"offer","session":"TEMP-CODE","sdp":"c=IN IP4 203.0.113.9"}}"#,
+        );
+        assert_eq!(summary, "signaling type=diag-signal bytes=20");
+        assert!(!summary.contains("203.0.113.9"));
+        assert!(!summary.contains("TEMP-CODE"));
     }
 }
 
@@ -991,7 +1177,7 @@ async fn set_settings(
             guard.height = (((guard.height as f64 * scale) as u32).max(2)) & !1;
         }
         if let Some(fps) = query.fps {
-            guard.fps = fps.clamp(1, 60);
+            guard.fps = fps.clamp(1, 1000);
         }
         if let Some(bitrate) = query.bitrate {
             guard.bitrate = bitrate;
@@ -1046,8 +1232,13 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
+    logging::write_line("feed: cliente /ws conectado");
     start_capture(&state);
     let mut frames = state.frames.subscribe();
+    let mut first_frame_sent = false;
+    let mut sent_frames = 0u64;
+    let mut send_time_us = 0u128;
+    let mut send_stats_at = Instant::now();
     loop {
         tokio::select! {
             incoming = socket.recv() => {
@@ -1066,8 +1257,26 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         buffer.extend_from_slice(&frame.height.to_le_bytes());
                         buffer.extend_from_slice(&frame.timestamp_us.to_le_bytes());
                         buffer.extend_from_slice(&frame.data);
+                        let send_started = Instant::now();
                         if socket.send(Message::Binary(buffer.into())).await.is_err() {
                             break;
+                        }
+                        sent_frames += 1;
+                        send_time_us += send_started.elapsed().as_micros();
+                        if send_stats_at.elapsed() >= Duration::from_secs(10) {
+                            let seconds = send_stats_at.elapsed().as_secs_f64();
+                            logging::write_line(&format!(
+                                "feed: {:.1} fps enviados, send medio {:.1} ms",
+                                sent_frames as f64 / seconds,
+                                send_time_us as f64 / sent_frames.max(1) as f64 / 1000.0
+                            ));
+                            sent_frames = 0;
+                            send_time_us = 0;
+                            send_stats_at = Instant::now();
+                        }
+                        if !first_frame_sent {
+                            first_frame_sent = true;
+                            logging::write_line(&format!("feed: primeiro frame enviado ({}x{})", frame.width, frame.height));
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -1076,6 +1285,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             }
         }
     }
+    logging::write_line("feed: cliente /ws desconectado");
 }
 
 /// Hub LOCAL (`/hub`, mesma maquina): sem sala e sem segredo.
@@ -1136,18 +1346,28 @@ async fn handle_hub(mut socket: WebSocket, state: AppState, room: String) {
             message = socket.recv() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        // Loga o que os bridges mandam, mas corta payloads grandes
-                        // (SDP/ICE tem varios KB e poluem o terminal).
-                        let preview = if text.len() > 240 {
-                            let end = (0..=240)
-                                .rev()
-                                .find(|&i| text.is_char_boundary(i))
-                                .unwrap_or(0);
-                            format!("{}... (+{}B)", &text[..end], text.len() - end)
-                        } else {
-                            text.to_string()
-                        };
-                        logging::write_line(&format!("hub[{id}] <- {preview}"));
+                        let event_type = serde_json::from_str::<serde_json::Value>(&text)
+                            .ok()
+                            .and_then(|value| value.get("type").and_then(|kind| kind.as_str()).map(str::to_owned))
+                            .unwrap_or_default();
+                        let is_signaling = matches!(event_type.as_str(), "ice" | "answer" | "offer" | "diag-signal");
+                        if is_signaling {
+                            let summary = safe_signaling_summary(&text);
+                            if should_log_event("signaling", &summary) {
+                                logging::write_line(&format!("hub[{id}] <- {summary}"));
+                            }
+                        } else if should_log_event(&event_type, &text) {
+                            let preview = if text.len() > 240 {
+                                let end = (0..=240)
+                                    .rev()
+                                    .find(|&i| text.is_char_boundary(i))
+                                    .unwrap_or(0);
+                                format!("{}... (+{}B)", &text[..end], text.len() - end)
+                            } else {
+                                text.to_string()
+                            };
+                            logging::write_line(&format!("hub[{id}] <- {preview}"));
+                        }
                         let _ = state.hub.send(Arc::new(HubMessage {
                             from: id,
                             text: text.to_string(),
@@ -1277,18 +1497,37 @@ fn start_capture(state: &AppState) {
     let tx = state.frames.clone();
     let state_selection = state.selection.clone();
     let state_settings = state.settings.clone();
+    let capture_started = state.capture_started.clone();
     std::thread::spawn(move || {
-        let capturer = match Capturer::new() {
+        let mut capturer = match Capturer::new() {
             Ok(capturer) => capturer,
             Err(error) => {
                 logging::write_line(&format!("capture init failed: {error}"));
+                capture_started.store(false, Ordering::SeqCst);
                 return;
             }
         };
         let mut announced = (0u32, 0u32, 0u32);
         let mut consecutive_errors: u32 = 0;
         let mut last_error_log: Option<Instant> = None;
+        let mut empty_ticks: u32 = 0;
+        let mut first_frame_captured = false;
+        let mut captured_frames = 0u64;
+        let mut capture_time_us = 0u128;
+        let mut capture_stats_at = Instant::now();
         loop {
+            // Se nao ha nenhum cliente no /ws por mais de 2s, encerra o loop de captura
+            if tx.receiver_count() == 0 {
+                empty_ticks += 1;
+                if empty_ticks >= 60 {
+                    logging::write_line("capture: nenhum cliente no feed /ws - pausando captura");
+                    capture_started.store(false, Ordering::SeqCst);
+                    break;
+                }
+            } else {
+                empty_ticks = 0;
+            }
+
             let started = Instant::now();
             let settings = state_settings
                 .lock()
@@ -1306,8 +1545,15 @@ fn start_capture(state: &AppState) {
                 .lock()
                 .map(|guard| guard.clone())
                 .unwrap_or_default();
-            match capturer.capture(&selection, settings.width, settings.height) {
+            let capture_result = capturer.capture(&selection, settings.width, settings.height);
+            capture_time_us += started.elapsed().as_micros();
+            match capture_result {
                 Ok(data) => {
+                    captured_frames += 1;
+                    if !first_frame_captured {
+                        first_frame_captured = true;
+                        logging::write_line(&format!("capture: primeiro frame capturado ({} bytes)", data.len()));
+                    }
                     let timestamp_us = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_micros() as u64)
@@ -1345,6 +1591,17 @@ fn start_capture(state: &AppState) {
                 }
             }
             consecutive_errors = 0;
+            if capture_stats_at.elapsed() >= Duration::from_secs(10) {
+                let seconds = capture_stats_at.elapsed().as_secs_f64();
+                logging::write_line(&format!(
+                    "capture: {:.1} fps reais, captura media {:.1} ms",
+                    captured_frames as f64 / seconds,
+                    capture_time_us as f64 / captured_frames.max(1) as f64 / 1000.0
+                ));
+                captured_frames = 0;
+                capture_time_us = 0;
+                capture_stats_at = Instant::now();
+            }
             let elapsed = started.elapsed();
             if elapsed < interval {
                 std::thread::sleep(interval - elapsed);
@@ -1359,7 +1616,9 @@ const PAGE: &str = r#"<!doctype html>
 canvas{display:block;width:100vw;height:100vh;object-fit:contain}
 #bar{position:fixed;top:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:6px 10px;background:rgba(20,21,26,.92);font:12px/1 system-ui,sans-serif;color:#dbdee1;z-index:9}
 #bar button{all:unset;cursor:pointer;padding:5px 10px;border-radius:6px;background:#2b2d31;color:#dbdee1;font:12px system-ui,sans-serif}
+#bar a{cursor:pointer;padding:5px 10px;border-radius:6px;background:#3c4270;color:#fff;text-decoration:none;font:12px system-ui,sans-serif}
 #bar button:hover{background:#3c4270}
+#bar a:hover{background:#5865f2}
 #bar button.on{background:#5865f2;color:#fff}
 #state{margin-left:auto;color:#949ba4}
 </style>
@@ -1371,6 +1630,7 @@ canvas{display:block;width:100vw;height:100vh;object-fit:contain}
   <button data-w="1920" data-h="1080" data-fps="30" data-b="6000000">1080p30</button>
   <button data-w="1920" data-h="1080" data-fps="60" data-b="9000000">1080p60</button>
   <button data-w="2560" data-h="1440" data-fps="60" data-b="12000000">1440p60</button>
+  <a href="/webrtc-test">Diagnóstico WebRTC</a>
   <span id="state">(a UI do Discord muda isso ao vivo quando voce mexe no painel dela)</span>
 </div>
 <canvas id="screen"></canvas>

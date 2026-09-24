@@ -226,6 +226,10 @@ let lifecycleStarted = false;
 let pendingStop = null;
 
 function streamLifecycle(state) {
+  if (state === "start" && pendingStop) {
+    clearTimeout(pendingStop);
+    pendingStop = null;
+  }
   lifecycleStarted = state === "start" ? true : (state === "stop" ? false : lifecycleStarted);
   try {
     const request = http.get(
@@ -257,14 +261,14 @@ function detectStreamLifecycle(object, label) {
         }
         return;
       }
-      // width=0: so e stop se a live JA comecou - e mesmo assim aguarda
-      // CONFIRMACAO (3s sem volta de width>0). O zero da negociacao chega
-      // seguido de reconfiguracao em menos de um segundo.
-      if (was > 0 && lifecycleStarted && !pendingStop) {
+      // Discord can hold width=0 through a slow quality renegotiation. Keep
+      // the feed alive until that state has persisted for a full 30 seconds.
+      if (lifecycleStarted) {
+        if (pendingStop) clearTimeout(pendingStop);
         pendingStop = setTimeout(() => {
           pendingStop = null;
           streamLifecycle("stop");
-        }, 3000);
+        }, 30000);
       }
       return;
     }
@@ -274,6 +278,11 @@ function detectStreamLifecycle(object, label) {
 function sendSettings(object, label) {
   try {
     detectStreamLifecycle(object, label);
+    // As opcoes de transporte do espectador nao podem sobrescrever o FPS
+    // escolhido na UI de quem esta publicando a live.
+    if (label === "setTransportOptions" && !lifecycleStarted) return;
+    // width=0 e um estado transitorio na renegociacao, nao uma qualidade.
+    if (label === "setTransportOptions" && Number(object && object.encodingVideoWidth) === 0) return;
     const found = extractSettings(object, 0);
     const keys = Object.keys(found);
     if (!keys.length) return;
@@ -683,8 +692,9 @@ function nodeWebSocket(url) {
 
 // ------------------------------------------------- hub remoto (Fase 1) -----
 //
-// Le `DiscordStream/remote-hub.txt`: uma linha `<url> <sala>`, por exemplo
-//     wss://meu-relay.fly.dev/hub sala-do-alk
+// Le `DiscordStream/remote-hub.txt`: `<url> <segredo>` na linha 1, sala na
+// linha 2 e servidores ICE (JSON) opcionais na linha 3.
+//     [{"urls":"turn:turn.example.net:3478","username":"...","credential":"..."}]
 // Se o arquivo existir, o preload abre um WebSocket pro relay e faz ponte com o
 // hub local: o que este Discord manda vai pro outro PC e vice-versa. Passa SO
 // sinalizacao (offer/answer/ice - alguns KB); o video continua P2P, DTLS, sem
@@ -771,6 +781,35 @@ function bridgeRemoteHub() {
     return hubUrl + "/" + encodeURIComponent(effective) + (secret ? "?secret=" + encodeURIComponent(secret) : "");
   };
 
+  const seenOutbound = new Set();
+  const seenInbound = new Set();
+  function isDuplicateOutbound(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    if (seenOutbound.has(hash)) return true;
+    seenOutbound.add(hash);
+    if (seenOutbound.size > 200) {
+      const first = seenOutbound.values().next().value;
+      seenOutbound.delete(first);
+    }
+    return false;
+  }
+  function isDuplicateInbound(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    if (seenInbound.has(hash)) return true;
+    seenInbound.add(hash);
+    if (seenInbound.size > 200) {
+      const first = seenInbound.values().next().value;
+      seenInbound.delete(first);
+    }
+    return false;
+  }
+
   const sendLocal = (text) => { try { if (local && local.readyState === 1) local.send(text); } catch (_) {} };
   const sendRemote = (text) => { try { if (remote && remote.readyState === 1) remote.send(text); } catch (_) {} };
 
@@ -793,6 +832,10 @@ function bridgeRemoteHub() {
       const text = String(event.data || "");
       // remote-ready NAO atravessa: e sinal interno (id 900000 e fixo da ponte).
       if (text.indexOf('"remote-ready"') !== -1) return;
+      // PROTECAO CONTRA LOOP INFINITO: nunca enviar para o remoto mensagens
+      // que vieram do proprio remoto (prefixo 900000+) ou id 0 interno.
+      if (/^\{"from":(9\d{5}|0),/.test(text)) return;
+      if (isDuplicateOutbound(text)) return;
       bridgeStats.fromHub += 1;
       sendRemote(text);
     };
@@ -847,14 +890,18 @@ function bridgeRemoteHub() {
         report("hub-remoto", "welcome recebido via " + via + " (receive OK)");
         return;
       }
+      // NUNCA aceitar do remoto mensagens que ja tenham id de bridge (900000+)
+      if (/^\{"from":9\d{5},/.test(text)) return;
+      if (isDuplicateInbound(text)) return;
       bridgeStats.fromRemote += 1;
       seq += 1;
-      const rewritten = text.replace(/^\{"from":\d+,/, '{"from":' + (900000 + seq) + ",");
+      const rewritten = text.replace(/^\{"from":\d+,/, '{"from":' + (900000 + (seq % 99999)) + ",");
       bridgeStats.toHub += 1;
       sendLocal(rewritten);
     };
     socket.onclose = (e) => {
       if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = null; }
+      if (remote === socket) remote = null;
       remoteRetries += 1;
       reportStats("queda via " + via);
       report("hub-remoto-erro", "remoto caiu (code " + ((e && e.code) || "?") + ") via " + via + " - retry 5s");
@@ -868,6 +915,7 @@ function bridgeRemoteHub() {
   const connectRemote = () => {
     const url = remoteUrl();
     if (!url) return;
+    if (remote && (remote.readyState === 1 || remote.readyState === 0)) return;
     // DUAL-STACK com prova de vida: o WS manual do Node funcionou no node.exe
     // puro mas nunca foi PROVADO dentro do Electron; o do Chromium falhou em
     // silencio (erros engolidos - hoje nem sabemos se falhou). Comeca pelo
@@ -1120,7 +1168,17 @@ try {
     // O renderer precisa saber o pid da PROPRIA janela: e assim que ele
     // reconhece que o stream-start/start-stop e dele (as mensagens do ciclo de
     // vida viajam com o pid no data). Cada janela tem um processo = pid unico.
-    const preamble = "globalThis.__bdWinPid = " + JSON.stringify(String(process.pid)) + ";\n";
+    let iceServers = [];
+    try {
+      const config = fs.readFileSync(path.join(__dirname, "remote-hub.txt"), "utf8").split(/\r?\n/)[2] || "";
+      const parsed = JSON.parse(config);
+      if (Array.isArray(parsed)) {
+        iceServers = parsed.filter((server) => server && server.urls
+          && (typeof server.urls === "string" || Array.isArray(server.urls)));
+      }
+    } catch (_) {}
+    const preamble = "globalThis.__bdWinPid = " + JSON.stringify(String(process.pid)) + ";\n"
+      + "globalThis.__bdIceServers = " + JSON.stringify(iceServers) + ";\n";
     webFrame.executeJavaScript(preamble + source).catch((error) => {
       console.error("[bigducks-rs] renderer inject falhou:", error && error.message);
     });
@@ -1137,15 +1195,38 @@ function loadPlugins(webFrame) {
   const attempts = 24;
   let attempt = 0;
   let done = false;
+  // DIAGNOSTICO ALTO: antes, um fetch que falhava (motor fora do ar / porta
+  // fechada) era `request.on("error", () => {})` - MUDO. E um plugin que era
+  // buscado mas nunca patcheava terminava sem dizer nada. Os dois ficavam
+  // identicos a "nao aconteceu nada" no engine.log. Agora cada falha tem a sua
+  // linha `plugins-FALHOU`/`plugins-sem-patch`.
+  let gotHttp200 = false;
+  let scriptRan = false;
+  let lastError = "";
+  let failureReported = false;
+
+  const fail = (stage, detail) => {
+    if (failureReported) return; // uma linha clara basta (nao spamma por tentativa)
+    failureReported = true;
+    report("plugins-FALHOU", stage + ": " + detail + " | plugin NAO aplicado");
+  };
 
   const tryOnce = () => {
     if (done) return;
     attempt += 1;
-    const request = http.get("http://127.0.0.1:" + PORT + "/plugins.js", (response) => {
+    const url = "http://127.0.0.1:" + PORT + "/plugins.js";
+    const request = http.get(url, (response) => {
       if (response.statusCode !== 200) {
         response.resume();
-        return; // --nitro desligado: nao insiste
+        // 404 e' o `--nitro` desligado (documentado): fala uma vez, em voz baixa.
+        if (response.statusCode === 404) {
+          report("plugins-desligado", "GET /plugins.js -> HTTP 404 (motor sem --nitro)");
+        } else {
+          fail("GET /plugins.js", "HTTP " + response.statusCode);
+        }
+        return; // sem 200 nao insiste
       }
+      gotHttp200 = true;
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => { body += chunk; });
@@ -1156,6 +1237,7 @@ function loadPlugins(webFrame) {
         const probe = "\n; (window.__bdNitroState ? window.__bdNitroState.patched > 0 : false)";
         webFrame.executeJavaScript(body + probe)
           .then((patched) => {
+            scriptRan = true;
             if (patched) {
               done = true;
               report("plugins-ok", "patch aplicado na tentativa " + attempt);
@@ -1163,18 +1245,46 @@ function loadPlugins(webFrame) {
               report("plugins-injetados", "tentativa " + attempt + " (sem patch ainda)");
             }
           })
-          .catch((error) => report("plugins-erro", error && error.message));
+          .catch((error) => {
+            lastError = String((error && error.message) || error);
+            fail("executeJavaScript", lastError);
+          });
       });
     });
-    request.on("error", () => {});
-    request.setTimeout(2000, () => request.destroy());
+    // MOTOR FORA DO AR / PORTA 8791 FECHADA: era engolido aqui.
+    request.on("error", (error) => {
+      lastError = String((error && error.message) || error);
+      fail("GET " + url, lastError + " (o motor esta rodando? porta " + PORT + " livre?)");
+    });
+    request.on("timeout", () => {
+      lastError = "sem resposta em 2s";
+      fail("GET " + url, lastError);
+      request.destroy();
+    });
+    request.setTimeout(2000);
     // TIMING: o runtime do webpack aparece antes dos chunks com os modulos que a
     // gente precisa (327649, 405916, 158045, 248174). Com retry de 6s a gente
     // chegava na tentativa 2 e eles JA tinham executado ("TARDE" no log). Agora
     // as primeiras tentativas sao rapidas (~150ms) pra pegar o runtime no ar e
     // hookar o push ANTES desses chunks - depois desacelera.
     const delay = attempt < 40 ? 150 : 6000;
-    if (!done && attempt < attempts) setTimeout(tryOnce, delay);
+    if (!done && attempt < attempts) {
+      setTimeout(tryOnce, delay);
+    } else if (!done) {
+      // Fim das tentativas sem "patch aplicado": o log TEM que dizer o que houve.
+      setTimeout(() => {
+        if (done) return;
+        if (scriptRan) {
+          // O caso "silencioso": o script RODOU mas nenhum portao casou nesta
+          // build. E' diferente de "nunca chegou".
+          report("plugins-sem-patch", "script rodou em " + attempt + " tentativa(s) mas "
+            + "window.__bdNitroState.patched=0 (nenhum portao casou nesta build)");
+        } else {
+          fail("plugin nunca rodou", "http200=" + gotHttp200 + " scriptRodou=" + scriptRan
+            + " ultimoErro=" + (lastError || "nenhum"));
+        }
+      }, 2500);
+    }
   };
 
   tryOnce();

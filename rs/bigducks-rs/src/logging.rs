@@ -15,10 +15,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-/// Tamanho maximo de cada arquivo de log.
-const MAX_BYTES: u64 = 2 * 1024 * 1024;
-/// Quantos arquivos manter no total (engine.log + .1 + .2).
-const MAX_FILES: usize = 3;
+/// Tamanho maximo de cada arquivo de log (512 KB mantem o disco limpo).
+const MAX_BYTES: u64 = 512 * 1024;
+/// Quantos arquivos manter no total (engine.log + .1).
+const MAX_FILES: usize = 2;
 
 struct Logger {
     path: PathBuf,
@@ -40,8 +40,18 @@ pub fn log_path() -> PathBuf {
     data_dir().join("engine.log")
 }
 
+/// Limpa arquivos de log antigos/rotacionados para nao acumular no disco.
+pub fn cleanup_logs() {
+    let base = log_path();
+    for i in 1..=5 {
+        let old = PathBuf::from(format!("{}.{}", base.display(), i));
+        let _ = fs::remove_file(old);
+    }
+}
+
 /// Liga o log em arquivo. Idempotente. `console` so controla a copia no terminal.
 pub fn init(console: bool) {
+    cleanup_logs();
     let path = log_path();
     let _ = fs::create_dir_all(data_dir());
     let file = OpenOptions::new().create(true).append(true).open(&path).ok();

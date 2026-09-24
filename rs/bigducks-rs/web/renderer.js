@@ -16,7 +16,10 @@
 
   const HUB = 'ws://127.0.0.1:8791/hub';
   const FEED = 'ws://127.0.0.1:8791/ws';
-  const ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const ICE = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
   const VIDEO_GUARD = '2026-08-video-guard';
   const log = (...args) => console.log('[bd-rs]', ...args);
 
@@ -31,6 +34,8 @@
   const peers = new Map();          // ufrag -> { pc, from|null, answered, sdp, viewerUfrag }
   const answeredUfrags = new Map(); // viewer: ufrag -> answer sdp (dedupe)
   const pendingIce = new Map();     // ufrag do viewer -> candidates antes do answer
+  const pendingViewerIce = new Map(); // ufrag do publicador -> candidates antes da oferta
+  let activeOfferUfrag = null;
   const MAX_PEERS = 8;
   function extractUfrag(sdp) {
     const m = typeof sdp === 'string' ? sdp.match(/a=ice-ufrag:(\S+)/) : null;
@@ -47,6 +52,15 @@
     const m = String(candidate.candidate || '').match(/ ufrag (\S+)/);
     return m ? m[1] : null;
   }
+  function queueIceCandidate(queueByUfrag, ufrag, candidate) {
+    if (!ufrag || !candidate) return;
+    const queue = queueByUfrag.get(ufrag) || [];
+    if (queue.length < 128) queue.push(candidate);
+    queueByUfrag.set(ufrag, queue);
+    while (queueByUfrag.size > 8) {
+      queueByUfrag.delete(queueByUfrag.keys().next().value);
+    }
+  }
   let publishing = null;      // MediaStream vindo do Discord
   let receiving = null;       // MediaStream recebido (P2P)
   let p2pReceiving = false;
@@ -59,6 +73,8 @@
   let feedCtx = null;
   let frames = 0;
   let rendered = false;
+  let receivingHasFrame = false;
+  const observedFrameStreams = new WeakMap();
   let decoding = false;
   let paused = false;
   let unlockTries = 0;
@@ -356,10 +372,25 @@
   // Tenta esconder o aviso de erro (2012) que fica por cima do player.
   function hideStreamError(video) {
     try {
-      let container = video;
-      for (let i = 0; i < 4 && container.parentElement; i += 1) container = container.parentElement;
-      const pattern = /2012|n[aã]o foi poss[ií]vel|tente novamente|algo deu errado|n[aã]o consegui|conex[aã]o perdida/i;
+      let container = video || document.body;
+      if (video && video.parentElement) {
+        container = video;
+        for (let i = 0; i < 6 && container.parentElement; i += 1) container = container.parentElement;
+      }
+      const pattern = /2012|n[aã]o foi poss[ií]vel|tente novamente|algo deu errado|n[aã]o consegui|conex[aã]o perdida|unable to load|something went wrong|stream error/i;
       let hidden = 0;
+
+      // 1. Classes diretas do Discord que montam o card de streamError
+      for (const node of container.querySelectorAll('[class*="streamError"], [class*="overlayTitle"], [class*="tileChild"] > [class*="flex"]')) {
+        if (node === video || node.contains(video)) continue;
+        const text = node.textContent || "";
+        if (pattern.test(text)) {
+          node.style.display = "none";
+          hidden += 1;
+        }
+      }
+
+      // 2. Busca por elementos textuais
       for (const node of container.querySelectorAll("div,span,p,h1,h2,h3,button")) {
         if (node === video || node.contains(video)) continue;
         let own = "";
@@ -368,7 +399,8 @@
         }
         if (!own.trim() || !pattern.test(own)) continue;
         let target = node;
-        for (let i = 0; i < 3 && target.parentElement && target.parentElement !== container; i += 1) {
+        for (let i = 0; i < 4 && target.parentElement && target.parentElement !== container; i += 1) {
+          if (target.parentElement.contains(video)) break;
           target = target.parentElement;
         }
         target.style.display = "none";
@@ -427,68 +459,84 @@
   // O que sobra aqui: esconder o texto de erro, se ele aparecer.
   function coverWithVideo(target) {
     if (!target) return false;
-    hideStreamError(target);
-    reportOnce("player-ok", { width: target.videoWidth });
+    if (receivingHasFrame) {
+      hideStreamError(target);
+      reportOnce("player-ok", { width: target.videoWidth, height: target.videoHeight });
+    } else {
+      reportOnce("player-attached", { width: Math.round(target.getBoundingClientRect().width) });
+    }
     return true;
+  }
+
+
+  function markFirstDecodedFrame(video, stream, metadata) {
+    if (receiving !== stream || video.srcObject !== stream) return;
+    receivingHasFrame = true;
+    const detail = {
+      width: video.videoWidth,
+      height: video.videoHeight,
+      mediaTime: metadata && Number.isFinite(metadata.mediaTime)
+        ? Number(metadata.mediaTime.toFixed(2))
+        : Number(video.currentTime.toFixed(2)),
+    };
+    reportOnce("video-first-frame", detail);
+    if (video === injectedVideo) {
+      hideStreamError(video);
+      reportOnce("player-ok", { width: video.videoWidth, height: video.videoHeight });
+    }
   }
 
 
   // Diz se o video esta REALMENTE tocando (e nao so com srcObject setado).
   function reportVideoHealth(video) {
-    setTimeout(() => {
-      try {
-        reportOnce("video-health", {
-          readyState: video.readyState,
-          paused: video.paused,
-          width: video.videoWidth,
-          height: video.videoHeight,
-          time: Number(video.currentTime.toFixed(2)),
-        });
-      } catch {}
-    }, 1500);
+    const stream = receiving;
+    if (!stream) return;
+    for (const afterMs of [1500, 5000, 10000]) {
+      setTimeout(() => {
+        try {
+          reportOnce("video-health", {
+            afterMs,
+            readyState: video.readyState,
+            paused: video.paused,
+            width: video.videoWidth,
+            height: video.videoHeight,
+            time: Number(video.currentTime.toFixed(2)),
+          });
+        } catch {}
+      }, afterMs);
+    }
+    if (typeof video.requestVideoFrameCallback === 'function'
+      && observedFrameStreams.get(video) !== stream) {
+      observedFrameStreams.set(video, stream);
+      video.requestVideoFrameCallback((_, metadata) => markFirstDecodedFrame(video, stream, metadata));
+    } else if (typeof video.requestVideoFrameCallback !== 'function'
+      && observedFrameStreams.get(video) !== stream) {
+      observedFrameStreams.set(video, stream);
+      const detectDecodedFrame = () => {
+        if (receiving !== stream || video.srcObject !== stream) return;
+        if (video.readyState >= 2 && video.videoWidth > 0 && !video.paused) {
+          markFirstDecodedFrame(video, stream, null);
+        } else {
+          requestAnimationFrame(detectDecodedFrame);
+        }
+      };
+      requestAnimationFrame(detectDecodedFrame);
+    }
   }
 
   // ------------------------------------------------------------- painel ----
 
   function ensurePanel() {
-    if (panel || !document.body) return;
-    panel = document.createElement('div');
-    panel.style.cssText = [
-      'position:fixed', 'right:18px', 'bottom:88px',
-      'width:520px', 'height:320px', 'min-width:240px', 'min-height:150px',
-      'z-index:2147483646', 'background:#000', 'border:1px solid #2b2d31',
-      'border-radius:10px', 'overflow:hidden', 'resize:both',
-      'box-shadow:0 12px 40px rgba(0,0,0,.65)',
-    ].join(';');
-
-    const bar = document.createElement('div');
-    bar.style.cssText = 'height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 4px 0 10px;background:#1e1f22;color:#dbdee1;font:12px/1 system-ui,sans-serif;cursor:move;user-select:none';
-    const title = document.createElement('span');
-    title.textContent = 'bigducks-rs';
-    const close = document.createElement('button');
-    close.textContent = 'x';
-    close.style.cssText = 'all:unset;cursor:pointer;padding:2px 8px;border-radius:4px;color:#dbdee1';
-    close.addEventListener('click', () => closePanel());
-    bar.appendChild(title);
-    bar.appendChild(close);
-
-    videoEl = document.createElement('video');
-    videoEl.autoplay = true;
-    videoEl.muted = true;
-    videoEl.playsInline = true;
-    videoEl.style.cssText = 'width:100%;height:calc(100% - 28px);object-fit:contain;background:#000;display:block';
-
-    panel.appendChild(bar);
-    panel.appendChild(videoEl);
-    document.body.appendChild(panel);
+    // DESATIVADO: a janelinha flutuante foi removida.
+    // O stream vai exclusivamente para o player nativo do Discord.
   }
 
   function showFeed(stream) {
+    if (receiving !== stream) receivingHasFrame = false;
     receiving = stream;
-    ensurePanel();
-    if (videoEl) { videoEl.srcObject = stream; videoEl.play().catch(() => {}); }
     rendered = true;
-    report('rendered', { source: 'feed' });
+    report('rendered', { source: 'feed', state: 'track-attached' });
+    tryInjectNative();
   }
 
   // ------------------------------------------------- hook no srcObject -----
@@ -625,7 +673,7 @@
       for (const video of document.querySelectorAll('video')) {
         const rect = video.getBoundingClientRect();
         const area = rect.width * rect.height;
-        if (rect.width < 320 || rect.height < 200) continue;
+        if (rect.width < 100 || rect.height < 100) continue;
         if (area > bestArea) { bestArea = area; best = video; }
       }
     } catch {}
@@ -660,39 +708,30 @@
     panel.remove();
     panel = null;
     videoEl = null;
-    // reportOnce: o caminho antigo reportava TODA chamada - com o ciclo de vida
-    // reaberto o hide entrava em loop e o spam enchia o broadcast do hub
-    // (buffer 64), derrubando answer/ICE reais por lag.
     reportOnce("panel-hidden", {});
   }
 
   function showPanel(stream) {
-    ensurePanel();
-    if (videoEl) {
-      videoEl.srcObject = stream;
-      videoEl.play().catch(() => {});
-    }
+    tryInjectNative();
     rendered = true;
   }
 
   function showStream(stream, source) {
+    if (receiving !== stream) receivingHasFrame = false;
     p2pReceiving = true;
     receiving = stream;
     rendered = true;
-    report('rendered', { source });
+    report('rendered', { source, state: 'track-attached' });
     log('stream de', source, '- aguardando o player do Discord');
     installSrcObjectHook();
-    // O usuario precisa clicar na live para o Discord montar o <video>; damos
-    // alguns segundos de chance e so entao caímos na janelinha.
+    tryInjectNative();
     let tries = 0;
     const timer = setInterval(() => {
       tries += 1;
-      if (injectedVideo || tries >= 10) {
+      if (injectedVideo || tries >= 20) {
         clearInterval(timer);
-        if (!injectedVideo) {
-          log('player nativo nao encontrado; usando a janelinha');
-          showPanel(stream);
-        }
+      } else {
+        tryInjectNative();
       }
     }, 500);
   }
@@ -715,14 +754,18 @@
   function ensureFeedTrack() {
     if (feedTrack) return feedTrack;
     try {
-      if (typeof MediaStreamTrackGenerator === 'function') {
-        feedTrack = new MediaStreamTrackGenerator({ kind: 'video' });
-        feedWriter = feedTrack.writable.getWriter();
-      } else {
-        feedCanvas = document.createElement('canvas');
-        feedCtx = feedCanvas.getContext('2d', { alpha: false });
-        feedTrack = feedCanvas.captureStream(30).getVideoTracks()[0];
-      }
+      // A trilha precisa continuar entregando quadros enquanto o WebRTC a le.
+      // MediaStreamTrackGenerator.write() pode ficar pendente neste Electron;
+      // captureStream acompanha o canvas sem bloquear o handler do WebSocket.
+      feedCanvas = document.createElement('canvas');
+      feedCtx = feedCanvas.getContext('2d', { alpha: false });
+      if (!feedCtx) throw new Error('canvas 2D indisponivel');
+      // Um quadro da trilha para cada quadro recebido; o teto vem da UI nativa.
+      feedTrack = feedCanvas.captureStream(0).getVideoTracks()[0];
+      if (!feedTrack) throw new Error('captureStream sem trilha de video');
+      feedTrack.onmute = () => report('feed-track', { state: 'muted' });
+      feedTrack.onunmute = () => report('feed-track', { state: 'unmuted' });
+      report('feed-track', { state: 'created', label: feedTrack.label });
     } catch (error) {
       log('track falhou', error);
       return null;
@@ -735,10 +778,15 @@
     if (feedSocket && feedSocket.readyState <= 1) return;
     feedSocket = new WebSocket(FEED);
     feedSocket.binaryType = 'arraybuffer';
-    feedSocket.onclose = () => setTimeout(connectFeed, 3000);
-    feedSocket.onerror = () => {};
+    feedSocket.onopen = () => report('feed-socket', { state: 'open' });
+    feedSocket.onclose = (event) => {
+      report('feed-socket', { state: 'closed', code: event.code });
+      setTimeout(connectFeed, 3000);
+    };
+    feedSocket.onerror = () => report('feed-socket', { state: 'error' });
     feedSocket.onmessage = async (event) => {
-      if (decoding || p2pReceiving) return; // P2P tem prioridade
+      if (decoding) return;
+      if (p2pReceiving && !publishing && !feedPublishing) return; // P2P tem prioridade apenas para quem recebe
       decoding = true;
       try {
         const buffer = event.data;
@@ -747,6 +795,7 @@
         const height = view.getUint32(4, true);
         const timestamp = Number(view.getBigUint64(8, true));
         const pixels = new Uint8Array(buffer.slice(16));
+        if (pixels.byteLength !== width * height * 4) throw new Error('frame RGBA incompleto');
         if (!ensureFeedTrack()) return;
         if (feedWriter) {
           const frame = new VideoFrame(pixels, { format: 'RGBA', codedWidth: width, codedHeight: height, timestamp });
@@ -758,13 +807,16 @@
             feedCanvas.height = height;
           }
           feedCtx.putImageData(new ImageData(new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength), width, height), 0, 0);
+          feedTrack.requestFrame();
         }
         if (!rendered && !feedPublishing) {
           showFeed(new MediaStream([feedTrack]));
         }
         frames += 1;
+        if (frames === 1) report('feed-first-frame', { width, height, bytes: pixels.byteLength });
       } catch (error) {
         log('frame falhou', error);
+        reportOnce('feed-frame-failed', { error: String((error && error.message) || error).slice(0, 120) });
       }
       decoding = false;
     };
@@ -1710,6 +1762,7 @@
       if (message.type === 'welcome') {
         const previousHubId = hubId;
         hubId = message.id;
+        report('bridge-ready', { client: 'discord' });
         // A identidade do hub mudou (reconexao / troca de servico de voz): o
         // override do APEX pode ter sido resetado e o botao do Go Live travado
         // de novo. Re-arma o latch - o poll de 2s ja chama unlock() de novo
@@ -1799,7 +1852,7 @@
   async function applyBitrate(bitrate, fps) {
     if (!bitrate || bitrate < 100_000) return;
     streamBitrate = bitrate;
-    if (fps && fps > 0) streamFps = Math.min(120, Math.round(fps));
+    if (fps && fps > 0) streamFps = Math.min(1000, Math.round(fps));
     try {
       const targets = new Set();
       if (peer && typeof peer.getSenders === "function") targets.add(peer);
@@ -1868,11 +1921,14 @@
     if (message.type === 'offer') {
       await acceptOffer(message.sdp);
     } else if (message.type === 'answer') {
-      // Mesh: casa o answer com o peer dono da oferta. O viewer ecoa o ufrag da
-      // oferta (a=x-bd-offer-ufrag:); sem eco (viewer antigo), casa pelo from ou
-      // pelo primeiro peer aberto. Answers de outros espectadores caem fora.
-      const ufrag = extractOfferUfrag(message.sdp);
+      // O identificador de roteamento fica fora do SDP. Versoes antigas o
+      // anexavam como atributo no fim; Chromium rejeita esse SDP malformado.
+      const ufrag = message.offerUfrag || extractOfferUfrag(message.sdp);
       let entry = ufrag ? peers.get(ufrag) : null;
+      if (!entry && ufrag) {
+        report('stale-answer', { ufrag });
+        return;
+      }
       if (!entry) {
         for (const e of peers.values()) {
           if (e.answered) continue;
@@ -1884,8 +1940,11 @@
       }
       if (entry && !entry.answered) {
         try {
-          await entry.pc.setRemoteDescription({ type: 'answer', sdp: message.sdp });
+          const cleanSdp = message.sdp.replace(/\r?\na=x-bd-offer-ufrag:[^\r\n]*(?=\r?\n|$)/g, '');
+          await entry.pc.setRemoteDescription({ type: 'answer', sdp: cleanSdp });
           entry.answered = true;
+          if (message.from) entry.from = message.from;
+          report('answer-accepted', { ufrag: ufrag || 'none' });
           // No answer, a=ice-ufrag: e o ufrag DO VIEWER - chaveia os ICE dele.
           entry.viewerUfrag = extractUfrag(message.sdp);
           const pending = pendingIce.get(entry.viewerUfrag) || [];
@@ -1893,19 +1952,36 @@
           for (const c of pending) { try { await entry.pc.addIceCandidate(c); } catch {} }
         } catch (error) {
           log('answer falhou', String(error).slice(0, 120));
+          reportOnce('answer-failed', { error: String(error).slice(0, 250) });
         }
       }
     } else if (message.type === 'ice') {
-      // Roteia o candidato para o peer do viewer (answer pode chegar depois;
-      // pendentes entram quando o answer chegar).
       const ufrag = candidateUfrag(message.candidate);
+      // O viewer recebe os candidatos do publicador, que usam o ufrag da oferta.
+      // Eles podem chegar antes do setRemoteDescription terminar.
+      if (!publishing) {
+        if (!peer || !peer.remoteDescription || (ufrag && activeOfferUfrag && ufrag !== activeOfferUfrag)) {
+          queueIceCandidate(pendingViewerIce, ufrag || activeOfferUfrag, message.candidate);
+          return;
+        }
+        try {
+          await peer.addIceCandidate(message.candidate);
+        } catch (error) {
+          reportOnce('viewer-ice-failed', {
+            ufrag: ufrag || activeOfferUfrag || 'none',
+            error: String((error && error.message) || error).slice(0, 120),
+          });
+        }
+        return;
+      }
+
+      // O publicador roteia candidatos de cada viewer pelo ufrag enviado na answer.
       let target = null;
       for (const e of peers.values()) {
         if (e.viewerUfrag && ufrag && e.viewerUfrag === ufrag) { target = e; break; }
       }
       if (!target) {
-        if (!pendingIce.has(ufrag)) pendingIce.set(ufrag, []);
-        if (ufrag) pendingIce.get(ufrag).push(message.candidate);
+        queueIceCandidate(pendingIce, ufrag, message.candidate);
       } else if (message.candidate) {
         try { await target.pc.addIceCandidate(message.candidate); } catch {}
       }
@@ -1946,11 +2022,100 @@
   // ----------------------------------------------------------- webrtc ------
 
   function createPeer() {
-    const pc = new RTCPeerConnection({ iceServers: ICE });
+    const configuredIce = Array.isArray(globalThis.__bdIceServers)
+      ? globalThis.__bdIceServers.filter((server) => server && server.urls)
+      : [];
+    const pc = new RTCPeerConnection({ iceServers: [...ICE, ...configuredIce] });
     pc.onicecandidate = (event) => { if (event.candidate) send({ type: 'ice', candidate: event.candidate }); };
-    pc.ontrack = (event) => showStream(event.streams[0] || new MediaStream([event.track]), 'p2p');
-    pc.onconnectionstatechange = () => log('peer', pc.connectionState);
+    pc.ontrack = (event) => {
+      report('p2p-track', {
+        kind: event.track.kind,
+        readyState: event.track.readyState,
+        muted: event.track.muted,
+      });
+      showStream(event.streams[0] || new MediaStream([event.track]), 'p2p');
+    };
+    pc.onconnectionstatechange = () => {
+      log('peer', pc.connectionState);
+      report('p2p-state', {
+        connection: pc.connectionState,
+        ice: pc.iceConnectionState,
+        signaling: pc.signalingState,
+      });
+    };
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      report('p2p-ice-state', { state });
+      if (state === 'connected' || state === 'completed' || state === 'failed') {
+        reportIcePath(pc, state);
+      }
+      if (state !== 'failed') return;
+
+      const publisherEntry = Array.from(peers.values()).find((entry) => entry.pc === pc);
+      if (publisherEntry && publishing) {
+        void restartPublisherPeer(publisherEntry);
+      } else if (peer === pc && !publishing && !pc.__bdOfferRetryRequested) {
+        pc.__bdOfferRetryRequested = true;
+        send({ type: 'request-offer' });
+      }
+    };
     return pc;
+  }
+
+  async function reportIcePath(pc, phase) {
+    try {
+      const stats = await pc.getStats();
+      const pairs = Array.from(stats.values()).filter((item) => item.type === 'candidate-pair');
+      const pair = pairs.find((item) => item.state === 'succeeded' && (item.nominated || item.selected))
+        || pairs.find((item) => item.state === 'succeeded')
+        || pairs.find((item) => item.state === 'in-progress')
+        || pairs.find((item) => item.state === 'failed');
+      const local = pair && stats.get(pair.localCandidateId);
+      const remote = pair && stats.get(pair.remoteCandidateId);
+      report('p2p-path', {
+        phase,
+        pair: pair ? pair.state : 'none',
+        nominated: !!(pair && (pair.nominated || pair.selected)),
+        localType: local && local.candidateType || 'unknown',
+        remoteType: remote && remote.candidateType || 'unknown',
+        protocol: local && local.protocol || remote && remote.protocol || 'unknown',
+        rttMs: pair && Number.isFinite(pair.currentRoundTripTime)
+          ? Math.round(pair.currentRoundTripTime * 1000) : null,
+        sentBytes: pair && Number.isFinite(pair.bytesSent) ? pair.bytesSent : 0,
+        receivedBytes: pair && Number.isFinite(pair.bytesReceived) ? pair.bytesReceived : 0,
+      });
+    } catch {}
+  }
+
+  async function restartPublisherPeer(entry) {
+    if (!publishing || !entry || entry.restarting || entry.iceRestarts >= 1
+      || entry.pc.connectionState === 'closed') return;
+    entry.restarting = true;
+    const oldUfrag = entry.localUfrag;
+    try {
+      entry.pc.restartIce();
+      const offer = await entry.pc.createOffer();
+      await entry.pc.setLocalDescription(offer);
+      const newUfrag = extractUfrag(entry.pc.localDescription && entry.pc.localDescription.sdp);
+      if (!newUfrag) throw new Error('ICE restart sem ufrag');
+      if (oldUfrag) peers.delete(oldUfrag);
+      entry.localUfrag = newUfrag;
+      entry.sdp = entry.pc.localDescription.sdp;
+      entry.answered = false;
+      entry.viewerUfrag = null;
+      entry.iceRestarts += 1;
+      peers.set(newUfrag, entry);
+      send({ type: 'offer', sdp: entry.sdp });
+      report('p2p-ice-restart', { attempt: entry.iceRestarts, result: 'offer-sent' });
+    } catch (error) {
+      report('p2p-ice-restart', {
+        attempt: entry.iceRestarts || 1,
+        result: 'failed',
+        error: String((error && error.message) || error).slice(0, 120),
+      });
+    } finally {
+      entry.restarting = false;
+    }
   }
 
   function hasLiveViewerPeer() {
@@ -1972,7 +2137,7 @@
           pc.addTransceiver(track, {
             direction: "sendonly",
             streams: [stream],
-            sendEncodings: [{ maxBitrate: streamBitrate, maxFramerate: Math.min(120, streamFps || 30) }],
+            sendEncodings: [{ maxBitrate: streamBitrate, maxFramerate: streamFps || 30 }],
           });
         } catch { pc.addTrack(track, stream); }
       } else {
@@ -1999,6 +2164,10 @@
     // viewer responde com a mesma answer sem resetar nada).
     for (const entry of peers.values()) {
       if (entry.from !== null && from !== null && String(entry.from) === String(from)) {
+        if (entry.pc.iceConnectionState === 'failed') {
+          void restartPublisherPeer(entry);
+          return;
+        }
         if (!entry.answered && entry.pc.connectionState !== 'closed') {
           send({ type: 'offer', sdp: entry.sdp });
         }
@@ -2026,7 +2195,15 @@
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     const ufrag = extractUfrag(pc.localDescription.sdp);
-    if (ufrag) peers.set(ufrag, { pc, from: from || null, answered: false, sdp: pc.localDescription.sdp });
+    if (ufrag) peers.set(ufrag, {
+      pc,
+      from: from || null,
+      answered: false,
+      sdp: pc.localDescription.sdp,
+      localUfrag: ufrag,
+      iceRestarts: 0,
+      restarting: false,
+    });
     if (!peer) peer = pc;
     send({ type: 'offer', sdp: pc.localDescription.sdp });
   }
@@ -2036,26 +2213,41 @@
     try { if (feedSocket) feedSocket.close(); } catch {}
     feedSocket = null;
     const ufrag = extractUfrag(sdp);
-    // Oferta repetida (mesmo ufrag): re-responde com a MESMA answer sem tocar
-    // no peer - reconectar de novo zeraria frames e reativava o loop.
+    // Oferta repetida (mesmo ufrag): ja respondemos, reenvia a answer salva se existir
     if (ufrag && answeredUfrags.has(ufrag)) {
-      send({ type: 'answer', sdp: answeredUfrags.get(ufrag) });
+      const cached = answeredUfrags.get(ufrag);
+      if (cached) send({ type: 'answer', sdp: cached, offerUfrag: ufrag });
       return;
     }
-    if (peer) { try { peer.close(); } catch {} }
-    peer = createPeer();
-    await peer.setRemoteDescription({ type: 'offer', sdp });
-    const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    // Eco do ufrag da oferta: o publisher mesh casa o answer com o peer certo
-    // (o a=ice-ufrag: do answer e o ufrag DO VIEWER, inutil para rotear).
-    const answerSdp = ufrag
-      ? peer.localDescription.sdp + '\r\na=x-bd-offer-ufrag:' + ufrag
-      : peer.localDescription.sdp;
-    send({ type: 'answer', sdp: answerSdp });
-    if (ufrag) {
-      answeredUfrags.set(ufrag, answerSdp);
-      if (answeredUfrags.size > 8) answeredUfrags.delete(answeredUfrags.keys().next().value);
+    try {
+      if (peer) { try { peer.close(); } catch {} }
+      activeOfferUfrag = ufrag;
+      const viewerPeer = createPeer();
+      peer = viewerPeer;
+      await viewerPeer.setRemoteDescription({ type: 'offer', sdp });
+      const pending = pendingViewerIce.get(ufrag) || [];
+      pendingViewerIce.delete(ufrag);
+      for (const candidate of pending) {
+        try { await viewerPeer.addIceCandidate(candidate); }
+        catch (error) {
+          reportOnce('viewer-ice-failed', {
+            ufrag: ufrag || 'none',
+            error: String((error && error.message) || error).slice(0, 120),
+          });
+        }
+      }
+      const answer = await viewerPeer.createAnswer();
+      await viewerPeer.setLocalDescription(answer);
+      // O ufrag do publisher vai no envelope de sinalizacao, nao dentro do SDP.
+      const answerSdp = viewerPeer.localDescription.sdp;
+      send({ type: 'answer', sdp: answerSdp, offerUfrag: ufrag });
+      if (ufrag) {
+        answeredUfrags.set(ufrag, answerSdp);
+        if (answeredUfrags.size > 8) answeredUfrags.delete(answeredUfrags.keys().next().value);
+      }
+      reportOnce("offer-accepted", { ufrag: ufrag || "none" });
+    } catch (error) {
+      reportOnce("accept-offer-failed", { error: String((error && error.message) || error).slice(0, 120) });
     }
   }
 
@@ -2358,7 +2550,48 @@
     wrapVoiceModule();
   }
 
-  setInterval(() => { if (rendered) report('stats', { frames }); }, 10000);
+  let lastFeedStatsFrames = 0;
+  let lastFeedStatsAt = Date.now();
+  setInterval(() => {
+    if (rendered) report('stats', { frames });
+    if (feedPublishing) {
+      const now = Date.now();
+      report('feed-stats', { frames, fps: Math.round((frames - lastFeedStatsFrames) * 1000 / Math.max(1, now - lastFeedStatsAt)) });
+      lastFeedStatsFrames = frames;
+      lastFeedStatsAt = now;
+      const entry = Array.from(peers.values()).find((item) => item.answered && item.pc.connectionState !== 'closed');
+      if (entry) {
+        entry.pc.getStats().then((stats) => {
+          for (const item of stats.values()) {
+            if (item.type === 'outbound-rtp' && item.kind === 'video') {
+              report('p2p-send-stats', {
+                frames: item.framesSent,
+                encoded: item.framesEncoded,
+                fps: item.framesPerSecond,
+                bytes: item.bytesSent,
+                limit: item.qualityLimitationReason,
+              });
+              break;
+            }
+          }
+        }).catch(() => {});
+      }
+    } else if (peer && receiving && peer.connectionState !== 'closed') {
+      peer.getStats().then((stats) => {
+        for (const item of stats.values()) {
+          if (item.type === 'inbound-rtp' && item.kind === 'video') {
+            report('p2p-recv-stats', {
+              decoded: item.framesDecoded,
+              fps: item.framesPerSecond,
+              bytes: item.bytesReceived,
+              lost: item.packetsLost,
+            });
+            break;
+          }
+        }
+      }).catch(() => {});
+    }
+  }, 10000);
   // Reposiciona a cobertura, da uma segunda chance aos videos pequenos que
   // cresceram (janela redimensionada) e escoa os avisos "uma vez so" que
   // ficaram na fila esperando o socket do hub.
@@ -2369,7 +2602,7 @@
   // baixo e o nosso (P2P), o aviso e lixo do envio nativo que falhou no
   // servidor - irrelevante por design.
   setInterval(() => {
-    if (!receiving) return;
+    if (!receiving || !receivingHasFrame) return;
     try {
       const video = (injectedVideo && injectedVideo.isConnected) ? injectedVideo : findStreamVideo();
       if (video) hideStreamError(video);
