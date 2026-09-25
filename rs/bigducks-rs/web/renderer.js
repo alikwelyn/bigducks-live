@@ -41,6 +41,8 @@
   const routeKey = (from, ufrag) => String(from || 'unknown') + '\u0000' + String(ufrag || 'unknown');
   let publishGeneration = 0;
   let publisherStopTimer = null;
+  const PUBLISHER_IDENTITY_RETRY_MS = 1200;
+  const PUBLISHER_IDENTITY_RETRY_LIMIT = 15;
   const PUBLISHER_STOP_GRACE_MS = 2500;
   function extractUfrag(sdp) {
     const m = typeof sdp === 'string' ? sdp.match(/a=ice-ufrag:(\S+)/) : null;
@@ -68,6 +70,7 @@
   }
   let publishing = null;      // MediaStream vindo do Discord
   let publisherDiscordUserId = '';
+  let publisherIdentityTimer = null;
   let receiving = null;       // MediaStream recebido (P2P)
   let p2pReceiving = false;
   let feedSocket = null;
@@ -373,45 +376,97 @@
     }
   }
 
-  // Tenta esconder o aviso de erro (2012) que fica por cima do player.
+  const hiddenStreamErrors = new Map();
+  const streamErrorPattern = /2012|transmiss[aã]o\s+n[aã]o\s+iniciou|problemas?\s+com\s+sua\s+transmiss[aã]o|n[aã]o\s+foi\s+poss[ií]vel|tente\s+novamente|algo\s+deu\s+errado|n[aã]o\s+consegui|conex[aã]o\s+perdida|unable\s+to\s+load|something\s+went\s+wrong|stream\s+error/i;
+
+  function rectanglesOverlap(a, b) {
+    if (!a || !b) return false;
+    return a.right > b.left && a.left < b.right && a.bottom > b.top && a.top < b.bottom;
+  }
+
+  function visibleRect(element) {
+    try {
+      if (!element || !element.isConnected) return null;
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return null;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 1 && rect.height > 1 ? rect : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function restoreHiddenStreamErrors(video = null) {
+    for (const [node, original] of hiddenStreamErrors) {
+      if (video) original.videos.delete(video);
+      if (video && original.videos.size) continue;
+      try {
+        if (node.isConnected
+          && node.style.getPropertyValue('display') === 'none'
+          && node.style.getPropertyPriority('display') === 'important') {
+          if (original.display) node.style.setProperty('display', original.display, original.priority);
+          else node.style.removeProperty('display');
+        }
+      } catch {}
+      hiddenStreamErrors.delete(node);
+    }
+    if (!video) hiddenStreamErrors.clear();
+  }
+
+  // O aviso de erro pode estar num portal ou numa camada irmã do <video>, fora
+  // dos seis ancestrais que o Discord costuma usar. Varre a raiz real do vídeo
+  // e o documento, mas só toca em texto de erro visível que sobrepõe esse player.
   function hideStreamError(video) {
     try {
-      let container = video || document.body;
-      if (video && video.parentElement) {
-        container = video;
-        for (let i = 0; i < 6 && container.parentElement; i += 1) container = container.parentElement;
-      }
-      const pattern = /2012|n[aã]o foi poss[ií]vel|tente novamente|algo deu errado|n[aã]o consegui|conex[aã]o perdida|unable to load|something went wrong|stream error/i;
-      let hidden = 0;
+      if (!video || !receivingStreamsHaveFrame()) return 0;
+      const videoRect = visibleRect(video);
+      if (!videoRect) return 0;
+      const roots = [];
+      const root = video.getRootNode && video.getRootNode();
+      if (root && typeof root.querySelectorAll === 'function') roots.push(root);
+      if (document && !roots.includes(document)) roots.push(document);
 
-      // 1. Classes diretas do Discord que montam o card de streamError
-      for (const node of container.querySelectorAll('[class*="streamError"], [class*="overlayTitle"], [class*="tileChild"] > [class*="flex"]')) {
-        if (node === video || node.contains(video)) continue;
-        const text = node.textContent || "";
-        if (pattern.test(text)) {
-          node.style.display = "none";
-          hidden += 1;
+      const selector = 'div,span,p,h1,h2,h3,h4,button,[role="alert"],[class*="streamError"],[class*="stream-error"],[class*="videoError"],[class*="errorMessage"]';
+      const targets = new Set();
+      for (const searchRoot of roots) {
+        for (const node of searchRoot.querySelectorAll(selector)) {
+          if (node === video || node.contains(video)) continue;
+          const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!streamErrorPattern.test(text)) continue;
+          let target = node;
+          let rect = visibleRect(target);
+          if (!rect || !rectanglesOverlap(rect, videoRect)) continue;
+
+          // Sobe até o bloco de erro mais externo, sem nunca esconder o tile
+          // que contém o próprio vídeo nem uma camada maior que o player.
+          for (let depth = 0; depth < 7 && target.parentElement; depth += 1) {
+            const parent = target.parentElement;
+            if (parent.contains(video)) break;
+            const parentText = String(parent.textContent || '').replace(/\s+/g, ' ').trim();
+            const parentRect = visibleRect(parent);
+            if (!streamErrorPattern.test(parentText) || !parentRect
+              || !rectanglesOverlap(parentRect, videoRect)
+              || parentRect.width * parentRect.height > videoRect.width * videoRect.height * 4) break;
+            target = parent;
+            rect = parentRect;
+          }
+          targets.add(target);
         }
       }
 
-      // 2. Busca por elementos textuais
-      for (const node of container.querySelectorAll("div,span,p,h1,h2,h3,button")) {
-        if (node === video || node.contains(video)) continue;
-        let own = "";
-        for (const child of node.childNodes) {
-          if (child.nodeType === 3) own += child.textContent;
+      for (const target of targets) {
+        if (!hiddenStreamErrors.has(target)) {
+          hiddenStreamErrors.set(target, {
+            display: target.style.getPropertyValue('display'),
+            priority: target.style.getPropertyPriority('display'),
+            videos: new Set(),
+          });
         }
-        if (!own.trim() || !pattern.test(own)) continue;
-        let target = node;
-        for (let i = 0; i < 4 && target.parentElement && target.parentElement !== container; i += 1) {
-          if (target.parentElement.contains(video)) break;
-          target = target.parentElement;
-        }
-        target.style.display = "none";
-        hidden += 1;
+        hiddenStreamErrors.get(target).videos.add(video);
+        target.style.setProperty('display', 'none', 'important');
       }
-      if (hidden) reportOnce("error-hidden", { hidden });
-      return hidden;
+      if (targets.size) reportOnce('error-hidden', { hidden: targets.size, scope: 'player-overlap' });
+      return targets.size;
     } catch {
       return 0;
     }
@@ -556,6 +611,7 @@
     receivingHasFrame = false;
     rendered = false;
     injectedVideo = null;
+    restoreHiddenStreamErrors();
   }
 
   function closeIncomingPeer(entry, reason) {
@@ -630,7 +686,7 @@
   function isPersistentMiniPlayer(video) {
     try {
       const rect = video.getBoundingClientRect();
-      if (rect.width < 96 || rect.height < 54 || playerSized(video)) return false;
+      if (rect.width < 96 || rect.height < 54) return false;
       let element = video.parentElement;
       for (let depth = 0; element && depth < 9; depth += 1, element = element.parentElement) {
         const className = typeof element.className === 'string' ? element.className : '';
@@ -750,6 +806,7 @@
       reportOnce('native-stream-owner-unmatched', {
         streams: receivedStreams.size,
         identifiedOwners: Array.from(receivedStreams.values()).filter((item) => item.publisherUserId).length,
+        videoOwners: ownerIds.size,
         video: describeVideo(video),
       });
     }
@@ -772,6 +829,7 @@
     for (const [video, binding] of Array.from(nativeBindings)) {
       if (binding.publisherKey !== publisherKey) continue;
       nativeBindings.delete(video);
+      restoreHiddenStreamErrors(video);
       if (!video.isConnected) continue;
       try {
         if (video.srcObject === binding.stream && nativeSrcObjectSet) {
@@ -783,7 +841,10 @@
 
   function pruneNativeBindings() {
     for (const [video] of nativeBindings) {
-      if (!video.isConnected) nativeBindings.delete(video);
+      if (!video.isConnected) {
+        nativeBindings.delete(video);
+        restoreHiddenStreamErrors(video);
+      }
     }
   }
 
@@ -951,7 +1012,7 @@
           video.srcObject = item.stream;
           video.play().catch(() => {});
           const rect = video.getBoundingClientRect();
-          const mini = isPersistentMiniPlayer(video) && !playerSized(video);
+          const mini = isPersistentMiniPlayer(video);
           report(mini ? 'native-mini-inject' : 'native-inject', {
             width: Math.round(rect.width),
             height: Math.round(rect.height),
@@ -997,6 +1058,35 @@
         tryInjectNative();
       }
     }, 500);
+  }
+
+  function updateReceivedPublisherIdentity(publisherKey, publisherUserId) {
+    const key = String(publisherKey || '');
+    const userId = validDiscordUserId(publisherUserId);
+    if (!key || !userId) return 0;
+    let routes = 0;
+    for (const entry of incomingPeers.values()) {
+      if (String(entry.publisherKey) !== key) continue;
+      entry.publisherUserId = userId;
+      routes += 1;
+    }
+    const item = receivedStreams.get(key);
+    if (item) item.publisherUserId = userId;
+    const matched = routes + (item ? 1 : 0);
+    if (matched) {
+      report('publisher-identity-updated', { streams: item ? 1 : 0, routes });
+      retryPendingVideos();
+      tryInjectNative();
+    }
+    return matched;
+  }
+
+  function hasIncomingPublisher(publisherKey) {
+    const key = String(publisherKey || '');
+    return Array.from(incomingPeers.values()).some((entry) => {
+      if (String(entry.publisherKey) !== key || !entry.pc) return false;
+      return ['new', 'connecting', 'connected'].includes(entry.pc.connectionState);
+    });
   }
 
   function closePanel() {
@@ -2097,7 +2187,7 @@
         // abre o Discord depois do inicio da live perderia o stream). Pede so
         // se NAO ha peer vivo recebendo - pedir sempre realimentava o loop.
         setTimeout(() => {
-          if (publishing) send({ type: 'publisher-ready' });
+          if (publishing) announcePublisherReady();
           if (!hasLiveViewerPeer()) send({ type: 'request-offer' });
         }, 1500);
         return;
@@ -2229,6 +2319,8 @@
 
   function forceStopPublishing(reason = 'lifecycle') {
     cancelPendingPublisherStop();
+    if (publisherIdentityTimer) clearTimeout(publisherIdentityTimer);
+    publisherIdentityTimer = null;
     publishGeneration += 1;
     if (!publishingNative && !publishing) return;
     send({ type: 'publisher-stopped' });
@@ -2267,7 +2359,14 @@
       return;
     }
     if (message.type === 'publisher-ready') {
-      if (message.from) send({ type: 'request-offer' });
+      const publisherKey = String(message.from || '');
+      const publisherUserId = validDiscordUserId(message.publisherUserId);
+      const updated = publisherUserId
+        ? updateReceivedPublisherIdentity(publisherKey, publisherUserId)
+        : 0;
+      if (publisherKey && !updated && !hasIncomingPublisher(publisherKey)) {
+        send({ type: 'request-offer' });
+      }
       return;
     }
     if (message.type === 'publisher-stopped') {
@@ -2551,12 +2650,45 @@
     }
   }
 
+  function announcePublisherReady() {
+    const userId = publisherDiscordUserId || findDiscordUserId();
+    if (userId) publisherDiscordUserId = userId;
+    send({
+      type: 'publisher-ready',
+      ...(publisherDiscordUserId ? { publisherUserId: publisherDiscordUserId } : {}),
+    });
+    return publisherDiscordUserId;
+  }
+
+  function retryPublisherIdentity(generation, attempt = 1) {
+    if (publisherIdentityTimer) clearTimeout(publisherIdentityTimer);
+    publisherIdentityTimer = setTimeout(() => {
+      publisherIdentityTimer = null;
+      if (generation !== publishGeneration || !publishing) return;
+      const userId = publisherDiscordUserId || findDiscordUserId();
+      if (userId) {
+        publisherDiscordUserId = userId;
+        announcePublisherReady();
+        report('publisher-identity-ready', { late: true, attempt });
+        return;
+      }
+      if (attempt >= PUBLISHER_IDENTITY_RETRY_LIMIT) {
+        reportOnce('publisher-identity-unavailable', { attempts: attempt });
+        return;
+      }
+      retryPublisherIdentity(generation, attempt + 1);
+    }, PUBLISHER_IDENTITY_RETRY_MS);
+  }
+
   async function publish(stream) {
     cancelPendingPublisherStop();
+    if (publisherIdentityTimer) clearTimeout(publisherIdentityTimer);
+    publisherIdentityTimer = null;
     const replacing = !!publishing;
     publishing = stream;
-    if (!publisherDiscordUserId) findDiscordUserId();
     publishGeneration += 1;
+    const generation = publishGeneration;
+    if (!publisherDiscordUserId) publisherDiscordUserId = findDiscordUserId();
     if (replacing) {
       const byKind = new Map();
       for (const track of stream.getTracks()) {
@@ -2591,7 +2723,8 @@
     }
     // A disponibilidade e anunciada; cada viewer pede sua oferta dedicada.
     // Assim viewers simultaneos nunca respondem sobre o mesmo PeerConnection.
-    send({ type: 'publisher-ready' });
+    const publisherUserId = announcePublisherReady();
+    if (!publisherUserId) retryPublisherIdentity(generation);
     log('publicando', stream.getVideoTracks()[0] && stream.getVideoTracks()[0].label);
     return true;
   }
@@ -3067,11 +3200,8 @@
     pruneNativeBindings();
     flushOnce();
   }, 1200);
-  // O erro 2012 ("nao foi possivel transmitir") e renderizado PELO Discord
-  // DEPOIS da injecao - esconder so no momento do hook nao basta. Enquanto
-  // existir stream ativo, limpa o aviso continuamente: o video que fica por
-  // baixo e o nosso (P2P), o aviso e lixo do envio nativo que falhou no
-  // servidor - irrelevante por design.
+  // O erro 2012 pode ser renderizado depois da injecao. Limpa somente a camada
+  // que sobrepoe um video ja ligado a uma stream P2P com frame decodificado.
   setInterval(() => {
     if (!receivingStreamsHaveFrame()) return;
     try {
@@ -3080,13 +3210,6 @@
         if ((!item && binding.publisherKey === 'feed' && receivingHasFrame) || (item && item.hasFrame)) {
           hideStreamError(video);
         }
-      }
-      const video = (injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo))
-        ? injectedVideo
-        : findStreamVideo();
-      if (video) hideStreamError(video);
-      for (const video of pendingVideos) {
-        if (video.isConnected) hideStreamError(video);
       }
     } catch {}
   }, 2000);
