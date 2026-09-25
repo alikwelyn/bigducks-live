@@ -23,6 +23,7 @@ use crate::{autostart, discord, icon, install, platform};
 struct TrayUi {
     tray: TrayIcon,
     autostart_item: CheckMenuItem,
+    check_update_item: MenuItem,
 }
 
 /// Monta a bandeja do zero. Devolve o erro como `String` sem encerrar nada -
@@ -70,7 +71,8 @@ fn build_tray(status: &Shared, port: u16) -> Result<TrayUi, String> {
     // "icone sem icone" do bug dos dois icones. Aqui, se o bitmap faltar, devolve
     // Err: o `run()` loga ALTO e tenta de novo - nunca aparece entrada vazia.
     let icon = initial.ok_or_else(|| {
-        "sem bitmap para o icone da bandeja (Icon indisponivel) - nao crio entrada vazia".to_string()
+        "sem bitmap para o icone da bandeja (Icon indisponivel) - nao crio entrada vazia"
+            .to_string()
     })?;
     builder = builder.with_icon(icon);
     let tray = builder.build().map_err(|error| error.to_string())?;
@@ -111,6 +113,7 @@ fn build_tray(status: &Shared, port: u16) -> Result<TrayUi, String> {
     Ok(TrayUi {
         tray,
         autostart_item,
+        check_update_item: check_update,
     })
 }
 
@@ -152,25 +155,71 @@ pub fn run(status: Shared, port: u16) {
                 }
             }
         }
+        if let Some(staged) = take_ready_update(&status) {
+            // O icone precisa ser removido antes do exe novo registrar a propria
+            // bandeja; isso evita sobreposicao durante o auto-update.
+            drop(ui.take());
+            platform::balloon(
+                "Instalando atualização",
+                "A troca será concluída agora e o Desjanjador vai reabrir.",
+            );
+            match crate::update::apply(&staged) {
+                Ok(()) => {
+                    crate::log_info!("update: aplicado; encerrando a instancia antiga");
+                    platform::quit_message();
+                    return;
+                }
+                Err(error) => {
+                    crate::log_warn!("update: falha ao aplicar: {error:#}");
+                    if let Ok(mut state) = status.lock() {
+                        state.update = Update::Failed;
+                        state.update_detail = format!("Falha ao instalar atualização: {error:#}");
+                        state.staged_update = None;
+                        state.notify("Falha na atualização", &format!("{error:#}"));
+                    }
+                    ui = match build_tray(&status, port) {
+                        Ok(fresh) => Some(fresh),
+                        Err(build_error) => {
+                            crate::log_warn!("bandeja: falha ao recriar o icone ({build_error})");
+                            None
+                        }
+                    };
+                }
+            }
+        }
         if let Some(ui) = ui.as_ref() {
-            refresh(&ui.tray, &ui.autostart_item, &status);
+            refresh(ui, &status);
         }
     });
     crate::log_info!("bandeja: loop de mensagens terminou");
 }
 
 /// Le' o status e aplica no icone/tooltip; consome o balao pendente.
-fn refresh(tray: &TrayIcon, autostart_item: &CheckMenuItem, status: &Shared) {
+fn take_ready_update(status: &Shared) -> Option<std::path::PathBuf> {
+    let Ok(mut state) = status.lock() else {
+        return None;
+    };
+    if state.streaming || state.update != Update::Staged {
+        return None;
+    }
+    let staged = state.staged_update.take()?;
+    state.update = Update::Installing;
+    state.update_detail = "Instalando atualização…".to_string();
+    Some(staged)
+}
+
+fn refresh(ui: &TrayUi, status: &Shared) {
     let snapshot = status.lock().ok().map(|state| {
         (
             state.bridge_installed,
             state.relay,
             state.update,
+            state.update_label(),
             state.tooltip(),
             state.balloon.clone(),
         )
     });
-    let Some((installed, relay, update, tooltip, balloon)) = snapshot else {
+    let Some((installed, relay, update, update_label, tooltip, balloon)) = snapshot else {
         return;
     };
 
@@ -191,13 +240,28 @@ fn refresh(tray: &TrayIcon, autostart_item: &CheckMenuItem, status: &Shared) {
         .unwrap_or(true);
     if changed {
         if let Some(icon) = icon::tray_icon(installed, relay, update) {
-            let _ = tray.set_icon(Some(icon));
+            let _ = ui.tray.set_icon(Some(icon));
         }
-        let _ = tray.set_tooltip(Some(tooltip.clone()));
+        let _ = ui.tray.set_tooltip(Some(tooltip.clone()));
     }
+    static LAST_UPDATE_LABEL: std::sync::OnceLock<std::sync::Mutex<String>> =
+        std::sync::OnceLock::new();
+    if let Ok(mut last) = LAST_UPDATE_LABEL
+        .get_or_init(|| std::sync::Mutex::new(String::new()))
+        .lock()
+    {
+        if *last != update_label {
+            ui.check_update_item.set_text(update_label);
+            *last = update_label.to_string();
+        }
+    }
+    ui.check_update_item.set_enabled(!matches!(
+        update,
+        Update::Checking | Update::Staged | Update::Installing
+    ));
     let wanted = autostart::is_enabled();
-    if autostart_item.is_checked() != wanted {
-        let _ = autostart_item.set_checked(wanted);
+    if ui.autostart_item.is_checked() != wanted {
+        let _ = ui.autostart_item.set_checked(wanted);
     }
 
     if let Some((title, body)) = balloon {
@@ -239,7 +303,10 @@ fn restart_discord_app(status: Shared) {
         }
     }
     if let Ok(mut state) = status.lock() {
-        state.notify("Reiniciando o Discord", "Fechando e reabrindo para aplicar o bridge.");
+        state.notify(
+            "Reiniciando o Discord",
+            "Fechando e reabrindo para aplicar o bridge.",
+        );
     }
     match discord::restart() {
         Ok(report) => {
@@ -247,7 +314,10 @@ fn restart_discord_app(status: Shared) {
                 crate::log_info!("reiniciar-discord: {line}");
             }
             if let Ok(mut state) = status.lock() {
-                state.notify("Discord reiniciado", report.first().cloned().unwrap_or_default());
+                state.notify(
+                    "Discord reiniciado",
+                    report.first().cloned().unwrap_or_default(),
+                );
             }
         }
         Err(error) => {

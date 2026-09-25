@@ -91,7 +91,11 @@ fn manifest_url() -> String {
 }
 
 fn asset_url(manifest: &Manifest) -> String {
-    format!("{}/{}", release_base(), manifest.asset.trim_start_matches('/'))
+    format!(
+        "{}/{}",
+        release_base(),
+        manifest.asset.trim_start_matches('/')
+    )
 }
 
 /// Baixa e compara o manifest. `Ok(None)` quando ja estamos na ultima versao.
@@ -133,7 +137,9 @@ pub fn stage(manifest: &Manifest) -> Result<PathBuf> {
         .with_context(|| format!("GET {url}"))?;
     let mut reader = response.into_reader().take(manifest.size + 1);
     let mut bytes = Vec::with_capacity(manifest.size as usize);
-    reader.read_to_end(&mut bytes).context("baixar o executavel")?;
+    reader
+        .read_to_end(&mut bytes)
+        .context("baixar o executavel")?;
     if bytes.len() as u64 != manifest.size {
         bail!(
             "tamanho diferente do manifest ({} != {})",
@@ -230,7 +236,10 @@ pub fn trigger_manual_check(status: &Shared) {
 }
 
 fn run_once(status: &Shared, manual: bool) {
-    set_update(status, Update::Checking, "checando atualizacao");
+    if !begin_check(status) {
+        log_update("checagem ignorada: ja existe uma atualizacao em andamento");
+        return;
+    }
     if manual {
         notify(status, "Desjanjador", "Verificando atualizações...");
     }
@@ -238,34 +247,33 @@ fn run_once(status: &Shared, manual: bool) {
         Ok(Some(manifest)) => {
             let note = manifest.notes.clone().unwrap_or_default();
             log_update(&format!("baixando {} {note}", manifest.version));
-            set_update(status, Update::Checking, &format!("baixando v{}", manifest.version));
+            set_update(
+                status,
+                Update::Checking,
+                &format!("baixando v{}", manifest.version),
+            );
             match stage(&manifest) {
                 Ok(staged) => {
-                    set_update(
-                        status,
-                        Update::Staged,
-                        &format!("v{} pronta para instalar", manifest.version),
-                    );
-                    notify(
-                        status,
-                        "Atualização baixada",
-                        &format!("Desjanjador v{} será instalado silenciosamente em instantes", manifest.version),
-                    );
-                    if applying_now(status) {
-                        set_update(status, Update::Installing, "instalando atualizacao");
-                        match apply(&staged) {
-                            Ok(()) => {
-                                log_update("atualizacao aplicada; encerrando para reabrir");
-                                std::process::exit(0);
-                            }
-                            Err(error) => {
-                                log_update(&format!("falha ao aplicar: {error:#}"));
-                                set_update(status, Update::Failed, &format!("{error:#}"));
-                                notify(status, "Falha na atualizacao", &format!("{error:#}"));
-                            }
-                        }
+                    let streaming = if let Ok(mut state) = status.lock() {
+                        state.update = Update::Staged;
+                        state.update_detail = format!("Atualização v{} baixada", manifest.version);
+                        state.staged_update = Some(staged);
+                        state.streaming
                     } else {
-                        log_update("transmissao ativa - update aplicado no proximo ciclo");
+                        false
+                    };
+                    if manual {
+                        let body = if streaming {
+                            "Download concluído. Será instalada quando a transmissão terminar."
+                        } else {
+                            "Download concluído. O Desjanjador vai reiniciar para aplicar."
+                        };
+                        notify(status, "Atualização baixada", body);
+                    }
+                    if streaming {
+                        log_update("transmissao ativa - update sera aplicado ao encerrar");
+                    } else {
+                        log_update("update pronto; a thread da bandeja fara a troca do exe");
                     }
                 }
                 Err(error) => {
@@ -278,36 +286,64 @@ fn run_once(status: &Shared, manual: bool) {
             }
         }
         Ok(None) => {
-            set_update(status, Update::Idle, "");
             if manual {
+                set_update(
+                    status,
+                    Update::UpToDate,
+                    &format!(
+                        "Você já está na versão mais recente (v{}).",
+                        current_version()
+                    ),
+                );
                 notify(
                     status,
                     "Desjanjador atualizado",
-                    &format!("Você já está na versão mais recente (v{}).", current_version()),
+                    &format!(
+                        "Você já está na versão mais recente (v{}).",
+                        current_version()
+                    ),
                 );
+            } else {
+                set_update(status, Update::Idle, "");
             }
         }
         Err(error) => {
             log_update(&format!("checagem falhou: {error:#}"));
             set_update(status, Update::Failed, &format!("{error:#}"));
             if manual {
-                notify(status, "Erro ao verificar atualização", &format!("{error:#}"));
+                notify(
+                    status,
+                    "Erro ao verificar atualização",
+                    &format!("{error:#}"),
+                );
             }
         }
     }
 }
 
-fn applying_now(status: &Shared) -> bool {
-    status
-        .lock()
-        .map(|guard| !guard.streaming)
-        .unwrap_or(true)
+fn begin_check(status: &Shared) -> bool {
+    let Ok(mut state) = status.lock() else {
+        return false;
+    };
+    if matches!(
+        state.update,
+        Update::Checking | Update::Staged | Update::Installing
+    ) {
+        return false;
+    }
+    state.update = Update::Checking;
+    state.update_detail = "Verificando atualizações…".to_string();
+    state.staged_update = None;
+    true
 }
 
 fn set_update(status: &Shared, state: Update, detail: &str) {
     if let Ok(mut guard) = status.lock() {
         guard.update = state;
         guard.update_detail = detail.to_string();
+        if !matches!(state, Update::Staged | Update::Installing) {
+            guard.staged_update = None;
+        }
     }
 }
 

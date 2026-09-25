@@ -54,7 +54,11 @@ pub fn init(console: bool) {
     cleanup_logs();
     let path = log_path();
     let _ = fs::create_dir_all(data_dir());
-    let file = OpenOptions::new().create(true).append(true).open(&path).ok();
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok();
     let bytes = file
         .as_ref()
         .and_then(|handle| handle.metadata().ok())
@@ -94,7 +98,11 @@ pub fn write_line(text: &str) {
         }
     }
     let _ = fs::create_dir_all(data_dir());
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path()) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
         let _ = writeln!(file, "{line}");
     } else {
         let _ = writeln!(std::io::stderr(), "{line}");
@@ -146,7 +154,11 @@ impl Logger {
             let _ = fs::rename(self.indexed(index), self.indexed(index + 1));
         }
         let _ = fs::rename(&self.path, self.indexed(1));
-        self.file = OpenOptions::new().create(true).append(true).open(&self.path).ok();
+        self.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .ok();
         self.bytes = 0;
     }
 

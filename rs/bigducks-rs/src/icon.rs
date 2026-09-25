@@ -22,7 +22,9 @@ fn base_logo() -> &'static RgbaImage {
     static BASE: OnceLock<RgbaImage> = OnceLock::new();
     BASE.get_or_init(|| {
         let decoded = image::load_from_memory(LOGO_PNG).expect("logo embutido invalido");
-        decoded.resize_exact(SIZE, SIZE, FilterType::Lanczos3).to_rgba8()
+        decoded
+            .resize_exact(SIZE, SIZE, FilterType::Lanczos3)
+            .to_rgba8()
     })
 }
 

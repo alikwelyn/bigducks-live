@@ -18,8 +18,8 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, WaitForSingleObject,
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
@@ -58,7 +58,9 @@ fn own_pid() -> u32 {
 /// Comparacao SEMPRE pelo NOME do arquivo (`szExeFile`), case-insensitive (do
 /// jeito que o Windows trata nome de arquivo). NUNCA pelo diretorio pai.
 fn is_discord_exe(name: &str) -> bool {
-    NAMES.iter().any(|candidate| candidate.eq_ignore_ascii_case(name))
+    NAMES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
 }
 
 /// Resultado de um scan: os candidatos verificados + a identidade do NOSSO
@@ -146,7 +148,11 @@ fn candidate_line(instance: &Instance, verdict: &str) -> String {
 
 /// Linha explicita de que o nosso proprio processo foi ignorado.
 fn own_ignored_line(own: &(u32, String, Option<PathBuf>)) -> String {
-    let name = if own.1.is_empty() { "?" } else { own.1.as_str() };
+    let name = if own.1.is_empty() {
+        "?"
+    } else {
+        own.1.as_str()
+    };
     let path = own
         .2
         .as_ref()
@@ -260,7 +266,10 @@ pub fn restart() -> Result<Vec<String>> {
 
     let mut names: Vec<String> = Vec::new();
     for instance in &instances {
-        if !names.iter().any(|name| name.eq_ignore_ascii_case(&instance.name)) {
+        if !names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&instance.name))
+        {
             names.push(instance.name.clone());
         }
     }
@@ -274,7 +283,11 @@ pub fn restart() -> Result<Vec<String>> {
         instances.len(),
         names.join(", ")
     ));
-    log_info!("discord: fechando {} processos ({} executaveis)", instances.len(), paths.len());
+    log_info!(
+        "discord: fechando {} processos ({} executaveis)",
+        instances.len(),
+        paths.len()
+    );
 
     let pids: Vec<u32> = instances.iter().map(|instance| instance.pid).collect();
     post_close(&pids);
@@ -310,13 +323,16 @@ pub fn restart() -> Result<Vec<String>> {
     }
 
     if paths.is_empty() {
-        report.push("nenhum caminho de executavel encontrado - reabra o Discord manualmente".to_string());
+        report.push(
+            "nenhum caminho de executavel encontrado - reabra o Discord manualmente".to_string(),
+        );
     }
     Ok(report)
 }
 
 fn same_path(left: &PathBuf, right: &PathBuf) -> bool {
-    left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy())
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
 }
 
 fn relaunch(path: &PathBuf) -> Result<u32> {
@@ -428,7 +444,9 @@ fn process_path(pid: u32) -> Option<PathBuf> {
         if ok == 0 || size == 0 {
             return None;
         }
-        Some(PathBuf::from(String::from_utf16_lossy(&buffer[..size as usize])))
+        Some(PathBuf::from(String::from_utf16_lossy(
+            &buffer[..size as usize],
+        )))
     }
 }
 
@@ -464,6 +482,9 @@ fn filetime_to_systemtime(filetime: FILETIME) -> SystemTime {
 }
 
 fn utf16_field(field: &[u16]) -> String {
-    let length = field.iter().position(|unit| *unit == 0).unwrap_or(field.len());
+    let length = field
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(field.len());
     String::from_utf16_lossy(&field[..length])
 }

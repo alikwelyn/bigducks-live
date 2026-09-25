@@ -4,6 +4,7 @@
 //! baloes. O servidor escreve aqui o que o preload reporta via `/bridge-event`
 //! (nomes como `hub-remoto`), e o update escreve o estado da atualizacao.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// Legenda das cores do ponto da bandeja: vai na 2a linha do tooltip pra que o
@@ -35,6 +36,7 @@ pub enum Update {
     /// Nova versao baixada e pronta para trocar.
     Staged,
     Installing,
+    UpToDate,
     Failed,
 }
 
@@ -49,6 +51,8 @@ pub struct Status {
     pub streaming: bool,
     pub update: Update,
     pub update_detail: String,
+    /// Executavel baixado e verificado, aguardando a thread principal trocar.
+    pub staged_update: Option<PathBuf>,
     pub autostart: bool,
     /// Por que (nao) vamos reiniciar o Discord por causa da injecao. Vem da
     /// comparacao carimbo-da-injecao x inicio do processo (ver src/discord.rs).
@@ -67,6 +71,7 @@ impl Default for Status {
             streaming: false,
             update: Update::Idle,
             update_detail: String::new(),
+            staged_update: None,
             autostart: false,
             restart_note: String::new(),
             balloon: None,
@@ -80,9 +85,21 @@ impl Status {
         self.balloon = Some((title.into(), body.into()));
     }
 
+    /// Texto curto mostrado no item do menu e no tooltip durante a checagem.
+    pub fn update_label(&self) -> &'static str {
+        match self.update {
+            Update::Idle => "Verificar atualizações",
+            Update::Checking => "Verificando atualizações…",
+            Update::Staged if self.streaming => "Atualização baixada — aguardando live",
+            Update::Staged => "Atualização pronta — aplicando",
+            Update::Installing => "Instalando atualização…",
+            Update::UpToDate => "Já está atualizado",
+            Update::Failed => "Falha na atualização — tentar de novo",
+        }
+    }
+
     /// Rotulo do estado em palavras, seguindo a MESMA precedencia de
-    /// `icon::state_color` (atualizacao > bridge ausente > relay). Serve pra que
-    /// a cor do ponto nunca seja o unico canal de informacao no tooltip.
+    /// `icon::state_color` (atualizacao > bridge ausente > relay).
     fn state_label(&self) -> &'static str {
         if matches!(self.update, Update::Staged | Update::Installing) {
             return "atualizando";
@@ -101,13 +118,18 @@ impl Status {
     /// Texto do tooltip: 1a linha = app + estado atual EM PALAVRAS (cor
     /// redundante); 2a linha = legenda das cores do ponto.
     pub fn tooltip(&self) -> String {
-        let streaming = if self.streaming { " | TRANSMITINDO" } else { "" };
-        let update = match self.update {
-            // "atualizando" ja' e' o rotulo do estado (roxo): nao repetir.
-            Update::Staged | Update::Installing => "",
-            Update::Checking => " | checando atualizacao",
-            Update::Failed => " | update falhou",
-            Update::Idle => "",
+        if self.update != Update::Idle {
+            let detail = if self.update_detail.is_empty() {
+                self.update_label()
+            } else {
+                &self.update_detail
+            };
+            return format!("Desjanjador - {detail}");
+        }
+        let streaming = if self.streaming {
+            " | TRANSMITINDO"
+        } else {
+            ""
         };
         let restart = if self.restart_note.is_empty() {
             String::new()
@@ -115,7 +137,7 @@ impl Status {
             format!(" | {}", self.restart_note)
         };
         format!(
-            "Desjanjador - {}{streaming}{update}{restart}\n{LEGEND}",
+            "Desjanjador - {}{streaming}{restart}\n{LEGEND}",
             self.state_label()
         )
     }

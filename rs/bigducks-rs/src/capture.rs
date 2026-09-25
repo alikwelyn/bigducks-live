@@ -6,10 +6,10 @@
 //! O resto (downscale) e um box filter puro em Rust, sem compilador C.
 
 use anyhow::{anyhow, Result};
-use std::time::Instant;
-use xcap::{Monitor, Window};
 #[cfg(windows)]
 use std::time::Duration;
+use std::time::Instant;
+use xcap::{Monitor, Window};
 
 #[cfg(windows)]
 mod continuous {
@@ -74,12 +74,21 @@ mod continuous {
                 ColorFormat::Rgba8,
                 tx,
             );
-            let control = FrameHandler::start_free_threaded(settings).map_err(|error| error.to_string())?;
-            Ok(Self { control: Some(control), rx, last: None })
+            let control =
+                FrameHandler::start_free_threaded(settings).map_err(|error| error.to_string())?;
+            Ok(Self {
+                control: Some(control),
+                rx,
+                last: None,
+            })
         }
 
         pub fn next_frame(&mut self) -> Option<RawFrame> {
-            if self.control.as_ref().is_some_and(|control| control.is_finished()) {
+            if self
+                .control
+                .as_ref()
+                .is_some_and(|control| control.is_finished())
+            {
                 return None;
             }
             if self.last.is_none() {
@@ -92,7 +101,9 @@ mod continuous {
         }
 
         pub fn is_finished(&self) -> bool {
-            self.control.as_ref().is_some_and(|control| control.is_finished())
+            self.control
+                .as_ref()
+                .is_some_and(|control| control.is_finished())
         }
 
         pub fn stop(&mut self) {
@@ -147,17 +158,13 @@ pub fn parse_selection(value: &str) -> Option<Selection> {
             .map(Selection::Screen),
         // Fallback: o Discord as vezes manda o id cru (so o numero). Numero
         // pequeno e indice de monitor; numero grande e handle de janela (HWND).
-        _ => value
-            .trim()
-            .parse::<u32>()
-            .ok()
-            .map(|number| {
-                if number < 16 {
-                    Selection::Monitor(number as usize)
-                } else {
-                    Selection::Window(number)
-                }
-            }),
+        _ => value.trim().parse::<u32>().ok().map(|number| {
+            if number < 16 {
+                Selection::Monitor(number as usize)
+            } else {
+                Selection::Window(number)
+            }
+        }),
     }
 }
 
@@ -215,18 +222,25 @@ impl Capturer {
                 {
                     if self.continuous_window.as_ref().map(|(current, _)| current) != Some(id) {
                         self.continuous_window = None;
-                        let cooling_down = self.continuous_failed.as_ref().is_some_and(|(failed_id, at)| {
-                            failed_id == id && at.elapsed() < Duration::from_secs(5)
-                        });
+                        let cooling_down =
+                            self.continuous_failed
+                                .as_ref()
+                                .is_some_and(|(failed_id, at)| {
+                                    failed_id == id && at.elapsed() < Duration::from_secs(5)
+                                });
                         if !cooling_down {
                             match continuous::WindowCapture::start(*id) {
                                 Ok(capture) => {
-                                    crate::logging::write_line(&format!("capture: WGC continuo iniciado para janela {id}"));
+                                    crate::logging::write_line(&format!(
+                                        "capture: WGC continuo iniciado para janela {id}"
+                                    ));
                                     self.continuous_window = Some((*id, capture));
                                     self.continuous_failed = None;
                                 }
                                 Err(error) => {
-                                    crate::logging::write_line(&format!("capture: WGC continuo indisponivel ({error}); usando GDI"));
+                                    crate::logging::write_line(&format!(
+                                        "capture: WGC continuo indisponivel ({error}); usando GDI"
+                                    ));
                                     self.continuous_failed = Some((*id, Instant::now()));
                                 }
                             }
@@ -239,12 +253,17 @@ impl Capturer {
                         if capture.is_finished() {
                             self.continuous_window = None;
                             self.continuous_failed = Some((*id, Instant::now()));
-                            crate::logging::write_line("capture: WGC continuo encerrou; usando GDI temporariamente");
+                            crate::logging::write_line(
+                                "capture: WGC continuo encerrou; usando GDI temporariamente",
+                            );
                         }
                     }
                 }
                 if self.cached_window.as_ref().map(|(current, _)| current) != Some(id) {
-                    self.cached_window = Window::all()?.into_iter().find(|window| window.id().ok() == Some(*id)).map(|window| (*id, window));
+                    self.cached_window = Window::all()?
+                        .into_iter()
+                        .find(|window| window.id().ok() == Some(*id))
+                        .map(|window| (*id, window));
                 }
                 if let Some((_, window)) = &self.cached_window {
                     if let Ok(image) = window.capture_image() {
@@ -255,14 +274,20 @@ impl Capturer {
                 }
                 // Janela sumiu/fechou: cai no monitor principal.
                 let monitors = Monitor::all()?;
-                let monitor = monitors.into_iter().next().ok_or_else(|| anyhow!("no monitor"))?;
+                let monitor = monitors
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow!("no monitor"))?;
                 let image = monitor.capture_image()?;
                 let (width, height) = (image.width(), image.height());
                 Ok((image.into_raw(), width, height))
             }
             Selection::Process(pid) => {
                 if self.cached_process.as_ref().map(|(current, _)| current) != Some(pid) {
-                    self.cached_process = Window::all()?.into_iter().find(|window| window.pid().ok() == Some(*pid)).map(|window| (*pid, window));
+                    self.cached_process = Window::all()?
+                        .into_iter()
+                        .find(|window| window.pid().ok() == Some(*pid))
+                        .map(|window| (*pid, window));
                 }
                 if let Some((_, window)) = &self.cached_process {
                     if let Ok(image) = window.capture_image() {
@@ -273,7 +298,10 @@ impl Capturer {
                 }
                 // Nao achou a janela: monitor principal.
                 let monitors = Monitor::all()?;
-                let monitor = monitors.into_iter().next().ok_or_else(|| anyhow!("no monitor"))?;
+                let monitor = monitors
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow!("no monitor"))?;
                 let image = monitor.capture_image()?;
                 let (width, height) = (image.width(), image.height());
                 Ok((image.into_raw(), width, height))
@@ -323,7 +351,10 @@ impl Capturer {
         if self.stats_at.elapsed().as_secs() >= 10 {
             crate::logging::write_line(&format!(
                 "capture-etapas: fonte {}x{} -> {}x{}, origem {:.1} ms, escala {:.1} ms",
-                source_width, source_height, width, height,
+                source_width,
+                source_height,
+                width,
+                height,
                 self.source_time_us as f64 / self.stats_frames as f64 / 1000.0,
                 self.scale_time_us as f64 / self.stats_frames as f64 / 1000.0,
             ));
@@ -357,7 +388,10 @@ fn scale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
         return scale_rgba_nearest(src, sw, sh, dw, dh);
     };
     let mut destination = Image::new(dw, dh, PixelType::U8x4);
-    if Resizer::new().resize(&source, &mut destination, None).is_ok() {
+    if Resizer::new()
+        .resize(&source, &mut destination, None)
+        .is_ok()
+    {
         destination.buffer().to_vec()
     } else {
         scale_rgba_nearest(src, sw, sh, dw, dh)
@@ -379,7 +413,10 @@ fn monitor_index_from_handle(handle: u32) -> Option<usize> {
     }
     let rect = info.rcMonitor;
     let (left, top) = (rect.left, rect.top);
-    let (width, height) = ((rect.right - rect.left) as u32, (rect.bottom - rect.top) as u32);
+    let (width, height) = (
+        (rect.right - rect.left) as u32,
+        (rect.bottom - rect.top) as u32,
+    );
     for (index, monitor) in Monitor::all().ok()?.iter().enumerate() {
         let same = monitor.x().ok() == Some(left)
             && monitor.y().ok() == Some(top)

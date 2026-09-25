@@ -27,16 +27,21 @@
   let hubSocket = null;
   let hubId = null;
   let peer = null;
-  // Mesh: um peer POR espectador, roteado pelo ufrag ICE (cada oferta tem um
-  // a=ice-ufrag: proprio e cada candidato carrega usernameFragment). O relay e
-  // broadcast - quem casa o ufrag responde; os outros ignoram. Sem isso, N
-  // espectadores respondem para UM peer e so um conecta (os demais ficam pretos).
-  const peers = new Map();          // ufrag -> { pc, from|null, answered, sdp, viewerUfrag }
-  const answeredUfrags = new Map(); // viewer: ufrag -> answer sdp (dedupe)
-  const pendingIce = new Map();     // ufrag do viewer -> candidates antes do answer
-  const pendingViewerIce = new Map(); // ufrag do publicador -> candidates antes da oferta
-  let activeOfferUfrag = null;
-  const MAX_PEERS = 8;
+  // Cada publicador mantém um PeerConnection por viewer; cada viewer mantém
+  // um por publicador. Ufrag identifica a negociacao; `from` estavel identifica
+  // o participante e impede que ICE/answers de pares diferentes se misturem.
+  const peers = new Map();          // ufrag local -> PeerConnection de envio
+  const creatingPublisherPeers = new Set(); // evita PCs duplicados em requests concorrentes
+  const incomingPeers = new Map(); // peer remoto+ufrag -> PeerConnection de recepcao
+  const incomingByPublisher = new Map(); // ID remoto -> chave do PC de recepcao ativo
+  const answeredUfrags = new Map(); // peer+ufrag da oferta -> answer SDP (dedupe)
+  const acceptingUfrags = new Set(); // evita duas offers simultaneas criarem PCs duplicados
+  const pendingIce = new Map();     // peer+ufrag -> candidates antes da descricao
+  const receivedStreams = new Map(); // publisher ID -> stream/player tile
+  const routeKey = (from, ufrag) => String(from || 'unknown') + '\u0000' + String(ufrag || 'unknown');
+  let publishGeneration = 0;
+  let publisherStopTimer = null;
+  const PUBLISHER_STOP_GRACE_MS = 2500;
   function extractUfrag(sdp) {
     const m = typeof sdp === 'string' ? sdp.match(/a=ice-ufrag:(\S+)/) : null;
     return m ? m[1] : null;
@@ -469,27 +474,30 @@
   }
 
 
-  function markFirstDecodedFrame(video, stream, metadata) {
-    if (receiving !== stream || video.srcObject !== stream) return;
-    receivingHasFrame = true;
+  function markFirstDecodedFrame(video, stream, metadata, publisherKey) {
+    const item = Array.from(receivedStreams.values()).find((entry) => entry.stream === stream);
+    if ((!item && receiving !== stream) || video.srcObject !== stream) return;
+    if (item) item.hasFrame = true;
+    if (receiving === stream) receivingHasFrame = true;
     const detail = {
       width: video.videoWidth,
       height: video.videoHeight,
+      publisher: publisherKey || 'single',
       mediaTime: metadata && Number.isFinite(metadata.mediaTime)
         ? Number(metadata.mediaTime.toFixed(2))
         : Number(video.currentTime.toFixed(2)),
     };
     reportOnce("video-first-frame", detail);
-    if (video === injectedVideo) {
-      hideStreamError(video);
-      reportOnce("player-ok", { width: video.videoWidth, height: video.videoHeight });
-    }
+    hideStreamError(video);
+    reportOnce(video === injectedVideo ? "player-ok" : "mini-player-ok", {
+      width: video.videoWidth,
+      height: video.videoHeight,
+    });
   }
 
 
   // Diz se o video esta REALMENTE tocando (e nao so com srcObject setado).
-  function reportVideoHealth(video) {
-    const stream = receiving;
+  function reportVideoHealth(video, stream = receiving, publisherKey = null) {
     if (!stream) return;
     for (const afterMs of [1500, 5000, 10000]) {
       setTimeout(() => {
@@ -500,6 +508,7 @@
             paused: video.paused,
             width: video.videoWidth,
             height: video.videoHeight,
+            publisher: publisherKey || 'single',
             time: Number(video.currentTime.toFixed(2)),
           });
         } catch {}
@@ -508,14 +517,14 @@
     if (typeof video.requestVideoFrameCallback === 'function'
       && observedFrameStreams.get(video) !== stream) {
       observedFrameStreams.set(video, stream);
-      video.requestVideoFrameCallback((_, metadata) => markFirstDecodedFrame(video, stream, metadata));
+      video.requestVideoFrameCallback((_, metadata) => markFirstDecodedFrame(video, stream, metadata, publisherKey));
     } else if (typeof video.requestVideoFrameCallback !== 'function'
       && observedFrameStreams.get(video) !== stream) {
       observedFrameStreams.set(video, stream);
       const detectDecodedFrame = () => {
-        if (receiving !== stream || video.srcObject !== stream) return;
+        if (video.srcObject !== stream) return;
         if (video.readyState >= 2 && video.videoWidth > 0 && !video.paused) {
-          markFirstDecodedFrame(video, stream, null);
+          markFirstDecodedFrame(video, stream, null, publisherKey);
         } else {
           requestAnimationFrame(detectDecodedFrame);
         }
@@ -527,8 +536,162 @@
   // ------------------------------------------------------------- painel ----
 
   function ensurePanel() {
-    // DESATIVADO: a janelinha flutuante foi removida.
-    // O stream vai exclusivamente para o player nativo do Discord.
+    if (panel && panel.isConnected && panel.__bdGrid) return panel.__bdGrid;
+    const root = document.createElement('section');
+    root.dataset.bdRsGrid = 'true';
+    root.setAttribute('aria-label', 'Transmissões Desjanjador');
+    Object.assign(root.style, {
+      position: 'fixed', inset: '6vh 4vw', zIndex: '2147483647',
+      display: 'flex', flexDirection: 'column', gap: '10px',
+      padding: '12px', boxSizing: 'border-box',
+      background: 'rgba(10, 13, 20, 0.97)', color: '#f2f3f5',
+      border: '1px solid rgba(255,255,255,.16)', borderRadius: '12px',
+      boxShadow: '0 12px 48px rgba(0,0,0,.55)',
+    });
+    const header = document.createElement('header');
+    Object.assign(header.style, {
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      minHeight: '32px', font: '600 14px system-ui, sans-serif',
+    });
+    const title = document.createElement('span');
+    title.textContent = 'Transmissões Desjanjador';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.textContent = 'Minimizar';
+    Object.assign(toggle.style, {
+      color: 'inherit', background: '#303642', border: '1px solid #555d6c',
+      borderRadius: '6px', padding: '5px 9px', cursor: 'pointer',
+    });
+    const grid = document.createElement('div');
+    grid.dataset.bdRsGridContent = 'true';
+    Object.assign(grid.style, {
+      display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(420px, 42vw), 1fr))',
+      gridAutoRows: 'minmax(0, 1fr)', gap: '10px', overflow: 'auto', minHeight: '0', flex: '1',
+    });
+    toggle.addEventListener('click', () => {
+      const collapsed = grid.style.display !== 'none';
+      grid.style.display = collapsed ? 'none' : 'grid';
+      root.style.inset = collapsed ? 'auto 4vw 4vh auto' : '6vh 4vw';
+      root.style.width = collapsed ? 'auto' : '';
+      root.style.height = collapsed ? 'auto' : '';
+      toggle.textContent = collapsed ? 'Expandir' : 'Minimizar';
+    });
+    header.append(title, toggle);
+    root.append(header, grid);
+    (document.body || document.documentElement).appendChild(root);
+    panel = root;
+    panel.__bdGrid = grid;
+    return grid;
+  }
+
+  function renderMultiStreamGrid() {
+    if (receivedStreams.size < 2) {
+      if (panel && panel.dataset.bdRsGrid) hidePanel();
+      return;
+    }
+    const grid = ensurePanel();
+    const existing = new Map(Array.from(grid.children, (tile) => [tile.dataset.bdPublisherKey, tile]));
+    let index = 0;
+    for (const [key, item] of receivedStreams) {
+      index += 1;
+      let tile = existing.get(key);
+      existing.delete(key);
+      if (!tile) {
+        tile = document.createElement('article');
+        tile.dataset.bdPublisherKey = key;
+        Object.assign(tile.style, {
+          minWidth: '0', minHeight: '0', display: 'flex', flexDirection: 'column',
+          background: '#080a0f', border: '1px solid #323947', borderRadius: '8px', overflow: 'hidden',
+        });
+        const label = document.createElement('div');
+        label.dataset.bdRsGridLabel = 'true';
+        Object.assign(label.style, {
+          padding: '7px 10px', color: '#cbd4e4', font: '12px system-ui, sans-serif',
+        });
+        const video = document.createElement('video');
+        video.dataset.bdRsGridVideo = 'true';
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.controls = true;
+        Object.assign(video.style, {
+          display: 'block', width: '100%', height: '100%', minHeight: '0',
+          objectFit: 'contain', background: '#000', flex: '1',
+        });
+        tile.append(label, video);
+      }
+      const label = tile.querySelector('[data-bd-rs-grid-label]');
+      const video = tile.querySelector('video');
+      if (label) {
+        label.textContent = 'Stream ' + index;
+        label.title = 'Peer ' + String(item.publisherId || key);
+      }
+      if (video && video.srcObject !== item.stream) {
+        video.srcObject = item.stream;
+        reportVideoHealth(video, item.stream, key);
+      }
+      if (video && video.paused) video.play().catch(() => {});
+      grid.appendChild(tile);
+    }
+    for (const tile of existing.values()) tile.remove();
+    const title = panel && panel.querySelector('header span');
+    if (title) title.textContent = receivedStreams.size + ' transmissões';
+  }
+
+  function removeReceivedStream(publisherKey) {
+    const key = String(publisherKey || '');
+    if (!key || !receivedStreams.delete(key)) return;
+    if (receivedStreams.size > 1) {
+      renderMultiStreamGrid();
+      return;
+    }
+    if (panel && panel.dataset.bdRsGrid) hidePanel();
+    const remaining = receivedStreams.entries().next();
+    if (!remaining.done) {
+      const [nextKey, item] = remaining.value;
+      receiving = item.stream;
+      receivingHasFrame = !!item.hasFrame;
+      p2pReceiving = true;
+      rendered = true;
+      installSrcObjectHook();
+      tryInjectNative();
+      return;
+    }
+    receiving = null;
+    p2pReceiving = false;
+    receivingHasFrame = false;
+    rendered = false;
+    if (injectedVideo && injectedVideo.isConnected) {
+      try { injectedVideo.srcObject = null; } catch {}
+    }
+    injectedVideo = null;
+  }
+
+  function closeIncomingPeer(entry, reason) {
+    if (!entry) return;
+    const key = entry.routeKey;
+    if (key && incomingPeers.get(key) === entry) incomingPeers.delete(key);
+    if (incomingByPublisher.get(entry.publisherKey) === key) incomingByPublisher.delete(entry.publisherKey);
+    if (key) {
+      answeredUfrags.delete(key);
+      pendingIce.delete(key);
+    }
+    try { entry.pc.close(); } catch {}
+    const hasReplacement = Array.from(incomingPeers.values()).some((other) =>
+      other.publisherKey === entry.publisherKey && other.pc.connectionState !== 'closed');
+    if (!hasReplacement) removeReceivedStream(entry.publisherKey);
+    report('remote-peer-closed', { peer: entry.from || 'unknown', reason });
+  }
+
+  function closePublisherPeer(entry) {
+    if (!entry) return;
+    if (entry.localUfrag && peers.get(entry.localUfrag) === entry) peers.delete(entry.localUfrag);
+    try { entry.pc.close(); } catch {}
+    if (peer === entry.pc) {
+      peer = Array.from(peers.values()).find((other) => other.pc.connectionState !== 'closed')?.pc
+        || Array.from(incomingPeers.values()).find((other) => other.pc.connectionState !== 'closed')?.pc
+        || null;
+    }
   }
 
   function showFeed(stream) {
@@ -548,10 +711,8 @@
 
   let srcObjectHooked = false;
 
-  // O Discord usa <video> pequeno pra miniatura da live (240x135) e pro PiP.
-  // Trocar o stream ali fazia aparecer uma janelinha a mais na tela; so mexemos
-  // em elementos do tamanho de um player de verdade. Os pequenos ficam na lista
-  // e sao retentados caso cresçam (janela redimensionada).
+  // O Discord usa <video> pequeno tanto para thumbnails comuns quanto para o
+  // mini-player persistente. So o segundo recebe o stream P2P.
   const pendingVideos = new Set();
 
   function playerSized(video) {
@@ -563,19 +724,68 @@
     }
   }
 
+  function videoVisible(video) {
+    try {
+      const rect = video.getBoundingClientRect();
+      const style = getComputedStyle(video);
+      return rect.width >= 2 && rect.height >= 2
+        && style.display !== 'none' && style.visibility !== 'hidden';
+    } catch {
+      return false;
+    }
+  }
+
+  function isPersistentMiniPlayer(video) {
+    try {
+      const rect = video.getBoundingClientRect();
+      if (rect.width < 96 || rect.height < 54 || playerSized(video)) return false;
+      let element = video.parentElement;
+      for (let depth = 0; element && depth < 9; depth += 1, element = element.parentElement) {
+        const className = typeof element.className === 'string' ? element.className : '';
+        const identity = [
+          className,
+          element.id || '',
+          element.getAttribute('aria-label') || '',
+          element.getAttribute('data-testid') || '',
+          element.getAttribute('data-list-item-id') || '',
+        ].join(' ');
+        if (/(?:picture.?in.?picture|\bpip\b|mini.?player|floating.?player|stream.?popout|video.?popout)/i.test(identity)) {
+          return true;
+        }
+
+        const style = getComputedStyle(element);
+        const bounds = element.getBoundingClientRect();
+        const overlayPosition = style.position === 'fixed' || style.position === 'absolute';
+        const stacked = style.zIndex !== 'auto' && Number(style.zIndex) > 0;
+        const compact = bounds.width >= rect.width && bounds.height >= rect.height
+          && bounds.width <= Math.min(window.innerWidth * 0.65, 760)
+          && bounds.height <= Math.min(window.innerHeight * 0.65, 540);
+        if (overlayPosition && stacked && compact) return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function canAttachNativePlayer(video) {
+    return playerSized(video) || isPersistentMiniPlayer(video);
+  }
+
   function retryPendingVideos() {
-    if (!receiving || !pendingVideos.size) return;
+    if (!receiving || receivedStreams.size > 1 || !pendingVideos.size) return;
     for (const video of Array.from(pendingVideos)) {
       if (!video.isConnected) { pendingVideos.delete(video); continue; }
-      if (!playerSized(video)) continue;
+      if (!canAttachNativePlayer(video)) continue;
       pendingVideos.delete(video);
       try {
         video.srcObject = receiving;
         video.play().catch(() => {});
         if (injectedVideo !== video) {
-          injectedVideo = video;
+          const keepCurrent = injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo);
+          if (!keepCurrent || playerSized(video)) injectedVideo = video;
+        }
+        if (injectedVideo === video) {
           if (panel) hidePanel();
-          reportOnce("player-sized-late", describeVideo(video));
+          reportOnce(playerSized(video) ? "player-sized-late" : "mini-player-attached", describeVideo(video));
           reportVideoHealth(video);
         }
       } catch {}
@@ -599,6 +809,10 @@
         set(value) {
           try {
             if (receiving && this && this.tagName === "VIDEO") {
+              if (this.dataset.bdRsGridVideo === 'true' || this.closest('[data-bd-rs-grid]')) {
+                return originalSet.call(this, value);
+              }
+              if (receivedStreams.size > 1) return originalSet.call(this, value);
               // O video do NOSSO painel fallback: o hook nunca mexe nele -
               // trocar o srcObject dele gerava hidePanel -> ensurePanel -> hide
               // em LOOP (o spam de panel-hidden que inundava o hub).
@@ -607,17 +821,18 @@
               const isClearing = value === null || value === undefined;
               // Troca o stream do Discord pelo nosso; deixa o "limpar" passar.
               if (isStream || (!isClearing && value != null)) {
-                if (!playerSized(this)) {
-                  // Miniatura/PiP: guarda pra tentar de novo se virar player.
+                if (!canAttachNativePlayer(this)) {
+                  // Thumbnail comum: tenta novamente se crescer ou virar PiP.
                   pendingVideos.add(this);
                 } else {
                   if (value !== receiving) {
-                    reportOnce("srcobject-hook", describeVideo(this));
+                    reportOnce(isPersistentMiniPlayer(this) ? "mini-player-hook" : "srcobject-hook", describeVideo(this));
                   }
                   if (injectedVideo !== this) {
-                    injectedVideo = this;
+                    const keepCurrent = injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo);
+                    if (!keepCurrent || playerSized(this)) injectedVideo = this;
                     if (panel) hidePanel();
-                    reportVideoHealth(this);
+                    if (injectedVideo === this) reportVideoHealth(this);
                   }
                   coverWithVideo(this, receiving);
                   return originalSet.call(this, receiving);
@@ -671,33 +886,68 @@
     let bestArea = 0;
     try {
       for (const video of document.querySelectorAll('video')) {
+        if (video.dataset.bdRsGridVideo === 'true' || video.closest('[data-bd-rs-grid]')) continue;
         const rect = video.getBoundingClientRect();
         const area = rect.width * rect.height;
-        if (rect.width < 100 || rect.height < 100) continue;
+        if (!playerSized(video)) continue;
         if (area > bestArea) { bestArea = area; best = video; }
+      }
+      if (best) return best;
+      for (const video of document.querySelectorAll('video')) {
+        if (video.dataset.bdRsGridVideo === 'true' || video.closest('[data-bd-rs-grid]')) continue;
+        if (isPersistentMiniPlayer(video)) return video;
       }
     } catch {}
     return best;
   }
 
-  function tryInjectNative() {
-    if (!receiving) return false;
-    const video = findStreamVideo();
-    if (!video) return false;
+  function findNativePlayerVideos() {
+    let largest = null;
+    let largestArea = 0;
+    const miniPlayers = [];
     try {
-      if (video.srcObject !== receiving) {
-        video.srcObject = receiving;
-        video.play().catch(() => {});
-        report('native-inject', { width: Math.round(video.getBoundingClientRect().width) });
+      for (const video of document.querySelectorAll('video')) {
+        if (video.dataset.bdRsGridVideo === 'true' || video.closest('[data-bd-rs-grid]')) continue;
+        const rect = video.getBoundingClientRect();
+        const area = rect.width * rect.height;
+        if (playerSized(video)) {
+          if (area > largestArea) { largest = video; largestArea = area; }
+        } else if (isPersistentMiniPlayer(video)) {
+          miniPlayers.push(video);
+        }
       }
-      injectedVideo = video;
-      if (panel) hidePanel();
-      coverWithVideo(video, receiving);
-      reportVideoHealth(video);
-      return true;
-    } catch {
-      return false;
+    } catch {}
+    return [...(largest ? [largest] : []), ...miniPlayers];
+  }
+
+  function tryInjectNative() {
+    if (!receiving || receivedStreams.size > 1) return false;
+    const targets = findNativePlayerVideos();
+    if (!targets.length) return false;
+    let attached = false;
+    for (const video of targets) {
+      try {
+        if (video.srcObject !== receiving) {
+          video.srcObject = receiving;
+          video.play().catch(() => {});
+          const rect = video.getBoundingClientRect();
+          const mini = isPersistentMiniPlayer(video) && !playerSized(video);
+          report(mini ? 'native-mini-inject' : 'native-inject', {
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          });
+        }
+        const keepCurrent = injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo);
+        if (!keepCurrent || playerSized(video)) injectedVideo = video;
+        if (panel) hidePanel();
+        coverWithVideo(video, receiving);
+        if (video === injectedVideo) {
+          reportVideoHealth(video, receiving, receivedStreams.size === 1 ? receivedStreams.keys().next().value : null);
+        }
+        attached = true;
+      } catch {}
     }
+    return attached;
   }
 
   // A janelinha e so fallback: se o player do Discord aparecer DEPOIS (o usuario
@@ -716,13 +966,26 @@
     rendered = true;
   }
 
-  function showStream(stream, source) {
-    if (receiving !== stream) receivingHasFrame = false;
+  function showStream(stream, source, publisherKey, publisherId) {
+    const key = String(publisherKey || publisherId || 'unknown');
+    const previous = receivedStreams.get(key);
+    const item = {
+      stream,
+      publisherId: publisherId || key,
+      hasFrame: previous && previous.stream === stream ? previous.hasFrame : false,
+    };
+    receivedStreams.set(key, item);
+    if (receiving !== stream) receivingHasFrame = item.hasFrame;
     p2pReceiving = true;
     receiving = stream;
     rendered = true;
-    report('rendered', { source, state: 'track-attached' });
+    report('rendered', { source, state: 'track-attached', peer: item.publisherId, streams: receivedStreams.size });
     log('stream de', source, '- aguardando o player do Discord');
+    if (receivedStreams.size > 1) {
+      renderMultiStreamGrid();
+      return;
+    }
+    if (panel && panel.dataset.bdRsGrid) hidePanel();
     installSrcObjectHook();
     tryInjectNative();
     let tries = 0;
@@ -1127,7 +1390,10 @@
   // ser a captura do motor Rust: ela vira uma MediaStream e vai por P2P.
   // O gatilho continua sendo o botao "Compartilhar tela" do Discord.
   async function publishFeed() {
-    if (publishing) return false;
+    if (publishing && feedPublishing) {
+      cancelPendingPublisherStop();
+      return true;
+    }
     const track = ensureFeedTrack();
     if (!track) return false;
     feedPublishing = true;
@@ -1162,8 +1428,7 @@
     let stream = null;
     try { stream = store.getCurrentUserActiveStream(); } catch { return; }
     if (stream) return;
-    forceStopPublishing();
-    report("native-stopped", { via: "store" });
+    schedulePublisherStop("store");
   }
 
   // ------------------------------------------------- fonte escolhida ------
@@ -1762,6 +2027,7 @@
       if (message.type === 'welcome') {
         const previousHubId = hubId;
         hubId = message.id;
+        globalThis.__bdHubId = Number(hubId);
         report('bridge-ready', { client: 'discord' });
         // A identidade do hub mudou (reconexao / troca de servico de voz): o
         // override do APEX pode ter sido resetado e o botao do Go Live travado
@@ -1774,7 +2040,10 @@
         // Se alguem ja estiver transmitindo, pede a oferta de novo (senao quem
         // abre o Discord depois do inicio da live perderia o stream). Pede so
         // se NAO ha peer vivo recebendo - pedir sempre realimentava o loop.
-        setTimeout(() => { if (!publishing && !hasLiveViewerPeer()) send({ type: 'request-offer' }); }, 1500);
+        setTimeout(() => {
+          if (publishing) send({ type: 'publisher-ready' });
+          if (!hasLiveViewerPeer()) send({ type: 'request-offer' });
+        }, 1500);
         return;
       }
       if (message.from && hubId !== null && message.from === hubId) return;
@@ -1885,33 +2154,80 @@
       && String(message.data) === String(globalThis.__bdWinPid || "");
   }
 
-  function forceStopPublishing() {
+  function cancelPendingPublisherStop() {
+    if (!publisherStopTimer) return;
+    clearTimeout(publisherStopTimer);
+    publisherStopTimer = null;
+    report('publisher-stop-cancelled', {});
+  }
+
+  function schedulePublisherStop(reason) {
     if (!publishingNative && !publishing) return;
+    if (publisherStopTimer) return;
+    publisherStopTimer = setTimeout(() => {
+      publisherStopTimer = null;
+      forceStopPublishing(reason);
+    }, PUBLISHER_STOP_GRACE_MS);
+    report('publisher-stop-pending', { reason, graceMs: PUBLISHER_STOP_GRACE_MS });
+  }
+
+  function forceStopPublishing(reason = 'lifecycle') {
+    cancelPendingPublisherStop();
+    publishGeneration += 1;
+    if (!publishingNative && !publishing) return;
+    send({ type: 'publisher-stopped' });
     publishingNative = false;
     feedPublishing = false;
     publishing = null;
     for (const entry of peers.values()) { try { if (entry.pc) entry.pc.close(); } catch {} }
     peers.clear();
-    try { if (peer) peer.close(); } catch {}
-    peer = null;
+    peer = Array.from(incomingPeers.values()).find((entry) => entry.pc && entry.pc.connectionState !== 'closed')?.pc || null;
     try { if (feedSocket) feedSocket.close(); } catch {}
     feedSocket = null;
-    report('native-stopped', { via: 'lifecycle' });
+    report('native-stopped', { via: reason });
   }
 
   async function onHub(message) {
     if (message.type === 'stream-start') {
-      if (isMyLifecycle(message)) { report('lifecycle-accepted', 'start'); void publishFeed(); }
+      if (isMyLifecycle(message)) {
+        cancelPendingPublisherStop();
+        report('lifecycle-accepted', 'start');
+        void publishFeed();
+      }
       return;
     }
     if (message.type === 'stream-stop') {
-      if (isMyLifecycle(message)) { report('lifecycle-accepted', 'stop'); forceStopPublishing(); }
+      if (isMyLifecycle(message)) {
+        report('lifecycle-accepted', 'stop');
+        schedulePublisherStop('lifecycle');
+      }
       return;
     }
     if (message.type === 'remote-ready') {
-      // A ponte pro relay (re)conectou. Se nao estou publicando, peco a oferta
-      // de novo - a anterior pode ter morrido dentro do tunel morto.
-      if (!publishing && !hasLiveViewerPeer()) send({ type: 'request-offer' });
+      // A ponte pro relay (re)conectou. Este cliente pode transmitir e receber
+      // ao mesmo tempo; pede as ofertas de todos os publicadores ativos.
+      if (!hasLiveViewerPeer()) send({ type: 'request-offer' });
+      return;
+    }
+    if (message.type === 'publisher-ready') {
+      if (message.from) send({ type: 'request-offer' });
+      return;
+    }
+    if (message.type === 'publisher-stopped') {
+      const publisherId = String(message.from || '');
+      for (const entry of Array.from(incomingPeers.values())) {
+        if (String(entry.from || '') === publisherId) closeIncomingPeer(entry, 'publisher-stopped');
+      }
+      return;
+    }
+    if (message.type === 'peer-disconnected') {
+      const publisherId = String(message.peer || '');
+      for (const entry of Array.from(incomingPeers.values())) {
+        if (String(entry.from || '') === publisherId) closeIncomingPeer(entry, 'peer-disconnected');
+      }
+      for (const entry of Array.from(peers.values())) {
+        if (String(entry.from || '') === publisherId) closePublisherPeer(entry);
+      }
       return;
     }
     if (message.type === 'settings') {
@@ -1919,7 +2235,7 @@
       return;
     }
     if (message.type === 'offer') {
-      await acceptOffer(message.sdp);
+      await acceptOffer(message.sdp, message.from);
     } else if (message.type === 'answer') {
       // O identificador de roteamento fica fora do SDP. Versoes antigas o
       // anexavam como atributo no fim; Chromium rejeita esse SDP malformado.
@@ -1947,8 +2263,9 @@
           report('answer-accepted', { ufrag: ufrag || 'none' });
           // No answer, a=ice-ufrag: e o ufrag DO VIEWER - chaveia os ICE dele.
           entry.viewerUfrag = extractUfrag(message.sdp);
-          const pending = pendingIce.get(entry.viewerUfrag) || [];
-          pendingIce.delete(entry.viewerUfrag);
+          const pendingKey = routeKey(message.from, entry.viewerUfrag);
+          const pending = pendingIce.get(pendingKey) || [];
+          pendingIce.delete(pendingKey);
           for (const c of pending) { try { await entry.pc.addIceCandidate(c); } catch {} }
         } catch (error) {
           log('answer falhou', String(error).slice(0, 120));
@@ -1957,31 +2274,33 @@
       }
     } else if (message.type === 'ice') {
       const ufrag = candidateUfrag(message.candidate);
-      // O viewer recebe os candidatos do publicador, que usam o ufrag da oferta.
-      // Eles podem chegar antes do setRemoteDescription terminar.
-      if (!publishing) {
-        if (!peer || !peer.remoteDescription || (ufrag && activeOfferUfrag && ufrag !== activeOfferUfrag)) {
-          queueIceCandidate(pendingViewerIce, ufrag || activeOfferUfrag, message.candidate);
+      // Primeiro roteia candidatos dos publicadores para o PeerConnection de
+      // recepcao correspondente; em seguida tenta o par de envio por viewerUfrag.
+      const incomingKey = ufrag ? routeKey(message.from, ufrag) : null;
+      const incoming = incomingKey ? incomingPeers.get(incomingKey) : null;
+      if (incoming) {
+        if (!incoming.pc.remoteDescription) {
+          queueIceCandidate(pendingIce, incomingKey, message.candidate);
           return;
         }
         try {
-          await peer.addIceCandidate(message.candidate);
+          await incoming.pc.addIceCandidate(message.candidate);
         } catch (error) {
           reportOnce('viewer-ice-failed', {
-            ufrag: ufrag || activeOfferUfrag || 'none',
+            ufrag: ufrag || 'none',
             error: String((error && error.message) || error).slice(0, 120),
           });
         }
         return;
       }
 
-      // O publicador roteia candidatos de cada viewer pelo ufrag enviado na answer.
       let target = null;
       for (const e of peers.values()) {
-        if (e.viewerUfrag && ufrag && e.viewerUfrag === ufrag) { target = e; break; }
+        if (e.viewerUfrag && ufrag && e.viewerUfrag === ufrag
+          && String(e.from || '') === String(message.from || '')) { target = e; break; }
       }
       if (!target) {
-        queueIceCandidate(pendingIce, ufrag, message.candidate);
+        if (ufrag) queueIceCandidate(pendingIce, routeKey(message.from, ufrag), message.candidate);
       } else if (message.candidate) {
         try { await target.pc.addIceCandidate(message.candidate); } catch {}
       }
@@ -2011,29 +2330,42 @@
         report('test-watching', { viewer: hubId });
       }
     } else if (message.type === 'request-offer') {
-      // Nunca destrua peers vivos por causa de um request-offer: reenviar a
-      // oferta existente ou abrir UM peer novo para quem pediu. Recriar em
-      // cascade era o loop (cada novo viewer matava as conexoes dos outros).
+      // Oferta dedicada por viewer. Nao reutilize uma oferta broadcast: duas
+      // respostas simultaneas nao podem negociar sobre o mesmo PeerConnection.
       if (!publishing) return;
-      void ensurePublisherPeer(message.from || null).catch((error) => log('request-offer', String(error).slice(0, 120)));
+      if (!message.from || String(message.from) === String(hubId)) return;
+      void ensurePublisherPeer(message.from).catch((error) => log('request-offer', String(error).slice(0, 120)));
     }
   }
 
   // ----------------------------------------------------------- webrtc ------
 
-  function createPeer() {
+  async function createPeer() {
+    try {
+      const ready = globalThis.__bdIceServersReady;
+      if (ready && typeof ready.then === 'function') {
+        await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 6500))]);
+      }
+    } catch {}
     const configuredIce = Array.isArray(globalThis.__bdIceServers)
       ? globalThis.__bdIceServers.filter((server) => server && server.urls)
       : [];
-    const pc = new RTCPeerConnection({ iceServers: [...ICE, ...configuredIce] });
+    const pc = new RTCPeerConnection({ iceServers: [...ICE, ...configuredIce], iceTransportPolicy: 'all' });
     pc.onicecandidate = (event) => { if (event.candidate) send({ type: 'ice', candidate: event.candidate }); };
     pc.ontrack = (event) => {
       report('p2p-track', {
         kind: event.track.kind,
         readyState: event.track.readyState,
         muted: event.track.muted,
+        peer: pc.__bdEntry && pc.__bdEntry.from || 'unknown',
       });
-      showStream(event.streams[0] || new MediaStream([event.track]), 'p2p');
+      const entry = pc.__bdEntry;
+      showStream(
+        event.streams[0] || new MediaStream([event.track]),
+        'p2p',
+        entry && entry.publisherKey,
+        entry && entry.from
+      );
     };
     pc.onconnectionstatechange = () => {
       log('peer', pc.connectionState);
@@ -2041,7 +2373,19 @@
         connection: pc.connectionState,
         ice: pc.iceConnectionState,
         signaling: pc.signalingState,
+        peer: pc.__bdEntry && pc.__bdEntry.from || 'unknown',
       });
+      if (pc.connectionState === 'connected') {
+        const active = pc.__bdEntry;
+        if (active && active.publisherKey) {
+          for (const old of Array.from(incomingPeers.values())) {
+            if (old !== active && old.publisherKey === active.publisherKey) {
+              closeIncomingPeer(old, 'replacement-connected');
+            }
+          }
+          incomingByPublisher.set(active.publisherKey, active.routeKey);
+        }
+      }
     };
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
@@ -2052,9 +2396,10 @@
       if (state !== 'failed') return;
 
       const publisherEntry = Array.from(peers.values()).find((entry) => entry.pc === pc);
+      const viewerEntry = Array.from(incomingPeers.values()).find((entry) => entry.pc === pc);
       if (publisherEntry && publishing) {
         void restartPublisherPeer(publisherEntry);
-      } else if (peer === pc && !publishing && !pc.__bdOfferRetryRequested) {
+      } else if (viewerEntry && !pc.__bdOfferRetryRequested) {
         pc.__bdOfferRetryRequested = true;
         send({ type: 'request-offer' });
       }
@@ -2119,8 +2464,10 @@
   }
 
   function hasLiveViewerPeer() {
-    const state = peer ? peer.connectionState : 'closed';
-    return state === 'new' || state === 'connecting' || state === 'connected';
+    return Array.from(incomingPeers.values()).some((entry) => {
+      const state = entry.pc && entry.pc.connectionState;
+      return state === 'new' || state === 'connecting' || state === 'connected';
+    });
   }
 
   function addStreamTracks(pc, stream) {
@@ -2147,11 +2494,45 @@
   }
 
   async function publish(stream) {
+    cancelPendingPublisherStop();
+    const replacing = !!publishing;
     publishing = stream;
-    // Peer inicial "aberto" (from=null): a oferta vai em broadcast e o PRIMEIRO
-    // answer legitimo assume o peer. Espectadores seguintes pedem offer e
-    // recebem peers proprios (mesh). Nada de peer unico para todos.
-    await ensurePublisherPeer(null);
+    publishGeneration += 1;
+    if (replacing) {
+      const byKind = new Map();
+      for (const track of stream.getTracks()) {
+        const list = byKind.get(track.kind) || [];
+        list.push(track);
+        byKind.set(track.kind, list);
+      }
+      for (const entry of peers.values()) {
+        const pc = entry.pc;
+        if (!pc || pc.connectionState === 'closed') continue;
+        const nextByKind = new Map();
+        const transceivers = pc.getTransceivers();
+        for (const sender of pc.getSenders()) {
+          const transceiver = transceivers.find((item) => item.sender === sender);
+          const kind = sender.track && sender.track.kind
+            || transceiver && transceiver.receiver && transceiver.receiver.track.kind;
+          if (kind !== 'video' && kind !== 'audio') continue;
+          const tracks = byKind.get(kind) || [];
+          const index = nextByKind.get(kind) || 0;
+          nextByKind.set(kind, index + 1);
+          const replacement = tracks[index] || null;
+          if (sender.track === replacement) continue;
+          try { await sender.replaceTrack(replacement); }
+          catch (error) {
+            reportOnce('replace-track-failed', {
+              kind,
+              error: String((error && error.message) || error).slice(0, 120),
+            });
+          }
+        }
+      }
+    }
+    // A disponibilidade e anunciada; cada viewer pede sua oferta dedicada.
+    // Assim viewers simultaneos nunca respondem sobre o mesmo PeerConnection.
+    send({ type: 'publisher-ready' });
     log('publicando', stream.getVideoTracks()[0] && stream.getVideoTracks()[0].label);
     return true;
   }
@@ -2159,74 +2540,86 @@
   // Cria (ou reenvia a oferta de) um peer de publicacao. NUNCA destrói peers
   // answered/vivos - recriar por request-offer era o loop infinito.
   async function ensurePublisherPeer(from) {
-    if (!publishing) return;
-    // 1. Espectador que ja tem peer vivo: so reenvia a oferta (dedupe no
-    // viewer responde com a mesma answer sem resetar nada).
-    for (const entry of peers.values()) {
-      if (entry.from !== null && from !== null && String(entry.from) === String(from)) {
-        if (entry.pc.iceConnectionState === 'failed') {
-          void restartPublisherPeer(entry);
+    if (!publishing || !from) return;
+    const viewerId = String(from);
+    const generation = publishGeneration;
+    if (creatingPublisherPeers.has(viewerId)) return;
+    creatingPublisherPeers.add(viewerId);
+    try {
+      // Um peer independente por viewer.
+      for (const entry of peers.values()) {
+        if (String(entry.from) === viewerId) {
+          if (entry.pc.iceConnectionState === 'failed') {
+            void restartPublisherPeer(entry);
+            return;
+          }
+          if (!entry.answered && entry.pc.connectionState !== 'closed') {
+            send({ type: 'offer', sdp: entry.sdp });
+          }
           return;
         }
-        if (!entry.answered && entry.pc.connectionState !== 'closed') {
-          send({ type: 'offer', sdp: entry.sdp });
-        }
+      }
+      const pc = await createPeer();
+      if (generation !== publishGeneration || !publishing) {
+        pc.close();
         return;
       }
-    }
-    // 2. Reutiliza peer de oferta pendente sem dono (oferta perdida no tunel).
-    for (const entry of peers.values()) {
-      if (entry.from === null && !entry.answered && entry.pc.connectionState !== 'closed') {
-        entry.from = from;
-        send({ type: 'offer', sdp: entry.sdp });
+      addStreamTracks(pc, publishing);
+      await applyBitrate(streamBitrate, streamFps);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (generation !== publishGeneration || !publishing) {
+        pc.close();
         return;
       }
+      const ufrag = extractUfrag(pc.localDescription.sdp);
+      if (!ufrag) throw new Error('oferta sem ICE ufrag');
+      const entry = {
+        pc,
+        from,
+        answered: false,
+        sdp: pc.localDescription.sdp,
+        localUfrag: ufrag,
+        iceRestarts: 0,
+        restarting: false,
+      };
+      pc.__bdEntry = entry;
+      peers.set(ufrag, entry);
+      if (!peer || peer.connectionState === 'closed') peer = pc;
+      send({ type: 'offer', sdp: pc.localDescription.sdp });
+    } finally {
+      creatingPublisherPeers.delete(viewerId);
     }
-    // 3. Peer novo. Limite duro: sem espaco, reenvia a ultima oferta viva.
-    if (peers.size >= MAX_PEERS) {
-      for (const entry of peers.values()) {
-        if (entry.pc.connectionState !== 'closed') { send({ type: 'offer', sdp: entry.sdp }); return; }
-      }
-      return;
-    }
-    const pc = createPeer();
-    addStreamTracks(pc, publishing);
-    await applyBitrate(streamBitrate, streamFps);
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    const ufrag = extractUfrag(pc.localDescription.sdp);
-    if (ufrag) peers.set(ufrag, {
-      pc,
-      from: from || null,
-      answered: false,
-      sdp: pc.localDescription.sdp,
-      localUfrag: ufrag,
-      iceRestarts: 0,
-      restarting: false,
-    });
-    if (!peer) peer = pc;
-    send({ type: 'offer', sdp: pc.localDescription.sdp });
   }
 
-  async function acceptOffer(sdp) {
-    if (publishing) return; // quem publica nao aceita
-    try { if (feedSocket) feedSocket.close(); } catch {}
-    feedSocket = null;
+  async function acceptOffer(sdp, from) {
     const ufrag = extractUfrag(sdp);
-    // Oferta repetida (mesmo ufrag): ja respondemos, reenvia a answer salva se existir
-    if (ufrag && answeredUfrags.has(ufrag)) {
-      const cached = answeredUfrags.get(ufrag);
+    if (!ufrag) {
+      reportOnce('accept-offer-failed', { peer: from || 'unknown', error: 'oferta sem ICE ufrag' });
+      return;
+    }
+    const publisherKey = String(from || ufrag || 'unknown');
+    const key = routeKey(from, ufrag);
+    // Oferta repetida do mesmo remetente: reenvia a answer sem criar outro PC.
+    if (answeredUfrags.has(key)) {
+      const cached = answeredUfrags.get(key);
       if (cached) send({ type: 'answer', sdp: cached, offerUfrag: ufrag });
       return;
     }
+    if (acceptingUfrags.has(key)) return;
+    acceptingUfrags.add(key);
     try {
-      if (peer) { try { peer.close(); } catch {} }
-      activeOfferUfrag = ufrag;
-      const viewerPeer = createPeer();
-      peer = viewerPeer;
+      const previousKey = incomingByPublisher.get(publisherKey);
+      if (previousKey === key && incomingPeers.has(key)) return;
+      const viewerPeer = await createPeer();
+      const entry = { pc: viewerPeer, from, publisherKey, remoteUfrag: ufrag, routeKey: key, answered: false };
+      viewerPeer.__bdEntry = entry;
+      incomingPeers.set(key, entry);
+      incomingByPublisher.set(publisherKey, key);
+      if (!peer || peer.connectionState === 'closed') peer = viewerPeer;
       await viewerPeer.setRemoteDescription({ type: 'offer', sdp });
-      const pending = pendingViewerIce.get(ufrag) || [];
-      pendingViewerIce.delete(ufrag);
+      const pending = pendingIce.get(key) || [];
+      pendingIce.delete(key);
       for (const candidate of pending) {
         try { await viewerPeer.addIceCandidate(candidate); }
         catch (error) {
@@ -2241,13 +2634,19 @@
       // O ufrag do publisher vai no envelope de sinalizacao, nao dentro do SDP.
       const answerSdp = viewerPeer.localDescription.sdp;
       send({ type: 'answer', sdp: answerSdp, offerUfrag: ufrag });
-      if (ufrag) {
-        answeredUfrags.set(ufrag, answerSdp);
-        if (answeredUfrags.size > 8) answeredUfrags.delete(answeredUfrags.keys().next().value);
-      }
-      reportOnce("offer-accepted", { ufrag: ufrag || "none" });
+      entry.answered = true;
+      answeredUfrags.set(key, answerSdp);
+      if (answeredUfrags.size > 64) answeredUfrags.delete(answeredUfrags.keys().next().value);
+      reportOnce("offer-accepted", { ufrag: ufrag || "none", peer: from || 'unknown' });
     } catch (error) {
-      reportOnce("accept-offer-failed", { error: String((error && error.message) || error).slice(0, 120) });
+      const entry = incomingPeers.get(key);
+      if (entry) closeIncomingPeer(entry, 'offer-failed');
+      reportOnce("accept-offer-failed", {
+        peer: from || 'unknown',
+        error: String((error && error.message) || error).slice(0, 120),
+      });
+    } finally {
+      acceptingUfrags.delete(key);
     }
   }
 
@@ -2604,7 +3003,10 @@
   setInterval(() => {
     if (!receiving || !receivingHasFrame) return;
     try {
-      const video = (injectedVideo && injectedVideo.isConnected) ? injectedVideo : findStreamVideo();
+      for (const video of findNativePlayerVideos()) hideStreamError(video);
+      const video = (injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo))
+        ? injectedVideo
+        : findStreamVideo();
       if (video) hideStreamError(video);
       for (const video of pendingVideos) {
         if (video.isConnected) hideStreamError(video);

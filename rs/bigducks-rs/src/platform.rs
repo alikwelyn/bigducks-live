@@ -9,7 +9,8 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
@@ -22,12 +23,12 @@ use windows_sys::Win32::System::Console::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, ShellExecuteW, NIF_ICON, NIF_INFO, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
-    NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_STATE, NIF_TIP, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NIS_HIDDEN, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW, RegisterClassW,
-    TranslateMessage, WNDCLASSW, IDI_APPLICATION, MSG, SW_SHOWNORMAL, WM_TIMER,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW, PostQuitMessage,
+    RegisterClassW, TranslateMessage, IDI_APPLICATION, MSG, SW_SHOWNORMAL, WM_TIMER, WNDCLASSW,
 };
 
 /// `HINSTANCE`/`HWND` nulos em windows-sys 0.59 sao ponteiros void.
@@ -35,6 +36,8 @@ const NULL_HANDLE: *mut core::ffi::c_void = std::ptr::null_mut();
 
 /// A thread principal cria esta janela escondida; ela e' o alvo dos baloes.
 static BALLOON_WINDOW: AtomicIsize = AtomicIsize::new(0);
+static BALLOON_GENERATION: AtomicU64 = AtomicU64::new(0);
+static BALLOON_LOCK: Mutex<()> = Mutex::new(());
 
 /// Caminho do executavel atual.
 pub fn exe_path() -> PathBuf {
@@ -143,30 +146,49 @@ pub fn create_balloon_window() {
     }
 }
 
-/// Mostra um balao na area de notificacao. Se a janela ainda nao existir, so'
-/// ignora (o texto ja foi para o log).
+/// Mostra uma notificacao sem deixar um segundo icone visivel na bandeja.
+/// O Shell exige um identificador de icone para o balao; esta entrada auxiliar
+/// e' marcada oculta antes de enviar o texto e removida alguns segundos depois.
 pub fn balloon(title: &str, body: &str) {
+    let Ok(_guard) = BALLOON_LOCK.lock() else {
+        return;
+    };
     let handle = BALLOON_WINDOW.load(Ordering::SeqCst) as *mut core::ffi::c_void;
     if handle.is_null() {
         return;
     }
+    let generation = BALLOON_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let mut data: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
     data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
     data.hWnd = handle;
     data.uID = 1;
-    data.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
+    data.uFlags = NIF_ICON | NIF_TIP | NIF_STATE;
     data.hIcon = unsafe { LoadIconW(NULL_HANDLE, IDI_APPLICATION) };
+    data.dwState = NIS_HIDDEN;
+    data.dwStateMask = NIS_HIDDEN;
     fill_utf16(&mut data.szTip, "Desjanjador");
-    fill_utf16(&mut data.szInfoTitle, title);
-    fill_utf16(&mut data.szInfo, body);
-    data.dwInfoFlags = NIIF_INFO;
     unsafe {
+        // Uma notificacao nova substitui a anterior, sem acumular entradas.
+        Shell_NotifyIconW(NIM_DELETE, &data);
         Shell_NotifyIconW(NIM_ADD, &data);
+        // Confirma que a entrada ficou oculta antes de enviar a notificacao.
+        data.uFlags = NIF_STATE;
+        Shell_NotifyIconW(NIM_MODIFY, &data);
+        data.uFlags = NIF_INFO;
+        fill_utf16(&mut data.szInfoTitle, title);
+        fill_utf16(&mut data.szInfo, body);
+        data.dwInfoFlags = NIIF_INFO;
+        Shell_NotifyIconW(NIM_MODIFY, &data);
     }
-    // O icone temporario so existe para o balao; remove depois que o Windows
-    // ja mostrou a notificacao.
-    std::thread::spawn(|| {
+    drop(_guard);
+    std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(10));
+        let Ok(_guard) = BALLOON_LOCK.lock() else {
+            return;
+        };
+        if BALLOON_GENERATION.load(Ordering::SeqCst) != generation {
+            return;
+        }
         let handle = BALLOON_WINDOW.load(Ordering::SeqCst) as *mut core::ffi::c_void;
         if handle.is_null() {
             return;
@@ -181,8 +203,16 @@ pub fn balloon(title: &str, body: &str) {
     });
 }
 
+/// Encerra o loop Win32 da bandeja depois que o updater deixou a janela pronta.
+pub fn quit_message() {
+    unsafe { PostQuitMessage(0) };
+}
+
 fn fill_utf16(destination: &mut [u16], value: &str) {
-    let encoded: Vec<u16> = value.encode_utf16().take(destination.len().saturating_sub(1)).collect();
+    let encoded: Vec<u16> = value
+        .encode_utf16()
+        .take(destination.len().saturating_sub(1))
+        .collect();
     destination[..encoded.len()].copy_from_slice(&encoded);
 }
 

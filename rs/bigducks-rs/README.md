@@ -121,18 +121,24 @@ está indo por P2P.
 
 ## Rede entre PCs
 
-O hub local sinaliza ofertas e candidatos; o relay remoto também leva apenas
-sinalização. O vídeo usa WebRTC direto. Para redes cujo NAT/firewall bloqueia
-essa ligação direta, configure um servidor TURN acessível pelos dois clientes.
+O caminho prioritário é WebRTC P2P direto. O relay remoto leva apenas
+sinalização; ICE tenta primeiro uma rota direta e usa TURN quando NAT/firewall
+impede essa rota. Para Cloudflare TURN, configure `CLOUDFLARE_TURN_KEY_ID` e
+`CLOUDFLARE_TURN_KEY_SECRET` somente no processo Rust do relay (`--relay`). O
+relay emite credenciais temporárias pelo endpoint `/turn/credentials`; as chaves
+longas nunca vão para o `.exe` nem para `remote-hub.txt`.
+
 No `%LOCALAPPDATA%\DiscordStream\remote-hub.txt`, mantenha URL/segredo na linha
-1 e sala na linha 2; a linha 3 opcional recebe os servidores ICE em JSON, por
-exemplo:
+1 e sala na linha 2. A linha 3 opcional ainda aceita servidores ICE estáticos,
+por exemplo:
 
 ```json
 [{"urls":"turn:turn.example.net:3478","username":"usuario","credential":"senha"}]
 ```
 
-Sem TURN válido, STUN sozinho não garante conexão entre redes diferentes.
+Sem TURN válido, STUN sozinho não garante conexão entre redes diferentes. O
+Cloudflare SFU ainda não faz parte deste fallback; ele exige uma sessão de mídia
+separada e será habilitado somente após o caminho P2P → TURN ficar validado.
 - **Sem áudio** ainda.
 - O painel é uma janelinha sobre o Discord (levar para o `<video>` nativo do
   stream é o passo seguinte).

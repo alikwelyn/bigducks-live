@@ -40,6 +40,7 @@ mod tray;
 #[cfg(windows)]
 mod update;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -50,10 +51,10 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, Query, State,
+        Json, Path as AxumPath, Query, State,
     },
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use tokio::sync::broadcast;
@@ -142,6 +143,15 @@ struct AppState {
     status: status::Shared,
     /// Diretorio de onde o relay serve o manifest e o exe (auto-update).
     release_dir: PathBuf,
+    /// Chaves Cloudflare Realtime TURN: lidas somente pelo relay Rust.
+    turn_key_id: Option<String>,
+    turn_key_secret: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct TurnCredentialsRequest {
+    room: String,
+    secret: String,
 }
 
 // --------------------------------------------------------------------- args --
@@ -416,10 +426,8 @@ fn run(args: Args) -> anyhow::Result<()> {
     // nao disputam a bandeja, entao ficam de fora do guard.
     #[cfg(windows)]
     {
-        let one_shot = args.uninstall
-            || args.install_only
-            || args.check_restart
-            || args.restart_discord;
+        let one_shot =
+            args.uninstall || args.install_only || args.check_restart || args.restart_discord;
         if !one_shot {
             match single_instance::acquire() {
                 single_instance::Status::First => {
@@ -571,6 +579,12 @@ fn build_state(args: &Args, relay: bool) -> AppState {
         secret: DEFAULT_SECRET.to_string(),
         status: status::shared(),
         release_dir: args.release_dir.clone(),
+        turn_key_id: std::env::var("CLOUDFLARE_TURN_KEY_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
+        turn_key_secret: std::env::var("CLOUDFLARE_TURN_KEY_SECRET")
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
     }
 }
 
@@ -584,6 +598,8 @@ fn router(state: AppState) -> Router {
         .route("/webrtc-test", get(webrtc_test_page))
         .route("/webrtc-test.js", get(webrtc_test_js))
         .route("/test-config", get(test_config))
+        .route("/ice-config", get(local_ice_config))
+        .route("/turn/credentials", post(turn_credentials))
         .route("/plugins.js", get(plugins_js))
         .route("/test-publish", get(test_publish))
         .route("/source", get(set_source))
@@ -599,20 +615,33 @@ fn router(state: AppState) -> Router {
 
 /// Relay: servidor de sinalizacao puro (Linux/Dokploy). Bloqueia.
 fn relay_serve(state: AppState, port: u16) -> anyhow::Result<()> {
+    let turn_configured = state.turn_key_id.is_some() && state.turn_key_secret.is_some();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async move {
         let app = router(state);
         let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-        logging::write_line(&format!("Desjanjador RELAY (so sinalizacao) em 0.0.0.0:{port}"));
+        logging::write_line(&format!(
+            "Desjanjador RELAY (so sinalizacao) em 0.0.0.0:{port}"
+        ));
         logging::write_line(&format!(
             "  hub P2P:   ws://SEU_HOST:{port}/hub      <- os motores conectam aqui"
         ));
-        logging::write_line("  nada de video/audio passa por aqui: so offer/answer/ice (alguns KB)");
+        logging::write_line(
+            "  nada de video/audio passa por aqui: so offer/answer/ice (alguns KB)",
+        );
         logging::write_line(&format!(
             "  update:    https://SEU_HOST/release.json + /{RELEASE_ASSET} (dir: {})",
             std::env::var("BIGDUCKS_RELEASE_DIR").unwrap_or_else(|_| "releases".into())
+        ));
+        logging::write_line(&format!(
+            "  Cloudflare TURN: {} (credenciais curtas, chave permanece no servidor)",
+            if turn_configured {
+                "configurado"
+            } else {
+                "nao configurado"
+            }
         ));
         axum::serve(listener, app).await?;
         Ok::<(), anyhow::Error>(())
@@ -683,10 +712,16 @@ fn desktop_main(args: Args, report: Option<install::InstallReport>) {
     if let Ok(mut status) = state.status.lock() {
         status.autostart = autostart_on;
     }
-    logging::write_line(&format!("autostart (HKCU Run): {}", if autostart_on { "ligado" } else { "desligado" }));
+    logging::write_line(&format!(
+        "autostart (HKCU Run): {}",
+        if autostart_on { "ligado" } else { "desligado" }
+    ));
 
     // Runtime tokio vive nas threads de trabalho; a main so' bombeia mensagens.
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             logging::write_line(&format!("WARN nao consegui criar o runtime: {error}"));
@@ -804,19 +839,23 @@ async fn page(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn webrtc_test_page(State(state): State<AppState>) -> axum::response::Response {
     if state.relay {
-        return (StatusCode::NOT_FOUND, "diagnostico disponivel apenas no app local").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "diagnostico disponivel apenas no app local",
+        )
+            .into_response();
     }
     let page = web_test_asset(state.web_dev_assets, "webrtc-test.html", WEBRTC_TEST_PAGE);
-    (
-        [("cache-control", "no-store")],
-        Html(page),
-    )
-        .into_response()
+    ([("cache-control", "no-store")], Html(page)).into_response()
 }
 
 async fn webrtc_test_js(State(state): State<AppState>) -> axum::response::Response {
     if state.relay {
-        return (StatusCode::NOT_FOUND, "diagnostico disponivel apenas no app local").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "diagnostico disponivel apenas no app local",
+        )
+            .into_response();
     }
     let script = web_test_asset(state.web_dev_assets, "webrtc-test.js", WEBRTC_TEST_JS);
     (
@@ -836,35 +875,13 @@ async fn test_config(State(state): State<AppState>) -> axum::response::Response 
         return (StatusCode::NOT_FOUND, "configuracao indisponivel").into_response();
     }
 
-    let config_path = install::data_dir().join("remote-hub.txt");
-    let contents = std::fs::read_to_string(config_path).unwrap_or_default();
-    let mut lines = contents.lines();
-    let mut hub_parts = lines.next().unwrap_or_default().split_whitespace();
-    let hub_url = hub_parts.next().unwrap_or_default();
-    let secret = hub_parts.next().unwrap_or_default();
-    let room = lines.next().unwrap_or_default().trim();
-    let ice_servers = lines
-        .next()
-        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .and_then(|value| value.as_array().cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|server| {
-            let Some(urls) = server.get("urls") else {
-                return false;
-            };
-            urls.is_string()
-                || urls
-                    .as_array()
-                    .is_some_and(|items| items.iter().all(|item| item.is_string()))
-        })
-        .collect::<Vec<_>>();
+    let config = read_remote_client_config();
 
     let body = serde_json::json!({
-        "hubUrl": hub_url,
-        "secret": secret,
-        "room": room,
-        "iceServers": ice_servers,
+        "hubUrl": config.hub_url,
+        "secret": config.secret,
+        "room": config.room,
+        "iceServers": config.ice_servers,
     });
     (
         [
@@ -874,6 +891,271 @@ async fn test_config(State(state): State<AppState>) -> axum::response::Response 
         body.to_string(),
     )
         .into_response()
+}
+
+/// Credenciais temporarias para os clientes locais. O app de bandeja nao tem
+/// chaves Cloudflare: consulta o relay Rust, que autentica com a chave privada.
+async fn local_ice_config(State(state): State<AppState>) -> axum::response::Response {
+    if state.relay {
+        return (StatusCode::NOT_FOUND, "configuracao indisponivel").into_response();
+    }
+
+    let config = read_remote_client_config();
+    let mut ice_servers = config.ice_servers;
+    let relay_configured =
+        !config.hub_url.is_empty() && !config.secret.is_empty() && !config.room.is_empty();
+    let (turn_available, turn_status) = if !relay_configured {
+        (false, "not-configured")
+    } else if let Some(endpoint) = turn_endpoint_from_hub(&config.hub_url) {
+        let secret = config.secret;
+        let room = config.room;
+        let result =
+            tokio::task::spawn_blocking(move || request_turn_servers(&endpoint, &secret, &room))
+                .await;
+        match result {
+            Ok(Ok(turn_servers)) => {
+                let available = turn_servers.iter().any(is_turn_server);
+                append_unique_ice_servers(&mut ice_servers, turn_servers);
+                (
+                    available,
+                    if available { "ready" } else { "no-turn-server" },
+                )
+            }
+            Ok(Err(_)) => (false, "credentials-unavailable"),
+            Err(_) => (false, "request-failed"),
+        }
+    } else {
+        (false, "invalid-relay-url")
+    };
+
+    let body = serde_json::json!({
+        "iceServers": ice_servers,
+        "turnAvailable": turn_available,
+        "turnStatus": turn_status,
+    });
+    (
+        [
+            ("content-type", "application/json; charset=utf-8"),
+            ("cache-control", "no-store"),
+        ],
+        body.to_string(),
+    )
+        .into_response()
+}
+
+/// O segredo de longa duracao nunca deixa o servidor. O cliente recebe apenas
+/// username/credential de curta duracao para configurar RTCPeerConnection.
+async fn turn_credentials(
+    State(state): State<AppState>,
+    Json(request): Json<TurnCredentialsRequest>,
+) -> axum::response::Response {
+    if !state.relay {
+        return (StatusCode::NOT_FOUND, "indisponivel").into_response();
+    }
+    if state.secret.is_empty() || request.secret != state.secret {
+        return (StatusCode::UNAUTHORIZED, "nao autorizado").into_response();
+    }
+    let room = request.room.trim();
+    if room.is_empty() || room.len() > 128 {
+        return (StatusCode::BAD_REQUEST, "sala invalida").into_response();
+    }
+
+    match cloudflare_turn_servers(&state).await {
+        Ok(ice_servers) => {
+            let body = serde_json::json!({ "iceServers": ice_servers });
+            (
+                [
+                    ("content-type", "application/json; charset=utf-8"),
+                    ("cache-control", "no-store"),
+                ],
+                body.to_string(),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            logging::write_line(&format!("turn: indisponivel ({error})"));
+            (StatusCode::SERVICE_UNAVAILABLE, "TURN indisponivel").into_response()
+        }
+    }
+}
+
+struct RemoteClientConfig {
+    hub_url: String,
+    secret: String,
+    room: String,
+    ice_servers: Vec<serde_json::Value>,
+}
+
+fn read_remote_client_config() -> RemoteClientConfig {
+    let file = install::data_dir().join("remote-hub.txt");
+    let contents = std::fs::read_to_string(file).unwrap_or_default();
+    let mut lines = contents.lines();
+    let mut hub_parts = lines.next().unwrap_or_default().split_whitespace();
+    let hub_url = hub_parts.next().unwrap_or_default().to_string();
+    let secret = hub_parts.next().unwrap_or_default().to_string();
+    let room = lines.next().unwrap_or_default().trim().to_string();
+    let ice_servers = lines
+        .next()
+        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .map(|value| sanitize_ice_servers(&value))
+        .unwrap_or_default();
+    RemoteClientConfig {
+        hub_url,
+        secret,
+        room,
+        ice_servers,
+    }
+}
+
+fn turn_endpoint_from_hub(hub_url: &str) -> Option<String> {
+    let (protocol, rest) = hub_url.split_once("://")?;
+    let scheme = match protocol {
+        "wss" => "https",
+        "ws" => "http",
+        _ => return None,
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}/turn/credentials"))
+}
+
+fn request_turn_servers(
+    endpoint: &str,
+    secret: &str,
+    room: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let payload = serde_json::json!({ "secret": secret, "room": room }).to_string();
+    let response = ureq::post(endpoint)
+        .set("content-type", "application/json")
+        .set("accept", "application/json")
+        .timeout(Duration::from_secs(5))
+        .send_string(&payload)
+        .map_err(|error| match error {
+            ureq::Error::Status(status, _) => format!("relay HTTP {status}"),
+            ureq::Error::Transport(_) => "relay indisponivel".to_string(),
+        })?;
+    let body = response
+        .into_string()
+        .map_err(|_| "resposta do relay invalida".to_string())?;
+    let value: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| "JSON do relay invalido".to_string())?;
+    let servers = sanitize_ice_servers(&value);
+    if servers.is_empty() {
+        return Err("relay retornou lista ICE vazia".to_string());
+    }
+    Ok(servers)
+}
+
+async fn cloudflare_turn_servers(state: &AppState) -> Result<Vec<serde_json::Value>, String> {
+    let key_id = state
+        .turn_key_id
+        .clone()
+        .ok_or_else(|| "chave TURN nao configurada".to_string())?;
+    let key_secret = state
+        .turn_key_secret
+        .clone()
+        .ok_or_else(|| "chave TURN nao configurada".to_string())?;
+    if !key_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("ID da chave TURN invalido".to_string());
+    }
+    tokio::task::spawn_blocking(move || {
+        let endpoint = format!(
+            "https://rtc.live.cloudflare.com/v1/turn/keys/{}/credentials/generate-ice-servers",
+            key_id
+        );
+        let response = ureq::post(&endpoint)
+            .set("authorization", &format!("Bearer {key_secret}"))
+            .set("content-type", "application/json")
+            .set("accept", "application/json")
+            .timeout(Duration::from_secs(8))
+            .send_string(r#"{"ttl":86400}"#)
+            .map_err(|error| match error {
+                ureq::Error::Status(status, _) => format!("Cloudflare HTTP {status}"),
+                ureq::Error::Transport(_) => "Cloudflare indisponivel".to_string(),
+            })?;
+        let body = response
+            .into_string()
+            .map_err(|_| "resposta Cloudflare invalida".to_string())?;
+        let value: serde_json::Value =
+            serde_json::from_str(&body).map_err(|_| "JSON Cloudflare invalido".to_string())?;
+        let ice_servers = sanitize_ice_servers(&value);
+        if !ice_servers.iter().any(is_turn_server) {
+            return Err("Cloudflare nao retornou servidor TURN utilizavel".to_string());
+        }
+        Ok(ice_servers)
+    })
+    .await
+    .map_err(|_| "worker TURN interrompido".to_string())?
+}
+
+fn sanitize_ice_servers(value: &serde_json::Value) -> Vec<serde_json::Value> {
+    let servers = value
+        .get("iceServers")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| value.as_array());
+    let Some(servers) = servers else {
+        return Vec::new();
+    };
+    servers
+        .iter()
+        .filter_map(|server| {
+            let urls = server.get("urls")?;
+            let filtered_urls = if let Some(url) = urls.as_str() {
+                (!is_blocked_turn_url(url)).then(|| serde_json::Value::String(url.to_string()))
+            } else if let Some(urls) = urls.as_array() {
+                let urls = urls
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|url| !is_blocked_turn_url(url))
+                    .map(|url| serde_json::Value::String(url.to_string()))
+                    .collect::<Vec<_>>();
+                (!urls.is_empty()).then_some(serde_json::Value::Array(urls))
+            } else {
+                None
+            }?;
+            let mut filtered = server.as_object()?.clone();
+            filtered.insert("urls".to_string(), filtered_urls);
+            Some(serde_json::Value::Object(filtered))
+        })
+        .collect()
+}
+
+fn is_blocked_turn_url(url: &str) -> bool {
+    let endpoint = url.split('?').next().unwrap_or(url);
+    endpoint.rsplit(':').next().is_some_and(|port| port == "53")
+}
+
+fn is_turn_server(server: &serde_json::Value) -> bool {
+    let is_turn_url = |url: &str| url.starts_with("turn:") || url.starts_with("turns:");
+    server
+        .get("urls")
+        .and_then(|urls| {
+            urls.as_str().map(|url| is_turn_url(url)).or_else(|| {
+                urls.as_array().map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .any(is_turn_url)
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn append_unique_ice_servers(
+    destination: &mut Vec<serde_json::Value>,
+    incoming: Vec<serde_json::Value>,
+) {
+    for server in incoming {
+        if !destination.contains(&server) {
+            destination.push(server);
+        }
+    }
 }
 
 const WEBRTC_TEST_PAGE: &str = include_str!("../web/webrtc-test.html");
@@ -916,7 +1198,10 @@ async fn plugins_js(State(state): State<AppState>) -> axum::response::Response {
 /// e o outro assistir. Serve para validar o P2P de ponta a ponta sem clique.
 ///   GET /test-publish?publisher=<id-do-hub>
 /// O id aparece no log do motor como `hub: peer N conectado`.
-async fn test_publish(State(state): State<AppState>, Query(query): Query<TestPublishQuery>) -> String {
+async fn test_publish(
+    State(state): State<AppState>,
+    Query(query): Query<TestPublishQuery>,
+) -> String {
     let publisher = query.publisher.unwrap_or_else(|| "1".to_string());
     let message = format!("{{\"type\":\"test-publish\",\"publisher\":\"{publisher}\"}}");
     let _ = state.hub.send(Arc::new(HubMessage {
@@ -929,7 +1214,10 @@ async fn test_publish(State(state): State<AppState>, Query(query): Query<TestPub
 
 /// O bridge manda aqui o `sourceId` escolhido no modal do Discord
 /// (`screen:0:1`, `window:123456`). A captura passa a usar essa fonte.
-async fn set_source(State(state): State<AppState>, Query(query): Query<SourceQuery>) -> impl IntoResponse {
+async fn set_source(
+    State(state): State<AppState>,
+    Query(query): Query<SourceQuery>,
+) -> impl IntoResponse {
     let mut headers = HeaderMap::new();
     headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
     // Janela vem como PID; tela vem como sourceId.
@@ -986,9 +1274,7 @@ fn should_log_event(name: &str, data: &str) -> bool {
     };
     let now = Instant::now();
     match guard.get(name) {
-        Some((at, last))
-            if *last == data && now.duration_since(*at) < Duration::from_secs(30) =>
-        {
+        Some((at, last)) if *last == data && now.duration_since(*at) < Duration::from_secs(30) => {
             false
         }
         _ => {
@@ -1053,7 +1339,10 @@ fn safe_signaling_summary(text: &str) -> String {
 
 #[cfg(test)]
 mod signaling_log_tests {
-    use super::safe_signaling_summary;
+    use super::{
+        is_turn_server, safe_signaling_summary, sanitize_ice_servers, stamp_hub_sender,
+        turn_endpoint_from_hub,
+    };
 
     #[test]
     fn candidate_log_omits_ip_and_port() {
@@ -1073,6 +1362,61 @@ mod signaling_log_tests {
         assert_eq!(summary, "signaling type=diag-signal bytes=20");
         assert!(!summary.contains("203.0.113.9"));
         assert!(!summary.contains("TEMP-CODE"));
+    }
+
+    #[test]
+    fn relay_sender_id_is_stable_across_bridged_messages() {
+        let text = r#"{"from":"bd-0123456789abcdef01234567-41","bdOrigin":true,"type":"ice"}"#;
+        let stamped = stamp_hub_sender(text, 99);
+        let packet: serde_json::Value = serde_json::from_str(&stamped).unwrap();
+        assert_eq!(packet["from"], "bd-0123456789abcdef01234567-41");
+    }
+
+    #[test]
+    fn local_sender_id_comes_from_the_relay_socket() {
+        let text = r#"{"from":777,"type":"offer"}"#;
+        let stamped = stamp_hub_sender(text, 99);
+        let packet: serde_json::Value = serde_json::from_str(&stamped).unwrap();
+        assert_eq!(packet["from"], 99);
+    }
+
+    #[test]
+    fn cloudflare_turn_config_drops_browser_blocked_port_53() {
+        let response = serde_json::json!({
+            "iceServers": [
+                { "urls": ["stun:stun.cloudflare.com:3478"] },
+                {
+                    "urls": [
+                        "turn:turn.cloudflare.com:3478?transport=udp",
+                        "turn:turn.cloudflare.com:53?transport=udp",
+                        "turns:turn.cloudflare.com:443?transport=tcp"
+                    ],
+                    "username": "short-lived-user",
+                    "credential": "short-lived-credential"
+                }
+            ]
+        });
+        let servers = sanitize_ice_servers(&response);
+        assert_eq!(servers.len(), 2);
+        assert!(servers.iter().any(is_turn_server));
+        let urls = servers[1]["urls"].as_array().unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(urls
+            .iter()
+            .all(|url| !url.as_str().unwrap().contains(":53")));
+        assert_eq!(servers[1]["username"], "short-lived-user");
+    }
+
+    #[test]
+    fn turn_endpoint_uses_the_signaling_host() {
+        assert_eq!(
+            turn_endpoint_from_hub("wss://relay.example.test/hub"),
+            Some("https://relay.example.test/turn/credentials".to_string())
+        );
+        assert_eq!(
+            turn_endpoint_from_hub("https://relay.example.test/hub"),
+            None
+        );
     }
 }
 
@@ -1097,7 +1441,10 @@ async fn bridge_event(
         logging::write_line(&format!("preload: {name} {data}"));
     }
     (
-        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
         "ok",
     )
 }
@@ -1228,7 +1575,8 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     if state.relay {
         return (StatusCode::NOT_FOUND, "relay: sem feed").into_response();
     }
-    ws.on_upgrade(move |socket| handle_socket(socket, state)).into_response()
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
@@ -1315,7 +1663,8 @@ async fn hub_room_handler(
             return (StatusCode::UNAUTHORIZED, "segredo invalido").into_response();
         }
     }
-    ws.on_upgrade(move |socket| handle_hub(socket, state, room)).into_response()
+    ws.on_upgrade(move |socket| handle_hub(socket, state, room))
+        .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -1328,6 +1677,7 @@ struct RoomQuery {
 /// nao precisa de roteamento.
 async fn handle_hub(mut socket: WebSocket, state: AppState, room: String) {
     let id = NEXT_HUB_ID.fetch_add(1, Ordering::Relaxed);
+    let mut bridged_origins = HashSet::<String>::new();
     let mut incoming = state.hub.subscribe();
     let welcome = format!("{{\"type\":\"welcome\",\"id\":{id}}}");
     if socket.send(Message::Text(welcome.into())).await.is_err() {
@@ -1346,10 +1696,22 @@ async fn handle_hub(mut socket: WebSocket, state: AppState, room: String) {
             message = socket.recv() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        let event_type = serde_json::from_str::<serde_json::Value>(&text)
-                            .ok()
+                        let packet = serde_json::from_str::<serde_json::Value>(&text).ok();
+                        let event_type = packet.as_ref()
                             .and_then(|value| value.get("type").and_then(|kind| kind.as_str()).map(str::to_owned))
                             .unwrap_or_default();
+                        if state.relay
+                            && packet.as_ref()
+                                .and_then(|value| value.get("bdOrigin"))
+                                .and_then(serde_json::Value::as_bool) == Some(true)
+                        {
+                            if let Some(origin) = packet.as_ref()
+                                .and_then(|value| value.get("from"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                bridged_origins.insert(origin.to_string());
+                            }
+                        }
                         let is_signaling = matches!(event_type.as_str(), "ice" | "answer" | "offer" | "diag-signal");
                         if is_signaling {
                             let summary = safe_signaling_summary(&text);
@@ -1370,7 +1732,7 @@ async fn handle_hub(mut socket: WebSocket, state: AppState, room: String) {
                         }
                         let _ = state.hub.send(Arc::new(HubMessage {
                             from: id,
-                            text: text.to_string(),
+                            text: stamp_hub_sender(&text, id),
                             room: room.clone(),
                         }));
                     }
@@ -1400,7 +1762,41 @@ async fn handle_hub(mut socket: WebSocket, state: AppState, room: String) {
             }
         }
     }
+    // Fechar uma conexão limpa somente os pares que ela representava. Em uma
+    // ponte remota isso inclui cada identidade de janela, não o socket comum.
+    let mut disconnected = bridged_origins;
+    disconnected.insert(id.to_string());
+    for peer in disconnected {
+        let text = serde_json::json!({
+            "from": id,
+            "type": "peer-disconnected",
+            "peer": peer,
+        })
+        .to_string();
+        let _ = state.hub.send(Arc::new(HubMessage {
+            from: id,
+            text,
+            room: room.clone(),
+        }));
+    }
     logging::write_line(&format!("hub: peer {id} saiu"));
+}
+
+/// Para mensagens locais, usa o ID do WebSocket atribuido pelo relay. Mensagens
+/// transportadas pela bridge preservam o `from` global estavel, que ja foi
+/// namespaced na origem; sobrescreve-lo faria todas as ofertas remotas parecerem
+/// originadas pelo unico socket da bridge.
+fn stamp_hub_sender(text: &str, id: u64) -> String {
+    let Ok(mut packet) = serde_json::from_str::<serde_json::Value>(text) else {
+        return text.to_string();
+    };
+    let Some(object) = packet.as_object_mut() else {
+        return text.to_string();
+    };
+    if object.get("bdOrigin").and_then(serde_json::Value::as_bool) != Some(true) {
+        object.insert("from".to_string(), serde_json::Value::from(id));
+    }
+    packet.to_string()
 }
 
 // ----------------------------------------------------------- auto-update ----
@@ -1424,11 +1820,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 async fn release_manifest(State(state): State<AppState>) -> axum::response::Response {
     let manifest = state.release_dir.join("release.json");
     if let Ok(bytes) = std::fs::read(&manifest) {
-        return (
-            [("content-type", "application/json; charset=utf-8")],
-            bytes,
-        )
-            .into_response();
+        return ([("content-type", "application/json; charset=utf-8")], bytes).into_response();
     }
 
     let exe = state.release_dir.join(RELEASE_ASSET);
@@ -1477,11 +1869,7 @@ async fn release_file(
 
 fn serve_release_file(directory: &Path, name: &str) -> axum::response::Response {
     match std::fs::read(directory.join(name)) {
-        Ok(data) => (
-            [("content-type", "application/octet-stream")],
-            data,
-        )
-            .into_response(),
+        Ok(data) => ([("content-type", "application/octet-stream")], data).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "arquivo ausente").into_response(),
     }
 }
@@ -1552,7 +1940,10 @@ fn start_capture(state: &AppState) {
                     captured_frames += 1;
                     if !first_frame_captured {
                         first_frame_captured = true;
-                        logging::write_line(&format!("capture: primeiro frame capturado ({} bytes)", data.len()));
+                        logging::write_line(&format!(
+                            "capture: primeiro frame capturado ({} bytes)",
+                            data.len()
+                        ));
                     }
                     let timestamp_us = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -1579,9 +1970,8 @@ fn start_capture(state: &AppState) {
                             "capture failed (x{consecutive_errors}): {error}"
                         ));
                     }
-                    let backoff = Duration::from_millis(
-                        (200u64 * consecutive_errors as u64).min(3_000),
-                    );
+                    let backoff =
+                        Duration::from_millis((200u64 * consecutive_errors as u64).min(3_000));
                     std::thread::sleep(backoff);
                     // Sempre `continue`: o contador de erros NAO pode ser zerado
                     // aqui, senao ele volta pra 1 a cada volta do loop e o

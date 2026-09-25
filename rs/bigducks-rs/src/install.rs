@@ -23,7 +23,12 @@ const MAIN_BRIDGE: &str = include_str!("../web/main-bridge.js");
 const PRELOAD: &str = include_str!("../web/preload.js");
 const RENDERER_BRIDGE: &str = include_str!("../web/renderer.js");
 const MARKER: &str = "bigducks-rs stub v1";
-const INSTALLS: [&str; 4] = ["Discord", "DiscordCanary", "DiscordPTB", "DiscordDevelopment"];
+const INSTALLS: [&str; 4] = [
+    "Discord",
+    "DiscordCanary",
+    "DiscordPTB",
+    "DiscordDevelopment",
+];
 
 /// Resultado de uma rodada de instalacao.
 pub struct InstallReport {
@@ -83,7 +88,12 @@ pub fn fmt_time(time: SystemTime) -> String {
         .map(|delta| delta.as_secs())
         .unwrap_or(0);
     let rem = seconds % 86_400;
-    format!("{:02}:{:02}:{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
+    format!(
+        "{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 fn js_path(path: &Path) -> String {
@@ -106,7 +116,10 @@ fn write_bridges(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("criar {}", dir.display()))?;
     write_if_changed(&dir.join("bigducks_rs_bridge.js"), MAIN_BRIDGE.as_bytes())?;
     write_if_changed(&dir.join("bigducks_rs_preload.js"), PRELOAD.as_bytes())?;
-    write_if_changed(&dir.join("bigducks_rs_renderer.js"), RENDERER_BRIDGE.as_bytes())?;
+    write_if_changed(
+        &dir.join("bigducks_rs_renderer.js"),
+        RENDERER_BRIDGE.as_bytes(),
+    )?;
     Ok(())
 }
 
@@ -120,7 +133,9 @@ fn latest_apps() -> Vec<(String, PathBuf, String)> {
             continue;
         }
         let mut best: Option<(Vec<u64>, PathBuf, String)> = None;
-        let Ok(entries) = fs::read_dir(&root) else { continue };
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let dir_name = entry.file_name().to_string_lossy().to_string();
             let Some(version_text) = dir_name.strip_prefix("app-") else {
@@ -137,7 +152,10 @@ fn latest_apps() -> Vec<(String, PathBuf, String)> {
             if !path.join("resources").is_dir() {
                 continue;
             }
-            if best.as_ref().map_or(true, |(current, _, _)| &version > current) {
+            if best
+                .as_ref()
+                .map_or(true, |(current, _, _)| &version > current)
+            {
                 best = Some((version, path, version_text.to_string()));
             }
         }
@@ -218,11 +236,12 @@ pub fn install() -> Result<InstallReport> {
             ));
         } else if asar.is_dir() {
             let index = stub_dir.join("index.js");
-            let backup = existing_backup(&index)
-                .ok_or_else(|| anyhow::anyhow!(
+            let backup = existing_backup(&index).ok_or_else(|| {
+                anyhow::anyhow!(
                     "{} ja e uma pasta mas nao tem backup do app original; deixando intacto",
                     asar.display()
-                ));
+                )
+            });
             match backup {
                 Ok(backup) => {
                     write_stub_files(&stub_dir, &bridge, &backup)?;
@@ -286,7 +305,9 @@ pub fn uninstall() -> Result<Vec<String>> {
         };
         let backup_path = PathBuf::from(backup.replace("\\\\", "\\"));
         if !backup_path.exists() {
-            report.push(format!("{flavour} {version}: arquivo de backup ausente ({backup})"));
+            report.push(format!(
+                "{flavour} {version}: arquivo de backup ausente ({backup})"
+            ));
             continue;
         }
         fs::remove_dir_all(&stub_dir)?;

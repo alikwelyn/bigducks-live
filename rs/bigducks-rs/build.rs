@@ -57,7 +57,10 @@ mod imp {
             let mut resource = winresource::WindowsResource::new();
             resource.set_icon(ico_path.to_str().expect("ico path"));
             resource.set("ProductName", "Desjanjador");
-            resource.set("FileDescription", "Desjanjador - ponte de compartilhamento de tela");
+            resource.set(
+                "FileDescription",
+                "Desjanjador - ponte de compartilhamento de tela",
+            );
             resource.set("CompanyName", "Desjanjador");
             resource.set("OriginalFilename", "Desjanjador.exe");
             if let Err(error) = resource.compile() {
@@ -83,7 +86,12 @@ mod imp {
                 .to_rgba8();
             let mut encoded = Vec::new();
             PngEncoder::new(&mut encoded)
-                .write_image(resized.as_raw(), size, size, image::ExtendedColorType::Rgba8)
+                .write_image(
+                    resized.as_raw(),
+                    size,
+                    size,
+                    image::ExtendedColorType::Rgba8,
+                )
                 .map_err(|error| format!("encode {size}px: {error}"))?;
             frames.push(encoded);
         }

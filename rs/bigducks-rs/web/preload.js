@@ -19,6 +19,7 @@
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const crypto = require("crypto");
 
 const PORT = Number(process.env.BIGDUCKS_PORT) || 8791;
 
@@ -741,7 +742,12 @@ function bridgeRemoteHub() {
   let local = null;
   let localFailed = false;
   let remote = null;
-  let seq = 0;
+  // A identidade da ponte separa IDs locais iguais em PCs diferentes. O mesmo
+  // remetente conserva este ID em offer, answer, ICE e lifecycle.
+  const REMOTE_ID_BASE = 1000000000000;
+  const bridgeNonce = crypto.randomBytes(12).toString("hex");
+  const isBridgedPeerId = (value) => typeof value === "string"
+    && /^bd-[0-9a-f]{24}-[1-9][0-9]*$/.test(value);
   let room = "";
 
   // A SALA vem do Discord: o renderer publica o canal de voz atual em
@@ -750,6 +756,21 @@ function bridgeRemoteHub() {
   let webFrame = null;
   try { webFrame = require("electron/renderer").webFrame; } catch (_) {}
   if (!webFrame) { try { webFrame = require("electron").webFrame; } catch (_) {} }
+  let ownerRendererHubId = null;
+  let ownerHubLookup = false;
+  const refreshOwnerRendererHubId = () => {
+    if (!webFrame || typeof webFrame.executeJavaScript !== "function" || ownerHubLookup) return;
+    ownerHubLookup = true;
+    webFrame.executeJavaScript("Number.isSafeInteger(globalThis.__bdHubId) ? globalThis.__bdHubId : null")
+      .then((value) => {
+        const id = Number(value);
+        if (Number.isSafeInteger(id) && id > 0) ownerRendererHubId = id;
+      })
+      .catch(() => {})
+      .finally(() => { ownerHubLookup = false; });
+  };
+  refreshOwnerRendererHubId();
+  setInterval(refreshOwnerRendererHubId, 500);
   // Se o webFrame nao existir, NUNCA vamos ler a sala - e o sintoma ia ser
   // "sem canal de voz" pra sempre, sem pista nenhuma. Fala uma vez e segue.
   let warnedWebFrame = false;
@@ -829,12 +850,26 @@ function bridgeRemoteHub() {
       report("hub-remoto", "local conectado | relay: " + hubUrl);
     };
     local.onmessage = (event) => {
-      const text = String(event.data || "");
-      // remote-ready NAO atravessa: e sinal interno (id 900000 e fixo da ponte).
-      if (text.indexOf('"remote-ready"') !== -1) return;
-      // PROTECAO CONTRA LOOP INFINITO: nunca enviar para o remoto mensagens
-      // que vieram do proprio remoto (prefixo 900000+) ou id 0 interno.
-      if (/^\{"from":(9\d{5}|0),/.test(text)) return;
+      let packet;
+      try {
+        packet = JSON.parse(String(event.data || ""));
+      } catch {}
+      if (!packet || typeof packet !== "object") return;
+      // Mensagens que vieram da outra rede nunca voltam pelo mesmo túnel.
+      if (packet.bdOrigin === true || packet.type === "remote-ready" || packet.type === "bridge-hello") return;
+      const localFrom = Number(packet.from);
+      if (!Number.isSafeInteger(localFrom) || localFrom <= 0 || localFrom >= REMOTE_ID_BASE) return;
+      // Cada janela tem uma ponte própria no hub local. Só a ponte da janela
+      // que originou a mensagem pode encaminhá-la; as outras recebem o mesmo
+      // broadcast local, mas não devem criar cópias/identidades remotas.
+      if (ownerRendererHubId === null) {
+        refreshOwnerRendererHubId();
+        return;
+      }
+      if (localFrom !== ownerRendererHubId) return;
+      packet.from = "bd-" + bridgeNonce + "-" + localFrom;
+      packet.bdOrigin = true;
+      const text = JSON.stringify(packet);
       if (isDuplicateOutbound(text)) return;
       bridgeStats.fromHub += 1;
       sendRemote(text);
@@ -884,18 +919,29 @@ function bridgeRemoteHub() {
     };
     socket.onmessage = (event) => {
       const text = String(event.data || "");
-      if (text.indexOf('"welcome"') !== -1) {
+      let packet;
+      try { packet = JSON.parse(text); } catch { return; }
+      if (packet.type === "welcome") {
         bridgeStats.welcome = true;
         if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = null; }
         report("hub-remoto", "welcome recebido via " + via + " (receive OK)");
         return;
       }
-      // NUNCA aceitar do remoto mensagens que ja tenham id de bridge (900000+)
-      if (/^\{"from":9\d{5},/.test(text)) return;
+      if (packet.type === "bridge-hello") return;
+      const remoteFrom = packet.from;
+      if (isBridgedPeerId(remoteFrom)) {
+        // ID global carimbado pela ponte que originou o evento.
+      } else {
+        const legacyFrom = Number(remoteFrom);
+        if (!Number.isSafeInteger(legacyFrom) || legacyFrom <= 0 || legacyFrom >= REMOTE_ID_BASE) return;
+        // Compatibilidade com peers antigos: o ID vindo do relay e estavel
+        // por socket, embora nao identifique janelas antigas da mesma ponte.
+        packet.from = "bd-legacy-" + legacyFrom;
+      }
       if (isDuplicateInbound(text)) return;
       bridgeStats.fromRemote += 1;
-      seq += 1;
-      const rewritten = text.replace(/^\{"from":\d+,/, '{"from":' + (900000 + (seq % 99999)) + ",");
+      packet.bdOrigin = true;
+      const rewritten = JSON.stringify(packet);
       bridgeStats.toHub += 1;
       sendLocal(rewritten);
     };
@@ -1155,6 +1201,59 @@ if (document.readyState === "loading") {
   hideNitroBanner();
 }
 
+function loadLocalIceConfig(webFrame, fallbackServers) {
+  let settled = false;
+  const install = (servers, status) => {
+    if (settled) return;
+    settled = true;
+    const merged = [...(Array.isArray(fallbackServers) ? fallbackServers : []),
+      ...(Array.isArray(servers) ? servers : [])].filter((server) => server && server.urls);
+    const seen = new Set();
+    const safeServers = merged.filter((server) => {
+      const key = JSON.stringify(server);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const payload = JSON.stringify(safeServers);
+    webFrame.executeJavaScript(
+      "(function(){var f=globalThis.__bdResolveIceServers;"
+      + "if(typeof f==='function') f(" + payload + ");"
+      + "else globalThis.__bdIceServers=" + payload + ";})()"
+    ).catch(() => {});
+    if (status === "ready") report("turn-config", "credenciais temporarias recebidas do relay");
+    else report("turn-config-unavailable", String(status || "fallback") + "; P2P direto continua habilitado");
+  };
+
+  let request;
+  try {
+    request = http.get("http://127.0.0.1:" + PORT + "/ice-config", (response) => {
+      if (response.statusCode !== 200) {
+        response.resume();
+        install(fallbackServers, "local HTTP " + response.statusCode);
+        return;
+      }
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        try {
+          const parsed = JSON.parse(body);
+          install(parsed.iceServers, parsed.turnStatus || (parsed.turnAvailable ? "ready" : "unavailable"));
+        } catch { install(fallbackServers, "resposta local invalida"); }
+      });
+    });
+  } catch (_) {
+    install(fallbackServers, "nao foi possivel consultar o motor local");
+    return;
+  }
+  request.on("error", () => install(fallbackServers, "motor local indisponivel"));
+  request.setTimeout(6000, () => {
+    install(fallbackServers, "timeout consultando motor local");
+    request.destroy();
+  });
+}
+
 try {
   let webFrame = null;
   try { webFrame = require("electron/renderer").webFrame; } catch (_) {}
@@ -1178,8 +1277,15 @@ try {
       }
     } catch (_) {}
     const preamble = "globalThis.__bdWinPid = " + JSON.stringify(String(process.pid)) + ";\n"
-      + "globalThis.__bdIceServers = " + JSON.stringify(iceServers) + ";\n";
-    webFrame.executeJavaScript(preamble + source).catch((error) => {
+      + "globalThis.__bdIceServers = " + JSON.stringify(iceServers) + ";\n"
+      + "globalThis.__bdIceServersReady = new Promise(function(resolve){"
+      + "globalThis.__bdResolveIceServers = function(value){"
+      + "globalThis.__bdIceServers = Array.isArray(value) ? value : [];"
+      + "try{delete globalThis.__bdResolveIceServers;}catch(_){}"
+      + "resolve(globalThis.__bdIceServers);};});\n";
+    webFrame.executeJavaScript(preamble + source).then(() => {
+      loadLocalIceConfig(webFrame, iceServers);
+    }).catch((error) => {
       console.error("[bigducks-rs] renderer inject falhou:", error && error.message);
     });
     // Plugins opcionais (--nitro). Vem por aqui de proposito: o fetch da PAGINA

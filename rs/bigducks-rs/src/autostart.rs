@@ -31,7 +31,9 @@ fn run_key() -> Result<RegKey> {
 fn remove_legacy() {
     if let Ok(key) = run_key() {
         match key.delete_value(LEGACY_VALUE_NAME) {
-            Ok(()) => crate::log_info!("autostart: valor antigo '{LEGACY_VALUE_NAME}' removido do Run"),
+            Ok(()) => {
+                crate::log_info!("autostart: valor antigo '{LEGACY_VALUE_NAME}' removido do Run")
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 crate::log_warn!("autostart: nao consegui remover '{LEGACY_VALUE_NAME}': {error}")
@@ -57,7 +59,9 @@ pub fn current() -> Option<String> {
 
 /// Esta ligado? (valor presente e nao vazio)
 pub fn is_enabled() -> bool {
-    current().map(|value| !value.trim().is_empty()).unwrap_or(false)
+    current()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// O valor registrado aponta para ESTE executavel?
@@ -77,7 +81,10 @@ pub fn set_enabled(enabled: bool) -> Result<()> {
     if enabled {
         let path = exe_path();
         if platform::is_temp_path(&path) {
-            anyhow::bail!("recusando registrar autostart para caminho temporario: {}", path.display());
+            anyhow::bail!(
+                "recusando registrar autostart para caminho temporario: {}",
+                path.display()
+            );
         }
         key.set_value(VALUE_NAME, &command_line())
             .context("gravar valor de autostart")?;

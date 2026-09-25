@@ -110,6 +110,19 @@
       const response = await fetch('/test-config', { cache: 'no-store' });
       if (!response.ok) throw new Error('configuração local indisponível');
       state.config = await response.json();
+      try {
+        const iceResponse = await fetch('/ice-config', { cache: 'no-store' });
+        if (iceResponse.ok) {
+          const iceConfig = await iceResponse.json();
+          if (Array.isArray(iceConfig.iceServers)) {
+            const merged = [...(state.config.iceServers || []), ...iceConfig.iceServers];
+            state.config.iceServers = merged.filter((server, index) =>
+              merged.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(server)) === index);
+          }
+          state.config.turnAvailable = iceConfig.turnAvailable === true;
+          state.config.turnStatus = String(iceConfig.turnStatus || 'unknown');
+        }
+      } catch {}
       if (state.config.hubUrl && state.config.room) {
         ui.mode.add(new Option('Relay — entre redes/dispositivos', 'remote'));
         ui.mode.value = 'remote';
@@ -192,6 +205,7 @@
   function createPeerConnection() {
     const pc = new RTCPeerConnection({
       iceServers: selectedIceServers(),
+      iceTransportPolicy: 'all',
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
     });

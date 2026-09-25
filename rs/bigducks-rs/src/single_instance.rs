@@ -52,10 +52,9 @@ pub fn acquire() -> Status {
     // secao critica) - so' mantemos o handle para o NOME existir.
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
-        return Status::Failed(format!(
-            "CreateMutexW falhou (erro {})",
-            unsafe { GetLastError() }
-        ));
+        return Status::Failed(format!("CreateMutexW falhou (erro {})", unsafe {
+            GetLastError()
+        }));
     }
     // GetLastError() tem que ser lido LOGO apos a chamada (antes de qualquer
     // outro win32), senao perde o ERROR_ALREADY_EXISTS.
@@ -112,7 +111,10 @@ fn other_instance_pids() -> Vec<u32> {
 fn own_exe_name() -> String {
     std::env::current_exe()
         .ok()
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| "Desjanjador.exe".to_string())
 }
 
@@ -123,6 +125,9 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 fn utf16_field(field: &[u16]) -> String {
-    let length = field.iter().position(|unit| *unit == 0).unwrap_or(field.len());
+    let length = field
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(field.len());
     String::from_utf16_lossy(&field[..length])
 }
