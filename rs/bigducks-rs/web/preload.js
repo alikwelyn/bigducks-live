@@ -802,37 +802,14 @@ function bridgeRemoteHub() {
     return hubUrl + "/" + encodeURIComponent(effective) + (secret ? "?secret=" + encodeURIComponent(secret) : "");
   };
 
-  const seenOutbound = new Set();
-  const seenInbound = new Set();
-  function isDuplicateOutbound(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-    }
-    if (seenOutbound.has(hash)) return true;
-    seenOutbound.add(hash);
-    if (seenOutbound.size > 200) {
-      const first = seenOutbound.values().next().value;
-      seenOutbound.delete(first);
-    }
-    return false;
-  }
-  function isDuplicateInbound(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-    }
-    if (seenInbound.has(hash)) return true;
-    seenInbound.add(hash);
-    if (seenInbound.size > 200) {
-      const first = seenInbound.values().next().value;
-      seenInbound.delete(first);
-    }
-    return false;
-  }
-
   const sendLocal = (text) => { try { if (local && local.readyState === 1) local.send(text); } catch (_) {} };
-  const sendRemote = (text) => { try { if (remote && remote.readyState === 1) remote.send(text); } catch (_) {} };
+  const sendRemote = (text) => {
+    try {
+      if (!remote || remote.readyState !== 1) return;
+      remote.send(text);
+      bridgeStats.toRemote += 1;
+    } catch (_) {}
+  };
 
   const connectLocal = () => {
     try {
@@ -870,7 +847,9 @@ function bridgeRemoteHub() {
       packet.from = "bd-" + bridgeNonce + "-" + localFrom;
       packet.bdOrigin = true;
       const text = JSON.stringify(packet);
-      if (isDuplicateOutbound(text)) return;
+      // Um request-offer identico precisa atravessar de novo quando um
+      // publicador aparece depois do primeiro pedido ou apos uma reconexao.
+      // O filtro por janela proprietaria e bdOrigin ja impedem loops.
       bridgeStats.fromHub += 1;
       sendRemote(text);
     };
@@ -938,7 +917,6 @@ function bridgeRemoteHub() {
         // por socket, embora nao identifique janelas antigas da mesma ponte.
         packet.from = "bd-legacy-" + legacyFrom;
       }
-      if (isDuplicateInbound(text)) return;
       bridgeStats.fromRemote += 1;
       packet.bdOrigin = true;
       const rewritten = JSON.stringify(packet);

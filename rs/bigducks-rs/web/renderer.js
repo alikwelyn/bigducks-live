@@ -41,6 +41,7 @@
   const routeKey = (from, ufrag) => String(from || 'unknown') + '\u0000' + String(ufrag || 'unknown');
   let publishGeneration = 0;
   let publisherStopTimer = null;
+  let feedWatchEnabled = false;
   const PUBLISHER_IDENTITY_RETRY_MS = 1200;
   const PUBLISHER_IDENTITY_RETRY_LIMIT = 15;
   const PUBLISHER_STOP_GRACE_MS = 2500;
@@ -1126,17 +1127,21 @@
   }
 
   function connectFeed() {
-    if (paused) return;
+    if (paused || (!feedPublishing && !feedWatchEnabled)) return;
     if (feedSocket && feedSocket.readyState <= 1) return;
-    feedSocket = new WebSocket(FEED);
-    feedSocket.binaryType = 'arraybuffer';
-    feedSocket.onopen = () => report('feed-socket', { state: 'open' });
-    feedSocket.onclose = (event) => {
+    const socket = new WebSocket(FEED);
+    feedSocket = socket;
+    socket.binaryType = 'arraybuffer';
+    socket.onopen = () => report('feed-socket', { state: 'open' });
+    socket.onclose = (event) => {
       report('feed-socket', { state: 'closed', code: event.code });
-      setTimeout(connectFeed, 3000);
+      if (feedSocket === socket) {
+        feedSocket = null;
+        if (feedPublishing || feedWatchEnabled) setTimeout(connectFeed, 3000);
+      }
     };
-    feedSocket.onerror = () => report('feed-socket', { state: 'error' });
-    feedSocket.onmessage = async (event) => {
+    socket.onerror = () => report('feed-socket', { state: 'error' });
+    socket.onmessage = async (event) => {
       if (decoding) return;
       if (p2pReceiving && !publishing && !feedPublishing) return; // P2P tem prioridade apenas para quem recebe
       decoding = true;
@@ -2331,6 +2336,10 @@
     for (const entry of peers.values()) { try { if (entry.pc) entry.pc.close(); } catch {} }
     peers.clear();
     peer = Array.from(incomingPeers.values()).find((entry) => entry.pc && entry.pc.connectionState !== 'closed')?.pc || null;
+    try { if (feedTrack) feedTrack.stop(); } catch {}
+    feedTrack = null;
+    feedCanvas = null;
+    feedCtx = null;
     try { if (feedSocket) feedSocket.close(); } catch {}
     feedSocket = null;
     report('native-stopped', { via: reason });
@@ -2972,9 +2981,9 @@
     probe,
     unlock,
     status: () => probe(),
-    watch: () => { paused = false; connectFeed(); return true; },
+    watch: () => { paused = false; feedWatchEnabled = true; connectFeed(); return true; },
     stop,
-    restart: () => { paused = false; connectHub(); connectFeed(); },
+    restart: () => { paused = false; feedWatchEnabled = true; connectHub(); connectFeed(); },
     publish: () => publish(publishing),
   };
 
