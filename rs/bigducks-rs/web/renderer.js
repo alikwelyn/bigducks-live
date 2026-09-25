@@ -67,11 +67,10 @@
     }
   }
   let publishing = null;      // MediaStream vindo do Discord
+  let publisherDiscordUserId = '';
   let receiving = null;       // MediaStream recebido (P2P)
   let p2pReceiving = false;
   let feedSocket = null;
-  let panel = null;
-  let videoEl = null;
   let feedTrack = null;
   let feedWriter = null;
   let feedCanvas = null;
@@ -462,9 +461,9 @@
   // DOIS videos na tela.
   //
   // O que sobra aqui: esconder o texto de erro, se ele aparecer.
-  function coverWithVideo(target) {
+  function coverWithVideo(target, stream = receiving, hasFrame = receivingHasFrame) {
     if (!target) return false;
-    if (receivingHasFrame) {
+    if (hasFrame) {
       hideStreamError(target);
       reportOnce("player-ok", { width: target.videoWidth, height: target.videoHeight });
     } else {
@@ -533,119 +532,14 @@
     }
   }
 
-  // ------------------------------------------------------------- painel ----
-
-  function ensurePanel() {
-    if (panel && panel.isConnected && panel.__bdGrid) return panel.__bdGrid;
-    const root = document.createElement('section');
-    root.dataset.bdRsGrid = 'true';
-    root.setAttribute('aria-label', 'Transmissões Desjanjador');
-    Object.assign(root.style, {
-      position: 'fixed', inset: '6vh 4vw', zIndex: '2147483647',
-      display: 'flex', flexDirection: 'column', gap: '10px',
-      padding: '12px', boxSizing: 'border-box',
-      background: 'rgba(10, 13, 20, 0.97)', color: '#f2f3f5',
-      border: '1px solid rgba(255,255,255,.16)', borderRadius: '12px',
-      boxShadow: '0 12px 48px rgba(0,0,0,.55)',
-    });
-    const header = document.createElement('header');
-    Object.assign(header.style, {
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      minHeight: '32px', font: '600 14px system-ui, sans-serif',
-    });
-    const title = document.createElement('span');
-    title.textContent = 'Transmissões Desjanjador';
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.textContent = 'Minimizar';
-    Object.assign(toggle.style, {
-      color: 'inherit', background: '#303642', border: '1px solid #555d6c',
-      borderRadius: '6px', padding: '5px 9px', cursor: 'pointer',
-    });
-    const grid = document.createElement('div');
-    grid.dataset.bdRsGridContent = 'true';
-    Object.assign(grid.style, {
-      display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(420px, 42vw), 1fr))',
-      gridAutoRows: 'minmax(0, 1fr)', gap: '10px', overflow: 'auto', minHeight: '0', flex: '1',
-    });
-    toggle.addEventListener('click', () => {
-      const collapsed = grid.style.display !== 'none';
-      grid.style.display = collapsed ? 'none' : 'grid';
-      root.style.inset = collapsed ? 'auto 4vw 4vh auto' : '6vh 4vw';
-      root.style.width = collapsed ? 'auto' : '';
-      root.style.height = collapsed ? 'auto' : '';
-      toggle.textContent = collapsed ? 'Expandir' : 'Minimizar';
-    });
-    header.append(title, toggle);
-    root.append(header, grid);
-    (document.body || document.documentElement).appendChild(root);
-    panel = root;
-    panel.__bdGrid = grid;
-    return grid;
-  }
-
-  function renderMultiStreamGrid() {
-    if (receivedStreams.size < 2) {
-      if (panel && panel.dataset.bdRsGrid) hidePanel();
-      return;
-    }
-    const grid = ensurePanel();
-    const existing = new Map(Array.from(grid.children, (tile) => [tile.dataset.bdPublisherKey, tile]));
-    let index = 0;
-    for (const [key, item] of receivedStreams) {
-      index += 1;
-      let tile = existing.get(key);
-      existing.delete(key);
-      if (!tile) {
-        tile = document.createElement('article');
-        tile.dataset.bdPublisherKey = key;
-        Object.assign(tile.style, {
-          minWidth: '0', minHeight: '0', display: 'flex', flexDirection: 'column',
-          background: '#080a0f', border: '1px solid #323947', borderRadius: '8px', overflow: 'hidden',
-        });
-        const label = document.createElement('div');
-        label.dataset.bdRsGridLabel = 'true';
-        Object.assign(label.style, {
-          padding: '7px 10px', color: '#cbd4e4', font: '12px system-ui, sans-serif',
-        });
-        const video = document.createElement('video');
-        video.dataset.bdRsGridVideo = 'true';
-        video.autoplay = true;
-        video.muted = true;
-        video.playsInline = true;
-        video.controls = true;
-        Object.assign(video.style, {
-          display: 'block', width: '100%', height: '100%', minHeight: '0',
-          objectFit: 'contain', background: '#000', flex: '1',
-        });
-        tile.append(label, video);
-      }
-      const label = tile.querySelector('[data-bd-rs-grid-label]');
-      const video = tile.querySelector('video');
-      if (label) {
-        label.textContent = 'Stream ' + index;
-        label.title = 'Peer ' + String(item.publisherId || key);
-      }
-      if (video && video.srcObject !== item.stream) {
-        video.srcObject = item.stream;
-        reportVideoHealth(video, item.stream, key);
-      }
-      if (video && video.paused) video.play().catch(() => {});
-      grid.appendChild(tile);
-    }
-    for (const tile of existing.values()) tile.remove();
-    const title = panel && panel.querySelector('header span');
-    if (title) title.textContent = receivedStreams.size + ' transmissões';
-  }
+  // O bridge nunca cria janela/painel próprio: todas as trilhas entram nos
+  // players nativos que o Discord já montou. Isso evita uma segunda UI e deixa
+  // a seleção/miniplayer sob controle do próprio Discord.
 
   function removeReceivedStream(publisherKey) {
     const key = String(publisherKey || '');
     if (!key || !receivedStreams.delete(key)) return;
-    if (receivedStreams.size > 1) {
-      renderMultiStreamGrid();
-      return;
-    }
-    if (panel && panel.dataset.bdRsGrid) hidePanel();
+    detachNativePublisher(key);
     const remaining = receivedStreams.entries().next();
     if (!remaining.done) {
       const [nextKey, item] = remaining.value;
@@ -661,9 +555,6 @@
     p2pReceiving = false;
     receivingHasFrame = false;
     rendered = false;
-    if (injectedVideo && injectedVideo.isConnected) {
-      try { injectedVideo.srcObject = null; } catch {}
-    }
     injectedVideo = null;
   }
 
@@ -710,6 +601,7 @@
   // sem chute. So age quando existe um stream P2P ativo; fora disso passa reto.
 
   let srcObjectHooked = false;
+  let nativeSrcObjectSet = null;
 
   // O Discord usa <video> pequeno tanto para thumbnails comuns quanto para o
   // mini-player persistente. So o segundo recebe o stream P2P.
@@ -770,23 +662,149 @@
     return playerSized(video) || isPersistentMiniPlayer(video);
   }
 
+  const nativeBindings = new Map();
+  const ambiguousNativeVideos = new WeakSet();
+
+  function addIdentityValue(ids, value, key) {
+    if (typeof value !== 'string') return;
+    if (/(?:owner|user|participant).*id|^(?:id|streamid|streamkey)$/i.test(key)) {
+      const direct = validDiscordUserId(value);
+      if (direct) ids.add(direct);
+      if (/stream/i.test(key)) {
+        for (const part of value.split(/[^0-9]+/)) {
+          const id = validDiscordUserId(part);
+          if (id) ids.add(id);
+        }
+      }
+    }
+  }
+
+  function collectNativeOwnerIds(video) {
+    const ids = new Set();
+    const seen = new WeakSet();
+    let visited = 0;
+    const inspect = (value, depth, keyHint = '') => {
+      if (typeof value === 'string') {
+        addIdentityValue(ids, value, keyHint);
+        return;
+      }
+      if (!value || typeof value !== 'object' || depth > 4 || seen.has(value) || ++visited > 120) return;
+      seen.add(value);
+      let names;
+      try { names = Object.keys(value).slice(0, 40); } catch { return; }
+      for (const name of names) {
+        if (!/(?:owner|user|participant|stream|props|video|media|rtc|direct|children|source)/i.test(name)) continue;
+        let child;
+        try { child = value[name]; } catch { continue; }
+        addIdentityValue(ids, child, name);
+        if (child && typeof child === 'object') inspect(child, depth + 1, name);
+      }
+    };
+
+    try {
+      let element = video;
+      for (let depth = 0; element && depth < 7; depth += 1, element = element.parentElement) {
+        for (const name of ['data-user-id', 'data-owner-id', 'data-stream-id', 'data-stream-key']) {
+          addIdentityValue(ids, element.getAttribute(name), name.slice(5));
+        }
+        let names = [];
+        try { names = Object.getOwnPropertyNames(element); } catch {}
+        for (const name of names) {
+          if (name.startsWith('__reactProps$')) {
+            try { inspect(element[name], 0, 'props'); } catch {}
+          } else if (name.startsWith('__reactFiber$')) {
+            let fiber;
+            try { fiber = element[name]; } catch {}
+            for (let level = 0; fiber && level < 14; level += 1) {
+              try { inspect(fiber.memoizedProps, 0, 'props'); } catch {}
+              try { inspect(fiber.pendingProps, 0, 'props'); } catch {}
+              fiber = fiber.return;
+            }
+          }
+        }
+      }
+    } catch {}
+    return ids;
+  }
+
+  function receivedItemForVideo(video) {
+    if (!receivedStreams.size && receiving) {
+      return { key: 'feed', stream: receiving, hasFrame: receivingHasFrame };
+    }
+    const current = video && video.srcObject;
+    for (const [key, item] of receivedStreams) {
+      if (item.stream === current) return { key, ...item };
+    }
+    const ownerIds = collectNativeOwnerIds(video);
+    if (receivedStreams.size === 1) {
+      const [key, item] = receivedStreams.entries().next().value;
+      if (item.publisherUserId && ownerIds.size && !ownerIds.has(item.publisherUserId)) return null;
+      return { key, ...item };
+    }
+    const matches = Array.from(receivedStreams, ([key, item]) =>
+      item.publisherUserId && ownerIds.has(item.publisherUserId) ? { key, ...item } : null
+    ).filter(Boolean);
+    if (matches.length === 1) return matches[0];
+    if (receivedStreams.size > 1 && !ambiguousNativeVideos.has(video)) {
+      ambiguousNativeVideos.add(video);
+      reportOnce('native-stream-owner-unmatched', {
+        streams: receivedStreams.size,
+        identifiedOwners: Array.from(receivedStreams.values()).filter((item) => item.publisherUserId).length,
+        video: describeVideo(video),
+      });
+    }
+    return null;
+  }
+
+  function receivedItemForStream(stream) {
+    for (const [key, item] of receivedStreams) {
+      if (item.stream === stream) return { key, ...item };
+    }
+    return null;
+  }
+
+  function receivingStreamsHaveFrame() {
+    if (!receivedStreams.size) return !!(receiving && receivingHasFrame);
+    return Array.from(receivedStreams.values()).some((item) => item.hasFrame);
+  }
+
+  function detachNativePublisher(publisherKey) {
+    for (const [video, binding] of Array.from(nativeBindings)) {
+      if (binding.publisherKey !== publisherKey) continue;
+      nativeBindings.delete(video);
+      if (!video.isConnected) continue;
+      try {
+        if (video.srcObject === binding.stream && nativeSrcObjectSet) {
+          nativeSrcObjectSet.call(video, binding.originalSource || null);
+        }
+      } catch {}
+    }
+  }
+
+  function pruneNativeBindings() {
+    for (const [video] of nativeBindings) {
+      if (!video.isConnected) nativeBindings.delete(video);
+    }
+  }
+
   function retryPendingVideos() {
-    if (!receiving || receivedStreams.size > 1 || !pendingVideos.size) return;
+    if (!receivedStreams.size || !pendingVideos.size) return;
     for (const video of Array.from(pendingVideos)) {
       if (!video.isConnected) { pendingVideos.delete(video); continue; }
       if (!canAttachNativePlayer(video)) continue;
+      const item = receivedItemForVideo(video);
+      if (!item) continue;
       pendingVideos.delete(video);
       try {
-        video.srcObject = receiving;
+        video.srcObject = item.stream;
         video.play().catch(() => {});
         if (injectedVideo !== video) {
           const keepCurrent = injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo);
           if (!keepCurrent || playerSized(video)) injectedVideo = video;
         }
         if (injectedVideo === video) {
-          if (panel) hidePanel();
           reportOnce(playerSized(video) ? "player-sized-late" : "mini-player-attached", describeVideo(video));
-          reportVideoHealth(video);
+          reportVideoHealth(video, item.stream, item.key);
         }
       } catch {}
     }
@@ -800,6 +818,7 @@
       if (!descriptor || typeof descriptor.set !== "function") return false;
       const originalSet = descriptor.set;
       const originalGet = descriptor.get;
+      nativeSrcObjectSet = originalSet;
       Object.defineProperty(proto, "srcObject", {
         configurable: true,
         enumerable: descriptor.enumerable,
@@ -808,37 +827,50 @@
         },
         set(value) {
           try {
-            if (receiving && this && this.tagName === "VIDEO") {
-              if (this.dataset.bdRsGridVideo === 'true' || this.closest('[data-bd-rs-grid]')) {
-                return originalSet.call(this, value);
-              }
-              if (receivedStreams.size > 1) return originalSet.call(this, value);
-              // O video do NOSSO painel fallback: o hook nunca mexe nele -
-              // trocar o srcObject dele gerava hidePanel -> ensurePanel -> hide
-              // em LOOP (o spam de panel-hidden que inundava o hub).
-              if (this === videoEl) return originalSet.call(this, value);
-              const isStream = typeof MediaStream !== "undefined" && value instanceof MediaStream;
-              const isClearing = value === null || value === undefined;
-              // Troca o stream do Discord pelo nosso; deixa o "limpar" passar.
-              if (isStream || (!isClearing && value != null)) {
-                if (!canAttachNativePlayer(this)) {
-                  // Thumbnail comum: tenta novamente se crescer ou virar PiP.
-                  pendingVideos.add(this);
-                } else {
-                  if (value !== receiving) {
-                    reportOnce(isPersistentMiniPlayer(this) ? "mini-player-hook" : "srcobject-hook", describeVideo(this));
-                  }
-                  if (injectedVideo !== this) {
-                    const keepCurrent = injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo);
-                    if (!keepCurrent || playerSized(this)) injectedVideo = this;
-                    if (panel) hidePanel();
-                    if (injectedVideo === this) reportVideoHealth(this);
-                  }
-                  coverWithVideo(this, receiving);
-                  return originalSet.call(this, receiving);
-                }
-              }
+            if (!this || this.tagName !== 'VIDEO' || !receivedStreams.size) {
+              return originalSet.call(this, value);
             }
+            if (value === null || value === undefined) {
+              pendingVideos.delete(this);
+              nativeBindings.delete(this);
+              return originalSet.call(this, value);
+            }
+            const isStream = typeof MediaStream !== 'undefined' && value instanceof MediaStream;
+            if (!isStream) return originalSet.call(this, value);
+
+            const item = receivedItemForStream(value) || receivedItemForVideo(this);
+            if (!item) {
+              pendingVideos.add(this);
+              return originalSet.call(this, value);
+            }
+            if (!canAttachNativePlayer(this)) {
+              pendingVideos.add(this);
+              return originalSet.call(this, value);
+            }
+
+            pendingVideos.delete(this);
+            const currentSource = originalGet ? originalGet.call(this) : null;
+            const previous = nativeBindings.get(this);
+            const originalSource = value !== item.stream
+              ? value
+              : (previous && previous.publisherKey === item.key
+                ? previous.originalSource
+                : (currentSource === item.stream ? null : currentSource));
+            nativeBindings.set(this, {
+              publisherKey: item.key,
+              stream: item.stream,
+              originalSource,
+            });
+            if (value !== item.stream) {
+              reportOnce(isPersistentMiniPlayer(this) ? 'mini-player-hook' : 'srcobject-hook', describeVideo(this));
+            }
+            if (injectedVideo !== this) {
+              const keepCurrent = injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo);
+              if (!keepCurrent || playerSized(this)) injectedVideo = this;
+            }
+            if (injectedVideo === this) reportVideoHealth(this, item.stream, item.key);
+            coverWithVideo(this, item.stream, item.hasFrame);
+            return originalSet.call(this, item.stream);
           } catch {}
           return originalSet.call(this, value);
         },
@@ -873,11 +905,8 @@
   }
 
   // ------------------------------------------------- player NATIVO -------
-  //
-  // O Discord renderiza o stream num <video> comum. Quando o P2P chega, a
-  // gente injeta o nosso stream NESSE <video>: o video aparece no proprio
-  // player do Discord (nome, controles, tela cheia), nao numa janelinha.
-  // A janelinha vira so fallback, para quando nao existe player aberto.
+  // Cada MediaStream P2P e vinculado ao video do Discord cujo ownerId casa
+  // com o publisher. Com mais de um publisher, nao adivinhamos por ordem.
 
   let injectedVideo = null;
 
@@ -886,7 +915,6 @@
     let bestArea = 0;
     try {
       for (const video of document.querySelectorAll('video')) {
-        if (video.dataset.bdRsGridVideo === 'true' || video.closest('[data-bd-rs-grid]')) continue;
         const rect = video.getBoundingClientRect();
         const area = rect.width * rect.height;
         if (!playerSized(video)) continue;
@@ -894,7 +922,6 @@
       }
       if (best) return best;
       for (const video of document.querySelectorAll('video')) {
-        if (video.dataset.bdRsGridVideo === 'true' || video.closest('[data-bd-rs-grid]')) continue;
         if (isPersistentMiniPlayer(video)) return video;
       }
     } catch {}
@@ -902,47 +929,40 @@
   }
 
   function findNativePlayerVideos() {
-    let largest = null;
-    let largestArea = 0;
-    const miniPlayers = [];
+    const targets = [];
     try {
       for (const video of document.querySelectorAll('video')) {
-        if (video.dataset.bdRsGridVideo === 'true' || video.closest('[data-bd-rs-grid]')) continue;
-        const rect = video.getBoundingClientRect();
-        const area = rect.width * rect.height;
-        if (playerSized(video)) {
-          if (area > largestArea) { largest = video; largestArea = area; }
-        } else if (isPersistentMiniPlayer(video)) {
-          miniPlayers.push(video);
-        }
+        if (videoVisible(video) && canAttachNativePlayer(video)) targets.push(video);
       }
     } catch {}
-    return [...(largest ? [largest] : []), ...miniPlayers];
+    return targets;
   }
 
   function tryInjectNative() {
-    if (!receiving || receivedStreams.size > 1) return false;
+    if (!receiving && !receivedStreams.size) return false;
     const targets = findNativePlayerVideos();
     if (!targets.length) return false;
     let attached = false;
     for (const video of targets) {
       try {
-        if (video.srcObject !== receiving) {
-          video.srcObject = receiving;
+        const item = receivedItemForVideo(video);
+        if (!item) continue;
+        if (video.srcObject !== item.stream) {
+          video.srcObject = item.stream;
           video.play().catch(() => {});
           const rect = video.getBoundingClientRect();
           const mini = isPersistentMiniPlayer(video) && !playerSized(video);
           report(mini ? 'native-mini-inject' : 'native-inject', {
             width: Math.round(rect.width),
             height: Math.round(rect.height),
+            publisher: item.key,
           });
         }
         const keepCurrent = injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo);
         if (!keepCurrent || playerSized(video)) injectedVideo = video;
-        if (panel) hidePanel();
-        coverWithVideo(video, receiving);
+        coverWithVideo(video, item.stream, item.hasFrame);
         if (video === injectedVideo) {
-          reportVideoHealth(video, receiving, receivedStreams.size === 1 ? receivedStreams.keys().next().value : null);
+          reportVideoHealth(video, item.stream, item.key);
         }
         attached = true;
       } catch {}
@@ -950,28 +970,13 @@
     return attached;
   }
 
-  // A janelinha e so fallback: se o player do Discord aparecer DEPOIS (o usuario
-  // so clica na live mais tarde), ela sai de cena.
-  function hidePanel() {
-    if (!panel) return;
-    try { if (videoEl) videoEl.srcObject = null; } catch {}
-    panel.remove();
-    panel = null;
-    videoEl = null;
-    reportOnce("panel-hidden", {});
-  }
-
-  function showPanel(stream) {
-    tryInjectNative();
-    rendered = true;
-  }
-
-  function showStream(stream, source, publisherKey, publisherId) {
+  function showStream(stream, source, publisherKey, publisherId, publisherUserId = '') {
     const key = String(publisherKey || publisherId || 'unknown');
     const previous = receivedStreams.get(key);
     const item = {
       stream,
       publisherId: publisherId || key,
+      publisherUserId: validDiscordUserId(publisherUserId),
       hasFrame: previous && previous.stream === stream ? previous.hasFrame : false,
     };
     receivedStreams.set(key, item);
@@ -981,11 +986,6 @@
     rendered = true;
     report('rendered', { source, state: 'track-attached', peer: item.publisherId, streams: receivedStreams.size });
     log('stream de', source, '- aguardando o player do Discord');
-    if (receivedStreams.size > 1) {
-      renderMultiStreamGrid();
-      return;
-    }
-    if (panel && panel.dataset.bdRsGrid) hidePanel();
     installSrcObjectHook();
     tryInjectNative();
     let tries = 0;
@@ -1006,10 +1006,9 @@
     try { if (feedTrack) feedTrack.stop(); } catch {}
     feedWriter = null;
     feedTrack = null;
-    if (panel) { panel.remove(); panel = null; videoEl = null; }
     try { if (feedSocket) feedSocket.close(); } catch {}
     feedSocket = null;
-    report('panel-closed', {});
+    report('renderer-stopped', {});
   }
 
   // ------------------------------------------------- feed RGBA (fallback) --
@@ -1144,6 +1143,63 @@
       if (channel) return [type, channel, owner].join(":");
     } catch {}
     return null;
+  }
+
+  function validDiscordUserId(value) {
+    return typeof value === 'string' && /^\d{5,25}$/.test(value) ? value : '';
+  }
+
+  function discordUserIdFrom(value, depth = 0, seen = new WeakSet()) {
+    if (!value || typeof value !== 'object' || depth > 2 || seen.has(value)) return '';
+    seen.add(value);
+    if (isProxyLike(value)) return '';
+    for (const method of ['getCurrentUserId', 'getCurrentUser']) {
+      try {
+        if (typeof value[method] !== 'function') continue;
+        const result = value[method]();
+        const id = validDiscordUserId(typeof result === 'string' ? result : result && result.id);
+        if (id) return id;
+      } catch {}
+    }
+    let children = [];
+    try {
+      const names = Object.keys(value).slice(0, 24);
+      children = names
+        .filter((name) => /user|account|default/i.test(name))
+        .map((name) => value[name]);
+    } catch {}
+    for (const child of children) {
+      const id = discordUserIdFrom(child, depth + 1, seen);
+      if (id) return id;
+    }
+    return '';
+  }
+
+  function findDiscordUserId() {
+    if (publisherDiscordUserId) return publisherDiscordUserId;
+    try {
+      const store = findStreamStore();
+      const active = store && store.getCurrentUserActiveStream();
+      const ownerId = validDiscordUserId(active && active.ownerId);
+      if (ownerId) return publisherDiscordUserId = ownerId;
+    } catch {}
+    const require = webpackRequire();
+    if (!require || !require.c) return '';
+    for (const id of Object.keys(require.c)) {
+      let exports;
+      try { exports = require.c[id] && require.c[id].exports; } catch { continue; }
+      if (!exports || typeof exports !== 'object' || isProxyLike(exports)) continue;
+      const candidates = [exports];
+      try {
+        if (Object.keys(exports).length <= 24) candidates.push(...Object.values(exports));
+        if (exports.default) candidates.push(exports.default);
+      } catch {}
+      for (const candidate of candidates) {
+        const userId = discordUserIdFrom(candidate);
+        if (userId) return publisherDiscordUserId = userId;
+      }
+    }
+    return '';
   }
 
   // ---- captura as FABRICAS do webpack (o modulo pode nascer DEPOIS) ---------
@@ -2179,6 +2235,7 @@
     publishingNative = false;
     feedPublishing = false;
     publishing = null;
+    publisherDiscordUserId = '';
     for (const entry of peers.values()) { try { if (entry.pc) entry.pc.close(); } catch {} }
     peers.clear();
     peer = Array.from(incomingPeers.values()).find((entry) => entry.pc && entry.pc.connectionState !== 'closed')?.pc || null;
@@ -2235,7 +2292,7 @@
       return;
     }
     if (message.type === 'offer') {
-      await acceptOffer(message.sdp, message.from);
+      await acceptOffer(message.sdp, message.from, message.publisherUserId);
     } else if (message.type === 'answer') {
       // O identificador de roteamento fica fora do SDP. Versoes antigas o
       // anexavam como atributo no fim; Chromium rejeita esse SDP malformado.
@@ -2364,7 +2421,8 @@
         event.streams[0] || new MediaStream([event.track]),
         'p2p',
         entry && entry.publisherKey,
-        entry && entry.from
+        entry && entry.from,
+        entry && entry.publisherUserId
       );
     };
     pc.onconnectionstatechange = () => {
@@ -2450,7 +2508,7 @@
       entry.viewerUfrag = null;
       entry.iceRestarts += 1;
       peers.set(newUfrag, entry);
-      send({ type: 'offer', sdp: entry.sdp });
+      send({ type: 'offer', sdp: entry.sdp, publisherUserId: publisherDiscordUserId || undefined });
       report('p2p-ice-restart', { attempt: entry.iceRestarts, result: 'offer-sent' });
     } catch (error) {
       report('p2p-ice-restart', {
@@ -2497,6 +2555,7 @@
     cancelPendingPublisherStop();
     const replacing = !!publishing;
     publishing = stream;
+    if (!publisherDiscordUserId) findDiscordUserId();
     publishGeneration += 1;
     if (replacing) {
       const byKind = new Map();
@@ -2554,7 +2613,7 @@
             return;
           }
           if (!entry.answered && entry.pc.connectionState !== 'closed') {
-            send({ type: 'offer', sdp: entry.sdp });
+            send({ type: 'offer', sdp: entry.sdp, publisherUserId: publisherDiscordUserId || undefined });
           }
           return;
         }
@@ -2586,13 +2645,13 @@
       pc.__bdEntry = entry;
       peers.set(ufrag, entry);
       if (!peer || peer.connectionState === 'closed') peer = pc;
-      send({ type: 'offer', sdp: pc.localDescription.sdp });
+      send({ type: 'offer', sdp: pc.localDescription.sdp, publisherUserId: publisherDiscordUserId || undefined });
     } finally {
       creatingPublisherPeers.delete(viewerId);
     }
   }
 
-  async function acceptOffer(sdp, from) {
+  async function acceptOffer(sdp, from, publisherUserId = '') {
     const ufrag = extractUfrag(sdp);
     if (!ufrag) {
       reportOnce('accept-offer-failed', { peer: from || 'unknown', error: 'oferta sem ICE ufrag' });
@@ -2612,7 +2671,15 @@
       const previousKey = incomingByPublisher.get(publisherKey);
       if (previousKey === key && incomingPeers.has(key)) return;
       const viewerPeer = await createPeer();
-      const entry = { pc: viewerPeer, from, publisherKey, remoteUfrag: ufrag, routeKey: key, answered: false };
+      const entry = {
+        pc: viewerPeer,
+        from,
+        publisherKey,
+        publisherUserId: validDiscordUserId(publisherUserId),
+        remoteUfrag: ufrag,
+        routeKey: key,
+        answered: false,
+      };
       viewerPeer.__bdEntry = entry;
       incomingPeers.set(key, entry);
       incomingByPublisher.set(publisherKey, key);
@@ -2991,19 +3058,29 @@
       }).catch(() => {});
     }
   }, 10000);
-  // Reposiciona a cobertura, da uma segunda chance aos videos pequenos que
-  // cresceram (janela redimensionada) e escoa os avisos "uma vez so" que
-  // ficaram na fila esperando o socket do hub.
-  setInterval(() => { positionCover(); retryPendingVideos(); flushOnce(); }, 1200);
+  // Revarre os players nativos para cobrir navegacao e o mini-player criado
+  // depois do handshake, sem montar um segundo painel fora da UI do Discord.
+  setInterval(() => {
+    positionCover();
+    retryPendingVideos();
+    if (receivedStreams.size || receiving) tryInjectNative();
+    pruneNativeBindings();
+    flushOnce();
+  }, 1200);
   // O erro 2012 ("nao foi possivel transmitir") e renderizado PELO Discord
   // DEPOIS da injecao - esconder so no momento do hook nao basta. Enquanto
   // existir stream ativo, limpa o aviso continuamente: o video que fica por
   // baixo e o nosso (P2P), o aviso e lixo do envio nativo que falhou no
   // servidor - irrelevante por design.
   setInterval(() => {
-    if (!receiving || !receivingHasFrame) return;
+    if (!receivingStreamsHaveFrame()) return;
     try {
-      for (const video of findNativePlayerVideos()) hideStreamError(video);
+      for (const [video, binding] of nativeBindings) {
+        const item = receivedStreams.get(binding.publisherKey);
+        if ((!item && binding.publisherKey === 'feed' && receivingHasFrame) || (item && item.hasFrame)) {
+          hideStreamError(video);
+        }
+      }
       const video = (injectedVideo && injectedVideo.isConnected && videoVisible(injectedVideo))
         ? injectedVideo
         : findStreamVideo();

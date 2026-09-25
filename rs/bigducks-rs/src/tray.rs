@@ -31,6 +31,11 @@ struct TrayUi {
 /// global de cliques (a cada retentativa os ids mudam junto com o menu).
 fn build_tray(status: &Shared, port: u16) -> Result<TrayUi, String> {
     let menu = Menu::new();
+    let version = MenuItem::new(
+        format!("Desjanjador v{}", crate::update::current_version()),
+        false,
+        None,
+    );
     let diagnostics = MenuItem::new("Diagnóstico de conexão", true, None);
     let view_log = MenuItem::new("Ver log", true, None);
     let check_update = MenuItem::new("Verificar atualizações", true, None);
@@ -41,6 +46,8 @@ fn build_tray(status: &Shared, port: u16) -> Result<TrayUi, String> {
         CheckMenuItem::new("Iniciar com o Windows", true, autostart::is_enabled(), None);
     let quit = MenuItem::new("Sair", true, None);
     let _ = menu.append_items(&[
+        &version,
+        &PredefinedMenuItem::separator(),
         &diagnostics,
         &view_log,
         &check_update,
