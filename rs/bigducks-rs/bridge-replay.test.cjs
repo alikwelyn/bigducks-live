@@ -93,3 +93,43 @@ test('ao parar e reabrir a live, o espectador pede outra oferta automaticamente'
   assert.equal(sent.length, 1);
   assert.equal(sent[0].type, 'request-offer');
 });
+
+test('renegociacao preserva o player antigo ate o primeiro frame novo', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'web', 'renderer.js'), 'utf8');
+  const start = source.indexOf('  function stageReplacement(entry, stream) {');
+  const end = source.indexOf('  function updateReceivedPublisherIdentity(', start);
+  assert.ok(start >= 0 && end > start, 'staging da trilha encontrado');
+  let onFrame;
+  const video = {
+    style: {},
+    requestVideoFrameCallback(callback) { onFrame = callback; },
+    play() { return Promise.resolve(); },
+    pause() {},
+    remove() {},
+  };
+  const old = { publisherKey: 'note', routeKey: 'old' };
+  const replacement = { publisherKey: 'note', routeKey: 'new', from: 'note', publisherUserId: '' };
+  const incomingPeers = new Map([['old', old], ['new', replacement]]);
+  const shown = [];
+  const closed = [];
+  const context = {
+    document: { createElement() { return video; }, body: { appendChild() {} } },
+    incomingPeers,
+    incomingByPublisher: new Map([['note', 'old']]),
+    showStream(stream) { shown.push(stream); },
+    closeIncomingPeer(entry) { closed.push(entry); incomingPeers.delete(entry.routeKey); },
+    report() {},
+    setTimeout() { return 1; },
+    clearTimeout() {},
+  };
+  vm.runInNewContext(source.slice(start, end) + '\nglobalThis.stage = stageReplacement;', context);
+  const stream = { id: 'new-video' };
+  context.stage(replacement, stream);
+  assert.equal(shown.length, 0);
+  assert.equal(closed.length, 0);
+  assert.equal(context.incomingByPublisher.get('note'), 'old');
+  onFrame();
+  assert.deepEqual(shown, [stream]);
+  assert.deepEqual(closed, [old]);
+  assert.equal(context.incomingByPublisher.get('note'), 'new');
+});

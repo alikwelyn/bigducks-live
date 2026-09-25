@@ -116,10 +116,12 @@ fn write_bridges(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("criar {}", dir.display()))?;
     write_if_changed(&dir.join("bigducks_rs_bridge.js"), MAIN_BRIDGE.as_bytes())?;
     write_if_changed(&dir.join("bigducks_rs_preload.js"), PRELOAD.as_bytes())?;
-    write_if_changed(
-        &dir.join("bigducks_rs_renderer.js"),
-        RENDERER_BRIDGE.as_bytes(),
-    )?;
+    let renderer = format!(
+        "globalThis.__bdVersion = {};\n{}",
+        serde_json::to_string(env!("CARGO_PKG_VERSION"))?,
+        RENDERER_BRIDGE
+    );
+    write_if_changed(&dir.join("bigducks_rs_renderer.js"), renderer.as_bytes())?;
     Ok(())
 }
 

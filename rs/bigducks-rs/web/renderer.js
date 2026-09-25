@@ -82,6 +82,10 @@
   let frames = 0;
   let rendered = false;
   let receivingHasFrame = false;
+  let remoteSignalState = 'connecting';
+  let lastSourceFrames = 0;
+  let lastSourceAdvanceAt = 0;
+  const peerRoutes = new WeakMap();
   const observedFrameStreams = new WeakMap();
   let decoding = false;
   let paused = false;
@@ -532,8 +536,13 @@
   function markFirstDecodedFrame(video, stream, metadata, publisherKey) {
     const item = Array.from(receivedStreams.values()).find((entry) => entry.stream === stream);
     if ((!item && receiving !== stream) || video.srcObject !== stream) return;
-    if (item) item.hasFrame = true;
+    const alreadyHadFrame = item ? item.hasFrame : receivingHasFrame;
+    if (item) {
+      item.hasFrame = true;
+      item.lastFrameAt = Date.now();
+    }
     if (receiving === stream) receivingHasFrame = true;
+    if (alreadyHadFrame) return;
     const detail = {
       width: video.videoWidth,
       height: video.videoHeight,
@@ -572,7 +581,12 @@
     if (typeof video.requestVideoFrameCallback === 'function'
       && observedFrameStreams.get(video) !== stream) {
       observedFrameStreams.set(video, stream);
-      video.requestVideoFrameCallback((_, metadata) => markFirstDecodedFrame(video, stream, metadata, publisherKey));
+      const onFrame = (_, metadata) => {
+        if (video.srcObject !== stream) return;
+        markFirstDecodedFrame(video, stream, metadata, publisherKey);
+        video.requestVideoFrameCallback(onFrame);
+      };
+      video.requestVideoFrameCallback(onFrame);
     } else if (typeof video.requestVideoFrameCallback !== 'function'
       && observedFrameStreams.get(video) !== stream) {
       observedFrameStreams.set(video, stream);
@@ -617,9 +631,15 @@
 
   function closeIncomingPeer(entry, reason) {
     if (!entry) return;
+    if (entry.staging) entry.staging();
     const key = entry.routeKey;
     if (key && incomingPeers.get(key) === entry) incomingPeers.delete(key);
-    if (incomingByPublisher.get(entry.publisherKey) === key) incomingByPublisher.delete(entry.publisherKey);
+    if (incomingByPublisher.get(entry.publisherKey) === key) {
+      const fallback = Array.from(incomingPeers.values()).find((other) =>
+        other.publisherKey === entry.publisherKey && other.pc.connectionState !== 'closed');
+      if (fallback) incomingByPublisher.set(entry.publisherKey, fallback.routeKey);
+      else incomingByPublisher.delete(entry.publisherKey);
+    }
     if (key) {
       answeredUfrags.delete(key);
       pendingIce.delete(key);
@@ -1040,6 +1060,7 @@
       publisherId: publisherId || key,
       publisherUserId: validDiscordUserId(publisherUserId),
       hasFrame: previous && previous.stream === stream ? previous.hasFrame : false,
+      lastFrameAt: previous && previous.stream === stream ? previous.lastFrameAt || 0 : 0,
     };
     receivedStreams.set(key, item);
     if (receiving !== stream) receivingHasFrame = item.hasFrame;
@@ -1059,6 +1080,55 @@
         tryInjectNative();
       }
     }, 500);
+  }
+
+  // Uma nova offer do mesmo publicador nao pode zerar o player que ja tem
+  // frames. Primeiro decodifica um quadro fora do player; so entao troca.
+  function stageReplacement(entry, stream) {
+    if (entry.staging) entry.staging();
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1';
+    video.srcObject = stream;
+    (document.body || document.documentElement).appendChild(video);
+    let finished = false;
+    let timer;
+    const cleanup = () => {
+      if (finished) return false;
+      finished = true;
+      clearTimeout(timer);
+      entry.staging = null;
+      try { video.pause(); video.srcObject = null; video.remove(); } catch {}
+      return true;
+    };
+    entry.staging = cleanup;
+    const promote = () => {
+      if (!cleanup() || incomingPeers.get(entry.routeKey) !== entry) return;
+      showStream(stream, 'p2p', entry.publisherKey, entry.from, entry.publisherUserId);
+      incomingByPublisher.set(entry.publisherKey, entry.routeKey);
+      for (const old of Array.from(incomingPeers.values())) {
+        if (old !== entry && old.publisherKey === entry.publisherKey) {
+          closeIncomingPeer(old, 'replacement-first-frame');
+        }
+      }
+      report('replacement-first-frame', { peer: entry.from || 'unknown' });
+    };
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      video.requestVideoFrameCallback(promote);
+    } else {
+      video.addEventListener('loadeddata', () => {
+        if (video.readyState >= 2 && video.videoWidth > 0) promote();
+      }, { once: true });
+    }
+    timer = setTimeout(() => {
+      if (!cleanup()) return;
+      report('replacement-timeout', { peer: entry.from || 'unknown' });
+      closeIncomingPeer(entry, 'replacement-timeout');
+    }, 15000);
+    video.play().catch(() => {});
+    report('replacement-pending', { peer: entry.from || 'unknown' });
   }
 
   function updateReceivedPublisherIdentity(publisherKey, publisherUserId) {
@@ -2363,9 +2433,18 @@
       return;
     }
     if (message.type === 'remote-ready') {
+      remoteSignalState = 'connecting';
       // A ponte pro relay (re)conectou. Este cliente pode transmitir e receber
       // ao mesmo tempo; pede as ofertas de todos os publicadores ativos.
       if (!hasLiveViewerPeer()) send({ type: 'request-offer' });
+      return;
+    }
+    if (message.type === 'remote-welcome') {
+      remoteSignalState = 'connected';
+      return;
+    }
+    if (message.type === 'remote-disconnected') {
+      remoteSignalState = 'disconnected';
       return;
     }
     if (message.type === 'publisher-ready') {
@@ -2531,14 +2610,16 @@
         muted: event.track.muted,
         peer: pc.__bdEntry && pc.__bdEntry.from || 'unknown',
       });
+      if (event.track.kind !== 'video') return;
       const entry = pc.__bdEntry;
-      showStream(
-        event.streams[0] || new MediaStream([event.track]),
-        'p2p',
-        entry && entry.publisherKey,
-        entry && entry.from,
-        entry && entry.publisherUserId
-      );
+      const stream = event.streams[0] || new MediaStream([event.track]);
+      const current = entry && receivedStreams.get(entry.publisherKey);
+      if (entry && current && current.hasFrame && current.stream !== stream) {
+        stageReplacement(entry, stream);
+      } else {
+        showStream(stream, 'p2p', entry && entry.publisherKey,
+          entry && entry.from, entry && entry.publisherUserId);
+      }
     };
     pc.onconnectionstatechange = () => {
       log('peer', pc.connectionState);
@@ -2550,12 +2631,7 @@
       });
       if (pc.connectionState === 'connected') {
         const active = pc.__bdEntry;
-        if (active && active.publisherKey) {
-          for (const old of Array.from(incomingPeers.values())) {
-            if (old !== active && old.publisherKey === active.publisherKey) {
-              closeIncomingPeer(old, 'replacement-connected');
-            }
-          }
+        if (active && active.publisherKey && !active.staging) {
           incomingByPublisher.set(active.publisherKey, active.routeKey);
         }
       }
@@ -2590,6 +2666,13 @@
         || pairs.find((item) => item.state === 'failed');
       const local = pair && stats.get(pair.localCandidateId);
       const remote = pair && stats.get(pair.remoteCandidateId);
+      peerRoutes.set(pc, {
+        phase,
+        pair: pair && pair.state,
+        nominated: !!(pair && (pair.nominated || pair.selected)),
+        localType: local && local.candidateType,
+        remoteType: remote && remote.candidateType,
+      });
       report('p2p-path', {
         phase,
         pair: pair ? pair.state : 'none',
@@ -2986,6 +3069,71 @@
     hubSocket = null;
   }
 
+  // Leitura pequena, dentro da coluna de voz do Discord. Estado de video so
+  // vira OK depois de frames decodificados RECENTES, nunca so por ICE conectado.
+  function updateStatusBadge() {
+    try {
+      const host = document.querySelector('[class*="panels_"]');
+      if (!host) return;
+      let badge = document.getElementById('bd-rs-voice-status');
+      if (!badge || badge.parentElement !== host) {
+        if (badge) badge.remove();
+        badge = document.createElement('div');
+        badge.id = 'bd-rs-voice-status';
+        badge.setAttribute('role', 'status');
+        badge.style.cssText = 'box-sizing:border-box;display:flex;align-items:center;gap:6px;min-height:22px;padding:3px 9px;color:#c9cbd3;background:#17191f;border-top:1px solid #34363d;font:11px/1.3 sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default';
+        host.insertBefore(badge, host.lastElementChild);
+      }
+      const now = Date.now();
+      if (frames !== lastSourceFrames) {
+        lastSourceFrames = frames;
+        lastSourceAdvanceAt = now;
+      }
+      const hubOk = !!(hubSocket && hubSocket.readyState === WebSocket.OPEN && hubId !== null);
+      const livePeers = [
+        ...Array.from(peers.values(), (entry) => entry.pc),
+        ...Array.from(incomingPeers.values(), (entry) => entry.pc),
+      ].filter((pc) => pc && pc.connectionState === 'connected');
+      const routes = livePeers.map((pc) => peerRoutes.get(pc)).filter((route) =>
+        route && route.pair === 'succeeded' && route.nominated);
+      const relay = routes.some((route) => route.localType === 'relay' || route.remoteType === 'relay');
+      const routeLabel = routes.length ? (relay ? 'TURN' : 'P2P')
+        : livePeers.length ? 'ICE conectado' : 'Sem par';
+      const streams = Array.from(receivedStreams.values());
+      const healthy = streams.filter((item) => item.hasFrame && now - (item.lastFrameAt || 0) < 6000).length;
+      let mediaLabel = 'Aguardando live';
+      let color = '#f0b84d';
+      if (!hubOk) mediaLabel = 'Motor desconectado';
+      else if (streams.length) {
+        mediaLabel = healthy === streams.length ? 'Vídeo OK'
+          : healthy ? `Vídeo ${healthy}/${streams.length}` : 'Aguardando vídeo';
+        color = healthy === streams.length ? '#43b581' : '#f0b84d';
+      } else if (publishing) {
+        const sourceOk = now - lastSourceAdvanceAt < 6000;
+        mediaLabel = sourceOk ? 'Captura ativa' : 'Captura sem frames';
+        color = sourceOk ? '#43b581' : '#f04747';
+      } else if (hubOk && remoteSignalState === 'connected') {
+        mediaLabel = 'Pronto';
+        color = '#43b581';
+      }
+      if (!hubOk) color = '#f04747';
+      const version = String(globalThis.__bdVersion || '?');
+      const label = `● Desjanjador ${version} · ${routeLabel} · ${mediaLabel}`;
+      if (badge.textContent !== label) badge.textContent = label;
+      badge.style.color = color;
+      const detail = [
+        `Desjanjador ${version}`,
+        `Bridge no Discord: ativo`,
+        `Motor local: ${hubOk ? 'conectado' : 'desconectado'}`,
+        `Sinalização remota: ${remoteSignalState}`,
+        `Rota: ${routeLabel}`,
+        `Recebendo: ${healthy}/${streams.length} live(s) com frames recentes`,
+        `Enviando: ${publishing ? (now - lastSourceAdvanceAt < 6000 ? 'captura com frames' : 'sem frames recentes') : 'não'}`,
+      ].join('\n');
+      if (badge.title !== detail) badge.title = detail;
+    } catch {}
+  }
+
   globalThis.__BD_RS__ = {
     probe,
     unlock,
@@ -3176,12 +3324,13 @@
       report('feed-stats', { frames, fps: Math.round((frames - lastFeedStatsFrames) * 1000 / Math.max(1, now - lastFeedStatsAt)) });
       lastFeedStatsFrames = frames;
       lastFeedStatsAt = now;
-      const entry = Array.from(peers.values()).find((item) => item.answered && item.pc.connectionState !== 'closed');
-      if (entry) {
+      for (const entry of peers.values()) {
+        if (!entry.answered || entry.pc.connectionState === 'closed') continue;
         entry.pc.getStats().then((stats) => {
           for (const item of stats.values()) {
             if (item.type === 'outbound-rtp' && item.kind === 'video') {
               report('p2p-send-stats', {
+                peer: entry.from || 'unknown',
                 frames: item.framesSent,
                 encoded: item.framesEncoded,
                 fps: item.framesPerSecond,
@@ -3193,11 +3342,14 @@
           }
         }).catch(() => {});
       }
-    } else if (peer && receiving && peer.connectionState !== 'closed') {
-      peer.getStats().then((stats) => {
+    }
+    for (const entry of incomingPeers.values()) {
+      if (!entry.pc || entry.pc.connectionState === 'closed') continue;
+      entry.pc.getStats().then((stats) => {
         for (const item of stats.values()) {
           if (item.type === 'inbound-rtp' && item.kind === 'video') {
             report('p2p-recv-stats', {
+              peer: entry.from || 'unknown',
               decoded: item.framesDecoded,
               fps: item.framesPerSecond,
               bytes: item.bytesReceived,
@@ -3218,6 +3370,7 @@
     pruneNativeBindings();
     flushOnce();
   }, 1200);
+  setInterval(updateStatusBadge, 2000);
   // O erro 2012 pode ser renderizado depois da injecao. Limpa somente a camada
   // que sobrepoe um video ja ligado a uma stream P2P com frame decodificado.
   setInterval(() => {

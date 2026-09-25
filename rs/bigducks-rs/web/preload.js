@@ -906,6 +906,7 @@ function bridgeRemoteHub() {
         bridgeStats.welcome = true;
         if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = null; }
         report("hub-remoto", "welcome recebido via " + via + " (receive OK)");
+        sendLocal('{"from":900000,"type":"remote-welcome"}');
         return;
       }
       if (packet.type === "bridge-hello") return;
@@ -935,7 +936,10 @@ function bridgeRemoteHub() {
     };
     socket.onclose = (e) => {
       if (welcomeTimer) { clearTimeout(welcomeTimer); welcomeTimer = null; }
-      if (remote === socket) remote = null;
+      if (remote === socket) {
+        remote = null;
+        sendLocal('{"from":900000,"type":"remote-disconnected"}');
+      }
       remoteRetries += 1;
       reportStats("queda via " + via);
       report("hub-remoto-erro", "remoto caiu (code " + ((e && e.code) || "?") + ") via " + via + " - retry 5s");
