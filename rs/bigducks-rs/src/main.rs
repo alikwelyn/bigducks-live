@@ -1339,10 +1339,19 @@ fn safe_signaling_summary(text: &str) -> String {
 
 #[cfg(test)]
 mod signaling_log_tests {
+    use super::release_asset_url;
     use super::{
         is_turn_server, safe_signaling_summary, sanitize_ice_servers, stamp_hub_sender,
         turn_endpoint_from_hub,
     };
+
+    #[test]
+    fn release_manifest_asset_bypasses_previous_edge_cache() {
+        assert_eq!(
+            release_asset_url("0.1.11", 123),
+            "Desjanjador.exe?version=0.1.11&cachebust=123"
+        );
+    }
 
     #[test]
     fn candidate_log_omits_ip_and_port() {
@@ -1814,6 +1823,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
     output
 }
 
+fn release_asset_url(version: &str, cache_bust: u128) -> String {
+    format!("{RELEASE_ASSET}?version={version}&cachebust={cache_bust}")
+}
+
 /// `GET /release.json`: serve o manifest do diretorio de releases. Se ele nao
 /// existir, gera na hora a partir do exe + `version.txt` - assim basta jogar o
 /// executavel novo no diretorio.
@@ -1828,9 +1841,17 @@ async fn release_manifest(State(state): State<AppState>) -> axum::response::Resp
     match (std::fs::read(&exe), std::fs::read_to_string(&version_file)) {
         (Ok(data), Ok(version)) if !version.trim().is_empty() => {
             let version = version.trim().trim_start_matches('v').to_string();
+            let cache_bust = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let asset = release_asset_url(&version, cache_bust);
             let body = serde_json::json!({
                 "version": version,
-                "asset": RELEASE_ASSET,
+                // Older clients don't add a cache key themselves. Put one in
+                // the manifest URL so an already-cached previous EXE can't
+                // block the first self-update to a cache-aware client.
+                "asset": asset,
                 "size": data.len(),
                 "sha256": sha256_hex(&data),
             })
