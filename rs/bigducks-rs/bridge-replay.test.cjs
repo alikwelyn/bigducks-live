@@ -40,6 +40,38 @@ test('a ponte continua filtrando outras janelas e mensagens retornadas', () => {
   assert.equal(forwarded.length, 0);
 });
 
+test('oferta local nao atravessa o relay; oferta remota atravessa', () => {
+  const { handler, forwarded } = localBridgeHandler();
+  handler({ data: JSON.stringify({ from: 2, type: 'offer', to: 3, sdp: 'local' }) });
+  handler({ data: JSON.stringify({ from: 2, type: 'offer', to: 'bd-abcdefabcdefabcdefabcdef-3', sdp: 'remote' }) });
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].to, 'bd-abcdefabcdefabcdefabcdef-3');
+});
+
+test('ponte remota entrega apenas o destinatario e restaura seu ID local', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'web', 'preload.js'), 'utf8');
+  const wire = source.indexOf('  const wireRemote = (socket, via) => {');
+  const start = source.indexOf('    socket.onmessage = (event) => {', wire);
+  const end = source.indexOf('    socket.onclose =', start);
+  assert.ok(wire >= 0 && start > wire && end > start, 'handler da ponte remota encontrado');
+  const sent = [];
+  const context = {
+    socket: {},
+    bridgeNonce: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+    REMOTE_ID_BASE: 1000000000000,
+    isBridgedPeerId(value) { return /^bd-[0-9a-f]{24}-[1-9][0-9]*$/.test(value); },
+    bridgeStats: { fromRemote: 0, toHub: 0, welcome: false },
+    sendLocal(text) { sent.push(JSON.parse(text)); },
+  };
+  vm.runInNewContext(source.slice(start, end), context);
+  const from = 'bd-bbbbbbbbbbbbbbbbbbbbbbbb-2';
+  context.socket.onmessage({ data: JSON.stringify({ from, type: 'offer', to: 'bd-cccccccccccccccccccccccc-4' }) });
+  context.socket.onmessage({ data: JSON.stringify({ from, type: 'offer', to: 'bd-aaaaaaaaaaaaaaaaaaaaaaaa-4' }) });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, 4);
+  assert.equal(sent[0].from, from);
+});
+
 test('ao parar e reabrir a live, o espectador pede outra oferta automaticamente', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'web', 'renderer.js'), 'utf8');
   const start = source.indexOf('  async function onHub(message) {');

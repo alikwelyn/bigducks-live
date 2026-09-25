@@ -834,6 +834,8 @@ function bridgeRemoteHub() {
       if (!packet || typeof packet !== "object") return;
       // Mensagens que vieram da outra rede nunca voltam pelo mesmo túnel.
       if (packet.bdOrigin === true || packet.type === "remote-ready" || packet.type === "bridge-hello") return;
+      // Sinalizacao entre duas janelas deste PC ja foi entregue pelo hub local.
+      if (packet.to != null && Number.isSafeInteger(Number(packet.to))) return;
       const localFrom = Number(packet.from);
       if (!Number.isSafeInteger(localFrom) || localFrom <= 0 || localFrom >= REMOTE_ID_BASE) return;
       // Cada janela tem uma ponte própria no hub local. Só a ponte da janela
@@ -907,6 +909,14 @@ function bridgeRemoteHub() {
         return;
       }
       if (packet.type === "bridge-hello") return;
+      if (packet.to != null) {
+        const target = String(packet.to);
+        const prefix = "bd-" + bridgeNonce + "-";
+        if (!target.startsWith(prefix)) return;
+        const localTarget = Number(target.slice(prefix.length));
+        if (!Number.isSafeInteger(localTarget) || localTarget <= 0) return;
+        packet.to = localTarget;
+      }
       const remoteFrom = packet.from;
       if (isBridgedPeerId(remoteFrom)) {
         // ID global carimbado pela ponte que originou o evento.

@@ -2198,6 +2198,7 @@
         return;
       }
       if (message.from && hubId !== null && message.from === hubId) return;
+      if (message.to != null && String(message.to) !== String(hubId)) return;
       onHub(message).catch((error) => log('hub handler', error));
     };
     hubSocket.onclose = () => setTimeout(connectHub, 3000);
@@ -2420,6 +2421,10 @@
         }
       }
       if (entry && !entry.answered) {
+        if (entry.from != null && String(entry.from) !== String(message.from || '')) {
+          reportOnce('answer-wrong-peer', { ufrag: ufrag || 'none' });
+          return;
+        }
         try {
           const cleanSdp = message.sdp.replace(/\r?\na=x-bd-offer-ufrag:[^\r\n]*(?=\r?\n|$)/g, '');
           await entry.pc.setRemoteDescription({ type: 'answer', sdp: cleanSdp });
@@ -2516,7 +2521,9 @@
       ? globalThis.__bdIceServers.filter((server) => server && server.urls)
       : [];
     const pc = new RTCPeerConnection({ iceServers: [...ICE, ...configuredIce], iceTransportPolicy: 'all' });
-    pc.onicecandidate = (event) => { if (event.candidate) send({ type: 'ice', candidate: event.candidate }); };
+    pc.onicecandidate = (event) => {
+      if (event.candidate) send({ type: 'ice', candidate: event.candidate, to: pc.__bdTarget });
+    };
     pc.ontrack = (event) => {
       report('p2p-track', {
         kind: event.track.kind,
@@ -2616,7 +2623,7 @@
       entry.viewerUfrag = null;
       entry.iceRestarts += 1;
       peers.set(newUfrag, entry);
-      send({ type: 'offer', sdp: entry.sdp, publisherUserId: publisherDiscordUserId || undefined });
+      send({ type: 'offer', sdp: entry.sdp, to: entry.from, publisherUserId: publisherDiscordUserId || undefined });
       report('p2p-ice-restart', { attempt: entry.iceRestarts, result: 'offer-sent' });
     } catch (error) {
       report('p2p-ice-restart', {
@@ -2755,12 +2762,13 @@
             return;
           }
           if (!entry.answered && entry.pc.connectionState !== 'closed') {
-            send({ type: 'offer', sdp: entry.sdp, publisherUserId: publisherDiscordUserId || undefined });
+            send({ type: 'offer', sdp: entry.sdp, to: entry.from, publisherUserId: publisherDiscordUserId || undefined });
           }
           return;
         }
       }
       const pc = await createPeer();
+      pc.__bdTarget = from;
       if (generation !== publishGeneration || !publishing) {
         pc.close();
         return;
@@ -2787,7 +2795,7 @@
       pc.__bdEntry = entry;
       peers.set(ufrag, entry);
       if (!peer || peer.connectionState === 'closed') peer = pc;
-      send({ type: 'offer', sdp: pc.localDescription.sdp, publisherUserId: publisherDiscordUserId || undefined });
+      send({ type: 'offer', sdp: pc.localDescription.sdp, to: from, publisherUserId: publisherDiscordUserId || undefined });
     } finally {
       creatingPublisherPeers.delete(viewerId);
     }
@@ -2804,7 +2812,7 @@
     // Oferta repetida do mesmo remetente: reenvia a answer sem criar outro PC.
     if (answeredUfrags.has(key)) {
       const cached = answeredUfrags.get(key);
-      if (cached) send({ type: 'answer', sdp: cached, offerUfrag: ufrag });
+      if (cached) send({ type: 'answer', sdp: cached, offerUfrag: ufrag, to: from });
       return;
     }
     if (acceptingUfrags.has(key)) return;
@@ -2813,6 +2821,7 @@
       const previousKey = incomingByPublisher.get(publisherKey);
       if (previousKey === key && incomingPeers.has(key)) return;
       const viewerPeer = await createPeer();
+      viewerPeer.__bdTarget = from;
       const entry = {
         pc: viewerPeer,
         from,
@@ -2842,7 +2851,7 @@
       await viewerPeer.setLocalDescription(answer);
       // O ufrag do publisher vai no envelope de sinalizacao, nao dentro do SDP.
       const answerSdp = viewerPeer.localDescription.sdp;
-      send({ type: 'answer', sdp: answerSdp, offerUfrag: ufrag });
+      send({ type: 'answer', sdp: answerSdp, offerUfrag: ufrag, to: from });
       entry.answered = true;
       answeredUfrags.set(key, answerSdp);
       if (answeredUfrags.size > 64) answeredUfrags.delete(answeredUfrags.keys().next().value);
