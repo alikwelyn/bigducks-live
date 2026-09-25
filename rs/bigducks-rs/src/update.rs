@@ -10,7 +10,7 @@
 use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -91,10 +91,14 @@ fn manifest_url() -> String {
 }
 
 fn asset_url(manifest: &Manifest) -> String {
-    asset_url_for(&release_base(), manifest)
+    let cache_bust = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    asset_url_for(&release_base(), manifest, cache_bust)
 }
 
-fn asset_url_for(base: &str, manifest: &Manifest) -> String {
+fn asset_url_for(base: &str, manifest: &Manifest, cache_bust: u128) -> String {
     let asset = manifest.asset.trim_start_matches('/');
     let separator = if asset.contains('?') { '&' } else { '?' };
     let cache_key = if !manifest.sha256.is_empty()
@@ -104,7 +108,7 @@ fn asset_url_for(base: &str, manifest: &Manifest) -> String {
     } else {
         format!("version={}", manifest.version)
     };
-    format!("{base}/{asset}{separator}{cache_key}")
+    format!("{base}/{asset}{separator}{cache_key}&cachebust={cache_bust}")
 }
 
 /// Baixa e compara o manifest. `Ok(None)` quando ja estamos na ultima versao.
@@ -141,6 +145,7 @@ pub fn stage(manifest: &Manifest) -> Result<PathBuf> {
     }
     let url = asset_url(manifest);
     let response = ureq::get(&url)
+        .set("Cache-Control", "no-cache")
         .timeout(Duration::from_secs(300))
         .call()
         .with_context(|| format!("GET {url}"))?;
@@ -408,8 +413,8 @@ mod tests {
         };
 
         assert_eq!(
-            asset_url_for("https://example.invalid", &manifest),
-            "https://example.invalid/Desjanjador.exe?sha256=aabbcc"
+            asset_url_for("https://example.invalid", &manifest, 123),
+            "https://example.invalid/Desjanjador.exe?sha256=aabbcc&cachebust=123"
         );
     }
 
@@ -424,8 +429,8 @@ mod tests {
         };
 
         assert_eq!(
-            asset_url_for("https://example.invalid", &manifest),
-            "https://example.invalid/Desjanjador.exe?download=1&version=0.1.9"
+            asset_url_for("https://example.invalid", &manifest, 456),
+            "https://example.invalid/Desjanjador.exe?download=1&version=0.1.9&cachebust=456"
         );
     }
 }
