@@ -91,11 +91,20 @@ fn manifest_url() -> String {
 }
 
 fn asset_url(manifest: &Manifest) -> String {
-    format!(
-        "{}/{}",
-        release_base(),
-        manifest.asset.trim_start_matches('/')
-    )
+    asset_url_for(&release_base(), manifest)
+}
+
+fn asset_url_for(base: &str, manifest: &Manifest) -> String {
+    let asset = manifest.asset.trim_start_matches('/');
+    let separator = if asset.contains('?') { '&' } else { '?' };
+    let cache_key = if !manifest.sha256.is_empty()
+        && manifest.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        format!("sha256={}", manifest.sha256)
+    } else {
+        format!("version={}", manifest.version)
+    };
+    format!("{base}/{asset}{separator}{cache_key}")
 }
 
 /// Baixa e compara o manifest. `Ok(None)` quando ja estamos na ultima versao.
@@ -135,14 +144,31 @@ pub fn stage(manifest: &Manifest) -> Result<PathBuf> {
         .timeout(Duration::from_secs(300))
         .call()
         .with_context(|| format!("GET {url}"))?;
+    if let Some(content_length) = response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        if content_length != manifest.size {
+            bail!(
+                "Content-Length diferente do manifest ({content_length} != {})",
+                manifest.size
+            );
+        }
+    }
     let mut reader = response.into_reader().take(manifest.size + 1);
     let mut bytes = Vec::with_capacity(manifest.size as usize);
     reader
         .read_to_end(&mut bytes)
         .context("baixar o executavel")?;
     if bytes.len() as u64 != manifest.size {
+        if bytes.len() as u64 > manifest.size {
+            bail!(
+                "download excede o tamanho do manifest (mais de {} bytes)",
+                manifest.size
+            );
+        }
         bail!(
-            "tamanho diferente do manifest ({} != {})",
+            "download incompleto ({} de {} bytes)",
             bytes.len(),
             manifest.size
         );
@@ -365,4 +391,41 @@ fn hex(bytes: &[u8]) -> String {
         output.push(DIGITS[(byte & 0x0f) as usize] as char);
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{asset_url_for, Manifest};
+
+    #[test]
+    fn asset_url_uses_sha256_cache_key() {
+        let manifest = Manifest {
+            version: "0.1.9".to_string(),
+            asset: "Desjanjador.exe".to_string(),
+            size: 42,
+            sha256: "aabbcc".to_string(),
+            notes: None,
+        };
+
+        assert_eq!(
+            asset_url_for("https://example.invalid", &manifest),
+            "https://example.invalid/Desjanjador.exe?sha256=aabbcc"
+        );
+    }
+
+    #[test]
+    fn asset_url_preserves_existing_query_parameters() {
+        let manifest = Manifest {
+            version: "0.1.9".to_string(),
+            asset: "Desjanjador.exe?download=1".to_string(),
+            size: 42,
+            sha256: String::new(),
+            notes: None,
+        };
+
+        assert_eq!(
+            asset_url_for("https://example.invalid", &manifest),
+            "https://example.invalid/Desjanjador.exe?download=1&version=0.1.9"
+        );
+    }
 }
